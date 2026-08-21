@@ -1,25 +1,42 @@
 # Jaci ![CI](https://github.com/kleeedolinux/jaci/actions/workflows/build.yml/badge.svg) [![codecov](https://codecov.io/gh/kleeedolinux/jaci/branch/master/graph/badge.svg)](https://codecov.io/gh/kleeedolinux/jaci)
 
-**Jaci** is a fork of [Luau](https://github.com/luau-lang/luau) optimized for **general-purpose programming outside Roblox Studio**.
+**Jaci** is a high-performance, gradually typed scripting language and runtime forked from [Luau](https://github.com/luau-lang/luau), engineered specifically for **general-purpose programming, standalone applications, and systems development outside of Roblox Studio**.
 
 ---
 
-## 🎯 Current Focus
+## About Jaci
 
-While upstream Luau is primarily constrained by the requirements and sandbox of Roblox Studio, Jaci focuses on adapting Luau for general-purpose use:
+Luau provides an exceptionally engineered foundation: a completely rewritten interpreter runtime, a sophisticated constraint-based type inference system, and native code generation (AOT/JIT). However, upstream Luau is fundamentally designed around the constraints, safety models, and proprietary APIs of the Roblox platform.
 
-- **Reducing Sandbox Limitations**: Relaxing and removing sandbox restrictions designed for Roblox Studio so Luau can be used effectively for standalone scripting and systems tasks.
-- **Enhanced FFI & CodeGen**: Advancing native Foreign Function Interface (FFI) capabilities and optimizing native CodeGen for better native interop and performance.
-- **Selective Upstream Sync**: Tracking upstream Luau innovations (compiler, constraint solver, VM performance) via automated weekly Pull Requests, allowing maintainers to curate and integrate features while rejecting Roblox-specific constraints.
+**Jaci** was created to unlock the full potential of this technology as an independent, general-purpose programming language. By removing Roblox-specific sandbox constraints and prioritizing native interoperability, Jaci turns Luau into a standalone language suitable for command-line utilities, high-throughput backend services, standalone game engines, and native system integrations.
 
 ---
 
-## 🚀 CLI Tools & Usage
+## Core Focus & Philosophy
+
+### 1. Blazingly Fast Execution
+Performance is at the heart of Jaci. We actively optimize execution paths across the entire stack:
+- **Optimized VM & Bytecode Execution**: Fast register-based interpreter loop tuned for modern CPU architectures.
+- **Aggressive Native CodeGen**: Direct x64 and AArch64 code generation that compiles hot bytecode blocks into optimized machine instructions.
+- **Low-Overhead Runtime**: Minimal memory footprint, efficient garbage collection heuristics, and zero unnecessary runtime layers.
+
+### 2. Enhanced FFI and Native Interoperability
+General-purpose programming requires direct and fast communication with host operating systems and native C/C++ libraries. Jaci focuses on developing and enhancing Foreign Function Interface (FFI) capabilities and native CodeGen integration, enabling near-zero-cost native calls without writing cumbersome C wrappers.
+
+### 3. Reduced Sandbox Limitations
+Upstream Luau intentionally restricts access to system resources, raw memory, and underlying platform facilities to sandbox scripts within Roblox Studio. Jaci systematically relaxes and removes these restrictions to provide full standalone capabilities, including expanded filesystem access, process management, and native system APIs.
+
+### 4. Selective Upstream Synchronization
+Jaci tracks upstream Luau to continuously adopt core improvements in the compiler, type checker, and VM optimizations. Through an automated weekly CI pipeline, upstream changes are imported via Pull Requests and reviewed to ensure they meet Jaci's general-purpose criteria and do not reintroduce Roblox-specific constraints.
+
+---
+
+## CLI Tools and Usage
 
 Jaci maintains the standard Luau CLI toolchain:
 
 - **`luau`**: Command-line REPL and script runner.
-- **`luau-analyze`**: Static type checker and linter.
+- **`luau-analyze`**: High-performance static type checker and linter.
 
 ```sh
 # Run a script
@@ -31,7 +48,7 @@ luau-analyze src/
 
 ---
 
-## 🛠️ Building from Source
+## Building from Source
 
 ### Prerequisites
 - A C++17 compatible compiler (GCC 7+, Clang 7+, MSVC 2017+)
@@ -53,7 +70,7 @@ make config=release luau luau-analyze
 
 ---
 
-## 📦 Embedding in C++
+## Embedding in C++
 
 To embed Jaci in host C++ applications, link against the `Luau.Compiler` and `Luau.VM` targets:
 
@@ -82,12 +99,12 @@ int main() {
 
 ---
 
-## 🧪 Testing
+## Testing
 
-Jaci uses Luau's test suites for compiler units and VM conformance:
+Jaci uses Luau's unit and conformance test suites:
 
-- **Unit Tests**: `Luau.UnitTest`
-- **Conformance Tests**: `Luau.Conformance`
+- **Unit Tests**: `Luau.UnitTest` (bytecode compiler, AST, and type checker/linter tests)
+- **Conformance Tests**: `Luau.Conformance` (VM execution and conformance tests)
 
 Run all tests via `make`:
 ```sh
@@ -96,15 +113,15 @@ make test
 
 ---
 
-## 🔄 Upstream Synchronization
+## Upstream Synchronization
 
-A GitHub Actions workflow runs every week to fetch new changes from upstream [`luau-lang/luau`](https://github.com/luau-lang/luau) and opens a Pull Request.
+A GitHub Actions workflow runs every week to inspect upstream [`luau-lang/luau`](https://github.com/luau-lang/luau) for new commits and opens a Pull Request.
 
-Because not all upstream changes are suitable for general-purpose environments, incoming updates are reviewed and selectively merged.
+Because not all upstream changes align with general-purpose runtime requirements, incoming updates are reviewed and selectively merged by maintainers.
 
 ---
 
-## 📄 License & Attribution
+## License & Attribution
 
 Jaci is distributed under the terms of the **[MIT License](LICENSE.txt)**.
 
