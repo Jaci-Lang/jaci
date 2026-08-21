@@ -5,85 +5,115 @@ on:
     inputs:
       version:
         required: true
-        description: Release version including 0.
+        description: "Release version (e.g. 0.10.0 or 0.650)"
+      draft:
+        type: boolean
+        description: "Create as draft release"
+        default: false
+      prerelease:
+        type: boolean
+        description: "Mark as prerelease"
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  create-release:
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+  build:
+    strategy:
+      matrix:
+        os: [{name: ubuntu, version: ubuntu-22.04}, {name: macos, version: macos-latest}, {name: windows, version: windows-latest}]
+    name: build-${{ matrix.os.name }}
+    runs-on: ${{ matrix.os.version }}
     steps:
       - name: validate version format
         run: |
-          if [[ ! "${{ github.event.inputs.version }}" =~ ^0\.[0-9]{3,}$ ]]; then
-            echo "Error: Version must be in the format 0.XYZ"
+          if [[ ! "${{ github.event.inputs.version }}" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Error: Invalid version format. Must follow semver (e.g. 0.10.0 or 0.650)"
             exit 1
           fi
-      - name: create release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.event.inputs.version }}
-          release_name: ${{ github.event.inputs.version }}
-          draft: true
+        shell: bash
 
-  build:
-    needs: ["create-release"]
-    strategy:
-      matrix: # not using ubuntu-latest to improve compatibility
-        os: [{name: ubuntu, version: ubuntu-22.04}, {name: macos, version: macos-latest}, {name: windows, version: windows-latest}]
-    name: ${{matrix.os.name}}
-    runs-on: ${{matrix.os.version}}
-    steps:
-    - uses: actions/checkout@v1
-    - name: configure
-      run: cmake . -DCMAKE_BUILD_TYPE=Release
-    - name: build
-      run: cmake --build . --target Luau.Repl.CLI Luau.Analyze.CLI Luau.Compile.CLI Luau.Ast.CLI --config Release -j 2
-    - name: pack
-      if: matrix.os.name != 'windows'
-      run: zip luau-${{matrix.os.name}}.zip luau*
-    - name: pack
-      if: matrix.os.name == 'windows'
-      run: 7z a luau-${{matrix.os.name}}.zip .\Release\luau*.exe
-    - uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: luau-${{matrix.os.name}}.zip
-        asset_name: luau-${{matrix.os.name}}.zip
-        asset_content_type: application/octet-stream
+      - uses: actions/checkout@v4
+
+      - name: configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: build
+        run: cmake --build build --target Luau.Repl.CLI Luau.Analyze.CLI Luau.Compile.CLI Luau.Ast.CLI --config Release -j 2
+
+      - name: pack (unix)
+        if: matrix.os.name != 'windows'
+        run: |
+          cd build
+          zip -j ../luau-${{ matrix.os.name }}.zip luau luau-analyze luau-compile luau-ast || zip -j ../luau-${{ matrix.os.name }}.zip luau*
+
+      - name: pack (windows)
+        if: matrix.os.name == 'windows'
+        run: |
+          7z a luau-${{ matrix.os.name }}.zip .\build\Release\luau*.exe .\build\luau*.exe -r
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luau-${{ matrix.os.name }}
+          path: luau-${{ matrix.os.name }}.zip
 
   web:
-    needs: ["create-release"]
+    name: build-web
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
-    - uses: actions/checkout@v2
-      with:
-        repository: emscripten-core/emsdk
-        path: emsdk
-    - name: emsdk install
-      run: |
-        cd emsdk
-        ./emsdk install latest
-        ./emsdk activate latest
-    - name: make
-      run: |
-        source emsdk/emsdk_env.sh
-        emcmake cmake . -DLUAU_BUILD_WEB=ON -DCMAKE_BUILD_TYPE=Release
-        make -j2 Luau.Web
-    - uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: Luau.Web.js
-        asset_name: Luau.Web.js
-        asset_content_type: application/octet-stream
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: emscripten-core/emsdk
+          path: emsdk
+
+      - name: emsdk install
+        run: |
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: build web target
+        run: |
+          source emsdk/emsdk_env.sh
+          emcmake cmake -B build -DLUAU_BUILD_WEB=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target Luau.Web -j 2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Luau.Web.js
+          path: build/Luau.Web.js
+
+  publish-release:
+    name: publish-release
+    needs: [build, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: prepare release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name "*.zip" -o -name "*.js" \) -exec cp {} release-assets/ \;
+          ls -la release-assets
+
+      - name: create release and generate release notes
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: Jaci ${{ github.event.inputs.version }}
+          draft: ${{ github.event.inputs.draft }}
+          prerelease: ${{ github.event.inputs.prerelease }}
+          generate_release_notes: true
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
