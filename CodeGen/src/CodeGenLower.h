@@ -12,6 +12,10 @@
 #include "Luau/OptimizeConstProp.h"
 #include "Luau/OptimizeDeadStore.h"
 #include "Luau/OptimizeFinalX64.h"
+#include "Luau/Hir.h"
+#include "Luau/Mir.h"
+#include "Luau/MirLowering.h"
+#include "Luau/Llvm.h"
 
 #include "CodeGenContext.h"
 #include "EmitCommon.h"
@@ -423,9 +427,22 @@ inline bool lowerFunction(
     // Recompute the CFG predecessors/successors to match block uses after optimizations
     computeCfgBlockEdges(ir.function);
 
-    std::vector<uint32_t> sortedBlocks = getSortedBlockOrder(ir.function);
+    if ((options.compilationOptions.flags & CodeGen_UseLlvm) != 0)
+    {
+        Hir::HirBuilder hirBuilder;
+        Hir::Function hirFn = hirBuilder.liftFromIr(ir.function);
+        Hir::optimizeHir(hirFn);
 
-    // In order to allocate registers during lowering, we need to know where instruction results are last used
+        Mir::MirBuilder mirBuilder;
+        Mir::Function mirFn = mirBuilder.lowerFromHir(hirFn);
+        Mir::optimizeMir(mirFn);
+
+        Llvm::LlvmBuilder llvmBuilder;
+        Llvm::TableSpecializer tableSpec;
+        Llvm::lowerMirToLlvm(llvmBuilder, tableSpec, mirFn, proto);
+    }
+
+    std::vector<uint32_t> sortedBlocks = getSortedBlockOrder(ir.function);
     updateLastUseLocations(ir.function, sortedBlocks);
 
     if (stats)

@@ -17,6 +17,8 @@ enum CodeGenFlags
     CodeGen_OnlyNativeModules = 1 << 0,
     // Run native codegen for functions that the compiler considers not profitable
     CodeGen_ColdFunctions = 1 << 1,
+    // Run LLVM backend for code generation
+    CodeGen_UseLlvm = 1 << 2,
 };
 
 enum class CodeGenCounter : unsigned

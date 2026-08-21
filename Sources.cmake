@@ -577,6 +577,8 @@ if(TARGET Luau.UnitTest)
         tests/LlvmTable.test.cpp
         tests/LlvmOpt.test.cpp
         tests/LlvmExecution.test.cpp
+        tests/BenchmarkAssemblyVsLlvm.test.cpp
+        tests/LlvmJitProof.test.cpp
         tests/JsonEmitter.test.cpp
         tests/Lexer.test.cpp
         tests/Linter.test.cpp
