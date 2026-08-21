@@ -56,7 +56,7 @@ jobs:
           -DLUAU_WERROR=ON
 
     - name: Build Targets
-      run: cmake --build build --target Luau.UnitTest Luau.Conformance luau luau-analyze luau-compile -j $(nproc 2>/dev/null || sysctl -n hw.ncpu)
+      run: cmake --build build --target Luau.UnitTest Luau.Conformance Luau.Repl.CLI Luau.Analyze.CLI Luau.Compile.CLI -j $(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
     - name: Run Unit Tests
       run: |
@@ -102,7 +102,7 @@ jobs:
           -DLUAU_WERROR=ON
 
     - name: Build Targets (Fast Parallel)
-      run: cmake --build build --target Luau.UnitTest Luau.Conformance luau luau-analyze luau-compile -j 4
+      run: cmake --build build --target Luau.UnitTest Luau.Conformance Luau.Repl.CLI Luau.Analyze.CLI Luau.Compile.CLI -j 4
 
     - name: Run Unit Tests
       shell: bash

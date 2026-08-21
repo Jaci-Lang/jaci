@@ -48,7 +48,7 @@ jobs:
           -DCMAKE_CXX_FLAGS="/MP /Gy /Gw /O2"
 
     - name: Build Binaries
-      run: cmake --build build --target luau luau-analyze luau-compile luau-ast -j 4
+      run: cmake --build build --target Luau.Repl.CLI Luau.Analyze.CLI Luau.Compile.CLI Luau.Ast.CLI -j 4
 
     - name: Package Release (Unix)
       if: matrix.os.name != 'windows'
