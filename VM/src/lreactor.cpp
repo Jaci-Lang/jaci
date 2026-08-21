@@ -86,7 +86,7 @@ void Reactor::init_in_state(lua_State* L)
 
 bool Reactor::has_pending_work() const
 {
-    return !microtasks_.empty() || !timer_heap_.empty() || !io_watchers_.empty();
+    return !microtasks_.empty() || !active_microtasks_.empty() || !timer_heap_.empty() || !io_watchers_.empty();
 }
 
 void Reactor::stop()
@@ -296,52 +296,27 @@ void Reactor::invoke_callback_internal(lua_State* L, int callback_ref, int args_
 
 void Reactor::process_microtasks(lua_State* L)
 {
-    if (microtasks_.empty())
-        return;
-
-    active_microtasks_.swap(microtasks_);
-
-    for (size_t i = 0; i < active_microtasks_.size(); i++)
+    while (!microtasks_.empty())
     {
-        MicrotaskNode& m = active_microtasks_[i];
-        if (m.cancelled)
-        {
-            if (m.thread_ref != LUA_NOREF) lua_unref(L, m.thread_ref);
-            if (m.args_ref != LUA_NOREF) lua_unref(L, m.args_ref);
-            continue;
-        }
+        active_microtasks_.swap(microtasks_);
 
-        if (m.is_function)
+        for (size_t i = 0; i < active_microtasks_.size(); i++)
         {
-            lua_State* co = lua_newthread(L);
-            lua_rawgeti(L, LUA_REGISTRYINDEX, m.thread_ref);
-            lua_xmove(L, co, 1); // Move function to new thread
-
-            int actual_args = 0;
-            if (m.args_ref != LUA_NOREF)
+            MicrotaskNode& m = active_microtasks_[i];
+            if (m.cancelled)
             {
-                lua_rawgeti(L, LUA_REGISTRYINDEX, m.args_ref);
-                for (int a = 1; a <= m.nargs; a++)
-                {
-                    lua_rawgeti(L, -1, a);
-                    lua_xmove(L, co, 1);
-                }
-                lua_pop(L, 1); // pop args table
-                actual_args = m.nargs;
+                if (m.thread_ref != LUA_NOREF) lua_unref(L, m.thread_ref);
+                if (m.args_ref != LUA_NOREF) lua_unref(L, m.args_ref);
+                continue;
             }
 
-            resume_thread_internal(L, co, actual_args);
-            lua_pop(L, 1); // pop co from L
-        }
-        else
-        {
-            lua_rawgeti(L, LUA_REGISTRYINDEX, m.thread_ref);
-            lua_State* co = lua_tothread(L, -1);
-            lua_pop(L, 1);
-
-            if (co && (co->status == LUA_OK || co->status == LUA_YIELD))
+            if (m.is_function)
             {
-                int actual_args = m.nargs;
+                lua_State* co = lua_newthread(L);
+                lua_rawgeti(L, LUA_REGISTRYINDEX, m.thread_ref);
+                lua_xmove(L, co, 1); // Move function to new thread
+
+                int actual_args = 0;
                 if (m.args_ref != LUA_NOREF)
                 {
                     lua_rawgeti(L, LUA_REGISTRYINDEX, m.args_ref);
@@ -350,19 +325,44 @@ void Reactor::process_microtasks(lua_State* L)
                         lua_rawgeti(L, -1, a);
                         lua_xmove(L, co, 1);
                     }
-                    lua_pop(L, 1);
+                    lua_pop(L, 1); // pop args table
                     actual_args = m.nargs;
                 }
 
                 resume_thread_internal(L, co, actual_args);
+                lua_pop(L, 1); // pop co from L
             }
+            else
+            {
+                lua_rawgeti(L, LUA_REGISTRYINDEX, m.thread_ref);
+                lua_State* co = lua_tothread(L, -1);
+                lua_pop(L, 1);
+
+                if (co && lua_costatus(L, co) == LUA_COSUS)
+                {
+                    int actual_args = m.nargs;
+                    if (m.args_ref != LUA_NOREF)
+                    {
+                        lua_rawgeti(L, LUA_REGISTRYINDEX, m.args_ref);
+                        for (int a = 1; a <= m.nargs; a++)
+                        {
+                            lua_rawgeti(L, -1, a);
+                            lua_xmove(L, co, 1);
+                        }
+                        lua_pop(L, 1);
+                        actual_args = m.nargs;
+                    }
+
+                    resume_thread_internal(L, co, actual_args);
+                }
+            }
+
+            if (m.thread_ref != LUA_NOREF) lua_unref(L, m.thread_ref);
+            if (m.args_ref != LUA_NOREF) lua_unref(L, m.args_ref);
         }
 
-        if (m.thread_ref != LUA_NOREF) lua_unref(L, m.thread_ref);
-        if (m.args_ref != LUA_NOREF) lua_unref(L, m.args_ref);
+        active_microtasks_.clear();
     }
-
-    active_microtasks_.clear();
 }
 
 void Reactor::process_expired_timers(lua_State* L, uint64_t current_ns)
@@ -400,7 +400,7 @@ void Reactor::process_expired_timers(lua_State* L, uint64_t current_ns)
             lua_State* co = lua_tothread(L, -1);
             lua_pop(L, 1);
 
-            if (co && (co->status == LUA_OK || co->status == LUA_YIELD))
+            if (co && lua_costatus(L, co) == LUA_COSUS)
             {
                 double elapsed = (double)(current_ns - timer.start_ns) / 1e9;
                 int actual_args = timer.nargs;
@@ -505,7 +505,7 @@ void Reactor::poll_io(lua_State* L, int timeout_ms)
             lua_State* co = lua_tothread(L, -1);
             lua_pop(L, 1);
 
-            if (co && (co->status == LUA_OK || co->status == LUA_YIELD))
+            if (co && lua_costatus(L, co) == LUA_COSUS)
             {
                 lua_pushboolean(co, ready);
                 lua_pushboolean(co, timed_out);
@@ -608,7 +608,7 @@ void Reactor::settle_promise(lua_State* L, PromiseData* promise, PromiseState st
             lua_State* co = lua_tothread(L, -1);
             lua_pop(L, 1);
 
-            if (co && (co->status == LUA_OK || co->status == LUA_YIELD))
+            if (co && lua_costatus(L, co) == LUA_COSUS)
             {
                 if (state == PromiseState::Fulfilled)
                 {
@@ -616,12 +616,23 @@ void Reactor::settle_promise(lua_State* L, PromiseData* promise, PromiseState st
                     if (results_ref != LUA_NOREF && nresults > 0)
                     {
                         lua_rawgeti(L, LUA_REGISTRYINDEX, results_ref);
+                        int tbl_idx = lua_gettop(L);
                         for (int i = 1; i <= nresults; i++)
                         {
-                            lua_rawgeti(L, -1, i);
-                            lua_xmove(L, co, 1);
+                            lua_rawgeti(L, tbl_idx, i);
+                            if (co != L)
+                            {
+                                lua_xmove(L, co, 1);
+                            }
                         }
-                        lua_pop(L, 1);
+                        if (co == L)
+                        {
+                            lua_remove(L, tbl_idx);
+                        }
+                        else
+                        {
+                            lua_pop(L, 1);
+                        }
                     }
                     resume_thread_internal(L, co, nresults);
                 }
@@ -631,7 +642,15 @@ void Reactor::settle_promise(lua_State* L, PromiseData* promise, PromiseState st
                     if (results_ref != LUA_NOREF)
                     {
                         lua_rawgeti(L, LUA_REGISTRYINDEX, results_ref);
-                        lua_xmove(L, co, 1);
+                        if (lua_istable(L, -1))
+                        {
+                            lua_rawgeti(L, -1, 1);
+                            lua_remove(L, -2);
+                        }
+                        if (co != L)
+                        {
+                            lua_xmove(L, co, 1);
+                        }
                     }
                     else
                     {

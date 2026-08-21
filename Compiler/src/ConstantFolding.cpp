@@ -1156,6 +1156,12 @@ struct ConstantVisitor : AstVisitor
         for (size_t i = 0; i < node->vars.size && i < node->values.size; ++i)
         {
             AstExpr* rhs = node->values.data[i];
+            if (AstExprUnary* u = rhs->as<AstExprUnary>(); u && u->op == AstExprUnary::Op::Await)
+            {
+                analyze(u->expr);
+                continue;
+            }
+
             Constant arg = analyze(rhs);
 
             if (arg.type == Constant::Type_Table)
@@ -1176,9 +1182,10 @@ struct ConstantVisitor : AstVisitor
         if (node->vars.size > node->values.size)
         {
             // if we have trailing variables, then depending on whether the last value is capable of returning multiple values
-            // (aka call or varargs), we either don't know anything about these vars, or we know they're nil
+            // (aka call or varargs or await), we either don't know anything about these vars, or we know they're nil
             AstExpr* last = node->values.size ? node->values.data[node->values.size - 1] : nullptr;
-            bool multRet = last && (last->is<AstExprCall>() || last->is<AstExprVarargs>());
+            bool multRet = last && (last->is<AstExprCall>() || last->is<AstExprVarargs>() ||
+                (last->is<AstExprUnary>() && last->as<AstExprUnary>()->op == AstExprUnary::Op::Await));
 
             if (!multRet)
             {

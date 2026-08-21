@@ -337,7 +337,7 @@ static int channel_send(lua_State* L)
         lua_State* rec_co = lua_tothread(L, -1);
         lua_pop(L, 1);
 
-        if (rec_co && (rec_co->status == LUA_OK || rec_co->status == LUA_YIELD))
+        if (rec_co && lua_costatus(L, rec_co) == LUA_COSUS)
         {
             lua_pushvalue(L, 2);
             lua_xmove(L, rec_co, 1); // push value to receiver
@@ -410,7 +410,7 @@ static int channel_recv(lua_State* L)
             lua_State* snd_co = lua_tothread(L, -1);
             lua_pop(L, 1);
 
-            if (snd_co && (snd_co->status == LUA_OK || snd_co->status == LUA_YIELD))
+            if (snd_co && lua_costatus(L, snd_co) == LUA_COSUS)
             {
                 lua_pushboolean(snd_co, true);
                 Reactor* r = Reactor::get(L);
@@ -436,7 +436,7 @@ static int channel_recv(lua_State* L)
         lua_State* snd_co = lua_tothread(L, -1);
         lua_pop(L, 1);
 
-        if (snd_co && (snd_co->status == LUA_OK || snd_co->status == LUA_YIELD))
+        if (snd_co && lua_costatus(L, snd_co) == LUA_COSUS)
         {
             lua_pushboolean(snd_co, true);
             Reactor* r = Reactor::get(L);
@@ -488,7 +488,7 @@ static int channel_try_send(lua_State* L)
         lua_State* rec_co = lua_tothread(L, -1);
         lua_pop(L, 1);
 
-        if (rec_co && (rec_co->status == LUA_OK || rec_co->status == LUA_YIELD))
+        if (rec_co && lua_costatus(L, rec_co) == LUA_COSUS)
         {
             lua_pushvalue(L, 2);
             lua_xmove(L, rec_co, 1);
@@ -540,7 +540,7 @@ static int channel_try_recv(lua_State* L)
             lua_State* snd_co = lua_tothread(L, -1);
             lua_pop(L, 1);
 
-            if (snd_co && (snd_co->status == LUA_OK || snd_co->status == LUA_YIELD))
+            if (snd_co && lua_costatus(L, snd_co) == LUA_COSUS)
             {
                 lua_pushboolean(snd_co, true);
                 Reactor* r = Reactor::get(L);
@@ -565,7 +565,7 @@ static int channel_try_recv(lua_State* L)
         lua_State* snd_co = lua_tothread(L, -1);
         lua_pop(L, 1);
 
-        if (snd_co && (snd_co->status == LUA_OK || snd_co->status == LUA_YIELD))
+        if (snd_co && lua_costatus(L, snd_co) == LUA_COSUS)
         {
             lua_pushboolean(snd_co, true);
             Reactor* r = Reactor::get(L);
@@ -597,7 +597,7 @@ static int channel_close(lua_State* L)
         lua_State* rec_co = lua_tothread(L, -1);
         lua_pop(L, 1);
 
-        if (rec_co && (rec_co->status == LUA_OK || rec_co->status == LUA_YIELD))
+        if (rec_co && lua_costatus(L, rec_co) == LUA_COSUS)
         {
             lua_pushnil(rec_co);
             lua_pushboolean(rec_co, false);
@@ -619,7 +619,7 @@ static int channel_close(lua_State* L)
         lua_State* snd_co = lua_tothread(L, -1);
         lua_pop(L, 1);
 
-        if (snd_co && (snd_co->status == LUA_OK || snd_co->status == LUA_YIELD))
+        if (snd_co && lua_costatus(L, snd_co) == LUA_COSUS)
         {
             lua_pushboolean(snd_co, false);
             r->defer_thread(L, snd_co, 1);
