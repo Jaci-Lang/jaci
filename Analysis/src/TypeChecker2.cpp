@@ -2250,6 +2250,9 @@ void TypeChecker2::visit(AstExprUnary* expr)
     else if (expr->op == AstExprUnary::Op::Not)
     {
     }
+    else if (expr->op == AstExprUnary::Op::Await)
+    {
+    }
     else
     {
         LUAU_ASSERT(!"Unhandled unary operator");

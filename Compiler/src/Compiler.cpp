@@ -623,6 +623,9 @@ struct Compiler
     // returns true if node can return multiple values; may conservatively return true even if expr is known to return just a single value
     bool isExprMultRet(AstExpr* node)
     {
+        if (AstExprUnary* u = node->as<AstExprUnary>(); u && u->op == AstExprUnary::Op::Await)
+            return true;
+
         AstExprCall* expr = node->as<AstExprCall>();
         if (!expr)
             return node->is<AstExprVarargs>();
@@ -659,7 +662,13 @@ struct Compiler
     // this is important to be able to support "multret" semantics due to Lua call frame structure
     bool compileExprTempMultRet(AstExpr* node, uint8_t target)
     {
-        if (AstExprCall* expr = node->as<AstExprCall>())
+        if (AstExprUnary* u = node->as<AstExprUnary>(); u && u->op == AstExprUnary::Op::Await)
+        {
+            RegScope rs(this, target);
+            compileExprAwait(u, target, /* targetCount= */ 0, /* targetTop= */ true, /* multRet= */ true);
+            return true;
+        }
+        else if (AstExprCall* expr = node->as<AstExprCall>())
         {
             // Optimization: convert multret calls that always return one value to fixedret calls; this facilitates inlining/constant folding
             if (options.optimizationLevel >= 2 && !isExprMultRet(node))
@@ -2162,9 +2171,60 @@ struct Compiler
             bytecode.emitABC(LOP_MOVE, target, reg, 0);
     }
 
+    void compileExprAwait(AstExprUnary* expr, uint8_t target, uint8_t targetCount, bool targetTop = false, bool multRet = false)
+    {
+        LUAU_ASSERT(targetCount < 255);
+        LUAU_ASSERT(!targetTop || unsigned(target + targetCount) == regTop);
+
+        setDebugLine(expr);
+
+        RegScope rs(this);
+
+        unsigned int regCount = std::max(2u, unsigned(targetCount));
+        uint8_t regs = targetTop ? allocReg(expr, regCount - targetCount) - targetCount : allocReg(expr, regCount);
+
+        AstName taskName = names.getOrAdd("task");
+        int32_t taskCid = bytecode.addConstantString(sref(taskName));
+        AstName awaitName = names.getOrAdd("await");
+        int32_t awaitCid = bytecode.addConstantString(sref(awaitName));
+
+        if (taskCid < 0 || awaitCid < 0)
+            CompileError::raise(expr->location, "Exceeded constant limit; simplify the code to compile");
+
+        uint32_t iid = BytecodeBuilder::getImportId(taskCid, awaitCid);
+        int32_t cid = bytecode.addImport(iid);
+
+        if (cid >= 0 && cid < 32768)
+        {
+            bytecode.emitAD(LOP_GETIMPORT, regs, int16_t(cid));
+            bytecode.emitAux(iid);
+        }
+        else
+        {
+            CompileError::raise(expr->location, "Exceeded constant limit; simplify the code to compile");
+        }
+
+        compileExprTemp(expr->expr, uint8_t(regs + 1));
+
+        uint8_t resCount = multRet ? 0 : uint8_t(targetCount + 1);
+        bytecode.emitABC(LOP_CALL, regs, 2, resCount);
+
+        if (!targetTop && targetCount > 0)
+        {
+            for (size_t i = 0; i < targetCount; ++i)
+                bytecode.emitABC(LOP_MOVE, uint8_t(target + i), uint8_t(regs + i), 0);
+        }
+    }
+
     void compileExprUnary(AstExprUnary* expr, uint8_t target)
     {
         RegScope rs(this);
+
+        if (expr->op == AstExprUnary::Op::Await)
+        {
+            compileExprAwait(expr, target, /* targetCount= */ 1);
+            return;
+        }
 
         // Special case for integer constants, like -1000000000i
         AstExprConstantInteger* cint = expr->expr->as<AstExprConstantInteger>();
@@ -3095,7 +3155,17 @@ struct Compiler
         }
         else if (AstExprUnary* expr = node->as<AstExprUnary>())
         {
-            compileExprUnary(expr, target);
+            if (expr->op == AstExprUnary::Op::Await)
+            {
+                if (targetTemp && target == regTop - 1)
+                    compileExprAwait(expr, target, 1, /* targetTop= */ true);
+                else
+                    compileExprAwait(expr, target, /* targetCount= */ 1);
+            }
+            else
+            {
+                compileExprUnary(expr, target);
+            }
         }
         else if (AstExprBinary* expr = node->as<AstExprBinary>())
         {
@@ -3172,6 +3242,10 @@ struct Compiler
         if (AstExprCall* expr = node->as<AstExprCall>())
         {
             compileExprCall(expr, target, targetCount, targetTop);
+        }
+        else if (AstExprUnary* expr = node->as<AstExprUnary>(); expr && expr->op == AstExprUnary::Op::Await)
+        {
+            compileExprAwait(expr, target, targetCount, targetTop);
         }
         else if (AstExprVarargs* expr = node->as<AstExprVarargs>())
         {
@@ -4520,6 +4594,12 @@ struct Compiler
                 uint8_t target = uint8_t(regTop);
 
                 compileExprCall(expr, target, /* targetCount= */ 0);
+            }
+            else if (AstExprUnary* expr = stat->expr->as<AstExprUnary>(); expr && expr->op == AstExprUnary::Op::Await)
+            {
+                uint8_t target = uint8_t(regTop);
+
+                compileExprAwait(expr, target, /* targetCount= */ 0);
             }
             else
             {

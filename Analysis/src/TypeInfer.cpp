@@ -2571,6 +2571,8 @@ WithPredicate<TypeId> TypeChecker::checkExpr(const ScopePtr& scope, const AstExp
 
         return WithPredicate{numberType};
     }
+    case AstExprUnary::Op::Await:
+        return WithPredicate{anyType};
     default:
         ice("Unknown AstExprUnary " + std::to_string(int(expr.op)));
     }

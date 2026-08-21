@@ -452,6 +452,8 @@ target_sources(Luau.VM PRIVATE
     VM/src/lhashlib.cpp
     VM/src/lproclib.cpp
     VM/src/lnetlib.cpp
+    VM/src/lreactor.cpp
+    VM/src/ltasklib.cpp
     VM/src/lvmexecute.cpp
     VM/src/lclass.cpp
     VM/src/lclasslib.cpp
@@ -472,6 +474,7 @@ target_sources(Luau.VM PRIVATE
     VM/src/lmem.h
     VM/src/lnumutils.h
     VM/src/lobject.h
+    VM/src/lreactor.h
     VM/src/lstate.h
     VM/src/lstring.h
     VM/src/ltable.h
@@ -641,6 +644,7 @@ if(TARGET Luau.UnitTest)
         tests/Variant.test.cpp
         tests/VecDeque.test.cpp
         tests/VisitType.test.cpp
+        tests/Task.test.cpp
         tests/main.cpp)
 endif()
 
@@ -659,6 +663,7 @@ if(TARGET Luau.Conformance)
         tests/Hash.test.cpp
         tests/Process.test.cpp
         tests/Net.test.cpp
+        tests/Task.test.cpp
         tests/IrLowering.test.cpp
         tests/SharedCodeAllocator.test.cpp
         tests/main.cpp)

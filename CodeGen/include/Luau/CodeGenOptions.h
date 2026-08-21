@@ -123,7 +123,7 @@ struct HostIrHooks
 
 struct CompilationOptions
 {
-    unsigned int flags = 0;
+    unsigned int flags = CodeGen_UseLlvm;
     HostIrHooks hooks;
 
     // null-terminated array of userdata types names that might have custom lowering

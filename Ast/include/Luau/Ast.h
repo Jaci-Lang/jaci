@@ -594,7 +594,8 @@ public:
     {
         Not,
         Minus,
-        Len
+        Len,
+        Await
     };
 
     AstExprUnary(const Location& location, Op op, AstExpr* expr);

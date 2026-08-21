@@ -102,6 +102,9 @@ static void foldUnary(Constant& result, AstExprUnary::Op op, const Constant& arg
         }
         break;
 
+    case AstExprUnary::Op::Await:
+        break;
+
     default:
         LUAU_ASSERT(!"Unexpected unary operation");
     }

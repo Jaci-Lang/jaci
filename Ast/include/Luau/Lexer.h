@@ -85,6 +85,7 @@ struct Lexeme
         ReservedTrue,
         ReservedUntil,
         ReservedWhile,
+        ReservedAwait,
         Reserved_END
     };
 

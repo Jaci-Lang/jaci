@@ -175,6 +175,12 @@ LUALIB_API int luaopen_process(lua_State* L);
 #define LUA_NETLIBNAME "net"
 LUALIB_API int luaopen_net(lua_State* L);
 
+#define LUA_TASKLIBNAME "task"
+LUALIB_API int luaopen_task(lua_State* L);
+
+LUALIB_API int luaL_runtasks(lua_State* L);
+LUALIB_API int luaL_steptasks(lua_State* L, int timeout_ms);
+
 // open all builtin libraries
 LUALIB_API void luaL_openlibs(lua_State* L);
 

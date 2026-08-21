@@ -700,6 +700,14 @@ static bool runFile(const char* name, lua_State* GL, bool repl)
 
         setupArguments(L, program_argc, program_argv);
         status = lua_resume(L, NULL, program_argc);
+
+        if (status == 0 || status == LUA_YIELD)
+        {
+            luaL_runtasks(GL);
+            int curStatus = lua_status(L);
+            if (status == LUA_YIELD && (curStatus == LUA_OK || curStatus == LUA_YIELD))
+                status = 0;
+        }
     }
     else
     {

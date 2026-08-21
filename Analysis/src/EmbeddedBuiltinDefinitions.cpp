@@ -201,6 +201,44 @@ declare coroutine: {
 
 )BUILTIN_SRC";
 
+static constexpr const char* kBuiltinDefinitionTaskSrc = R"BUILTIN_SRC(
+
+declare task: {
+    spawn: (f: any, ...any) -> thread,
+    defer: (f: any, ...any) -> thread,
+    delay: (sec: number, f: any, ...any) -> thread,
+    wait: (sec: number?) -> number,
+    yield: () -> (),
+    cancel: (target: any) -> (),
+    now: () -> number,
+    clock: () -> number,
+    sleep: (sec: number?) -> number,
+    poll: (timeout: number?) -> number,
+    step: (timeout: number?) -> number,
+    run: (f: any?) -> boolean,
+    stop: () -> (),
+    is_running: () -> boolean,
+    isrunning: () -> boolean,
+
+    await: (target: any) -> any,
+    create: (executor: (resolve: (...any) -> (), reject: (any) -> ()) -> ()) -> any,
+    promise: (executor: (resolve: (...any) -> (), reject: (any) -> ()) -> ()) -> any,
+    resolve: (...any) -> any,
+    reject: (any) -> any,
+    async: (f: any) -> any,
+    all: (list: {any}) -> any,
+    race: (list: {any}) -> any,
+    any: (list: {any}) -> any,
+    allSettled: (list: {any}) -> any,
+
+    channel: (capacity: number?) -> any,
+    timer: (interval: number, callback: () -> (), repeating: boolean?) -> any,
+    poll_read: (sock: any, timeout: number?) -> (boolean, boolean),
+    poll_write: (sock: any, timeout: number?) -> (boolean, boolean),
+}
+
+)BUILTIN_SRC";
+
 static constexpr const char* kBuiltinDefinitionTableSrc = R"BUILTIN_SRC(
 
 declare table: {
@@ -482,6 +520,7 @@ std::string getBuiltinDefinitionSource()
     result += kBuiltinDefinitionFsSrc;
     result += kBuiltinDefinitionIoSrc;
     result += kBuiltinDefinitionCoroutineSrc;
+    result += kBuiltinDefinitionTaskSrc;
     result += kBuiltinDefinitionTableSrc;
     result += kBuiltinDefinitionDebugSrc;
     result += kBuiltinDefinitionUtf8Src;

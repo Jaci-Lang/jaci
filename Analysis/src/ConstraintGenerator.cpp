@@ -3275,6 +3275,10 @@ Inference ConstraintGenerator::check(const ScopePtr& scope, AstExprUnary* unary)
         TypeId resultType = createTypeFunctionInstance(builtinTypes->typeFunctions->unmFunc, {operandType}, {}, scope, unary->location);
         return Inference{resultType, std::move(refinement)};
     }
+    case AstExprUnary::Op::Await:
+    {
+        return Inference{builtinTypes->anyType, std::move(refinement)};
+    }
     default: // msvc can't prove that this is exhaustive.
         LUAU_UNREACHABLE();
     }

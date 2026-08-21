@@ -465,6 +465,17 @@ AstStat* Parser::parseStat()
         return parseReturn();
     case Lexeme::ReservedBreak:
         return parseBreak();
+    case Lexeme::ReservedAwait:
+    {
+        Position opPosition = lexer.current().location.begin;
+        Location start = lexer.current().location;
+        nextLexeme();
+        AstExpr* subexpr = parseExpr(8);
+        AstExpr* expr = allocator.alloc<AstExprUnary>(Location(start, subexpr->location), AstExprUnary::Op::Await, subexpr);
+        if (options.storeCstData)
+            cstNodeMap[expr] = allocator.alloc<CstExprOp>(opPosition);
+        return allocator.alloc<AstStatExpr>(expr->location, expr);
+    }
     case Lexeme::Attribute:
     case Lexeme::AttributeOpen:
         return parseAttributeStat();
@@ -2834,7 +2845,7 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
                 }
             }
         }
-        else if (props.empty() && !indexer && !(lexer.current().type == Lexeme::Name && lexer.lookahead().type == ':'))
+        else if (props.empty() && !indexer && !((lexer.current().type == Lexeme::Name || lexer.current().type == Lexeme::ReservedAwait) && lexer.lookahead().type == ':'))
         {
             AstType* type = parseType();
 
@@ -2847,7 +2858,21 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
         }
         else
         {
-            std::optional<Name> name = parseNameOpt("table field");
+            std::optional<Name> name;
+            if (lexer.current().type == Lexeme::Name)
+            {
+                name = parseNameOpt("table field");
+            }
+            else if (lexer.current().type == Lexeme::ReservedAwait)
+            {
+                name = Name(AstName(lexer.current().name), lexer.current().location);
+                nextLexeme();
+            }
+            else
+            {
+                reportNameError("table field");
+                break;
+            }
 
             if (!name)
                 break;
@@ -3445,6 +3470,8 @@ std::optional<AstExprUnary::Op> Parser::parseUnaryOp(const Lexeme& l)
         return AstExprUnary::Op::Minus;
     else if (l.type == '#')
         return AstExprUnary::Op::Len;
+    else if (l.type == Lexeme::ReservedAwait)
+        return AstExprUnary::Op::Await;
     else
         return std::nullopt;
 }
@@ -4273,9 +4300,16 @@ AstExpr* Parser::parseTableConstructor()
                 );
             }
         }
-        else if (lexer.current().type == Lexeme::Name && lexer.lookahead().type == '=')
+        else if ((lexer.current().type == Lexeme::Name || lexer.current().type == Lexeme::ReservedAwait) && lexer.lookahead().type == '=')
         {
-            Name name = parseName("table field");
+            Name name(nameError, lexer.current().location);
+            if (lexer.current().type == Lexeme::Name)
+                name = parseName("table field");
+            else
+            {
+                name = Name(AstName(lexer.current().name), lexer.current().location);
+                nextLexeme();
+            }
 
             Position equalsPosition = lexer.current().location.begin;
             expectAndConsume('=', "table field");

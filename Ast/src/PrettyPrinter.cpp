@@ -747,6 +747,10 @@ struct Printer
             case AstExprUnary::Op::Len:
                 writer.symbol("#");
                 break;
+            case AstExprUnary::Op::Await:
+                writer.keyword("await");
+                writer.space();
+                break;
             }
             visualize(*a->expr);
         }
