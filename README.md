@@ -1,83 +1,116 @@
-Luau ![CI](https://github.com/luau-lang/luau/actions/workflows/build.yml/badge.svg) [![codecov](https://codecov.io/gh/luau-lang/luau/branch/master/graph/badge.svg)](https://codecov.io/gh/luau-lang/luau)
-====
+# Jaci ![CI](https://github.com/kleeedolinux/jaci/actions/workflows/build.yml/badge.svg) [![codecov](https://codecov.io/gh/kleeedolinux/jaci/branch/master/graph/badge.svg)](https://codecov.io/gh/kleeedolinux/jaci)
 
-Luau (lowercase u, /ˈlu.aʊ/) is a fast, small, safe, gradually typed embeddable scripting language derived from [Lua](https://lua.org).
+**Jaci** is a fast, lightweight, gradually typed embeddable scripting language and runtime. Forked from [Luau](https://github.com/luau-lang/luau), Jaci is engineered and optimized for **general-purpose programming, standalone scripting, and embedding outside of the Roblox Studio ecosystem**.
 
-It is designed to be backwards compatible with Lua 5.1, as well as incorporating [some features](https://luau.org/compatibility) from future Lua releases, but also expands the feature set (most notably with type annotations and a state-of-the-art type inference system). Luau is largely implemented from scratch, with the language runtime being a very heavily modified version of Lua 5.1 runtime, with completely rewritten interpreter and other [performance innovations](https://luau.org/performance). The runtime mostly preserves Lua 5.1 API, so existing bindings should be more or less compatible with a few caveats.
+---
 
-Luau is used by Roblox game developers to write game code, and by Roblox engineers to implement large parts of the user-facing application code as well as portions of the editor (Roblox Studio) as plugins. Roblox chose to open-source Luau to foster collaboration within the Roblox community as well as to allow other companies and communities to benefit from the ongoing language and runtime innovation. More recently, Luau has seen adoption in games like Alan Wake 2, Farming Simulator 2025, Second Life, and Warframe.
+## 🌟 Why Jaci?
 
-This repository hosts source code for the language implementation and associated tooling. Documentation for the language is available at https://luau.org/ and accepts contributions via [site repository](https://github.com/luau-lang/site); the language is evolved through RFCs that are located in [rfcs repository](https://github.com/luau-lang/rfcs).
+Upstream Luau is primarily tailored to the constraints, security models, and workflows of Roblox Studio. While this produces a highly optimized and sandboxed engine, standalone and general-purpose systems development often require greater flexibility, modern standard tooling, and standalone execution capabilities.
 
-# Usage
+**Jaci bridges this gap:**
+- **General-Purpose & Standalone**: Tailored for building command-line utilities, native applications, backend services, and game engine integrations outside Roblox Studio.
+- **Selective Upstream Sync**: Jaci actively tracks upstream Luau innovations—such as state-of-the-art constraint-based type solving, JIT/AOT code generation, and VM performance improvements—through an automated weekly CI pipeline. Each upstream change is manually reviewed so that Roblox-specific limitations or breaking changes do not compromise general-purpose usability.
+- **Gradual Type System**: Advanced type inference, linting, and gradual type checking built on Luau's type engine.
+- **High Performance**: Features a rewritten register-based interpreter, Native CodeGen (AOT/JIT for x64 and AArch64), and fast bytecode execution.
+- **Embeddable C/C++ API**: Clean, minimal C and C++ APIs designed for seamless embedding into host applications.
 
-Luau is an embeddable programming language, but it also comes with two command-line tools by default, `luau` and `luau-analyze`.
+---
 
-`luau` is a command-line REPL and can also run input files. Note that REPL runs in a sandboxed environment and as such doesn't have access to the underlying file system except for ability to `require` modules.
+## 🚀 CLI Tools & Usage
 
-`luau-analyze` is a command-line type checker and linter; given a set of input files, it produces errors/warnings according to the file configuration, which can be customized by using `--!` comments in the files or [`.luaurc`](https://rfcs.luau.org/config-luaurc) files. For details, please refer to our [type checking](https://luau.org/typecheck) and [linting](https://luau.org/lint) documentation. Our community maintains a language server frontend for `luau-analyze` called [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp) for use with text editors.
+Jaci provides command-line tools for running code and analyzing projects:
 
-# Installation
-
-You can install and run Luau by downloading the compiled binaries from [a recent release](https://github.com/luau-lang/luau/releases); note that `luau` and `luau-analyze` binaries from the archives will need to be added to PATH or copied to a directory like `/usr/local/bin` on Linux/macOS.
-
-Alternatively, you can use one of the packaged distributions (note that these are not maintained by Luau development team):
-
-- macOS: [Install Homebrew](https://docs.brew.sh/Installation) and run `brew install luau`
-- Arch Linux: Luau has been added to the official Arch Linux packages repository under the extras repository (see [``luau``](https://archlinux.org/packages/extra/x86_64/luau/)), simply install using ``pacman``: ``pacman -Syu luau``
-- Alpine Linux: [Enable community repositories](https://wiki.alpinelinux.org/w/index.php?title=Enable_Community_Repository) and run `apk add luau`
-- Gentoo Linux: Luau is [officially packaged by Gentoo](https://packages.gentoo.org/packages/dev-lang/luau) and can be installed using `emerge dev-lang/luau`. You may have to unmask the package first before installing it (which can be done by including the `--autounmask=y` option in the `emerge` command).
-
-After installing, you will want to validate the installation was successful by running the test case [here](https://luau.org/getting-started).
-
-## Building
-
-On all platforms, you can use CMake to run the following commands to build Luau binaries from source:
+- **`luau` / `jaci`**: Standalone command-line REPL and script runner.
+- **`luau-analyze`**: High-performance static type checker and linter. It inspects your codebase and produces diagnostics based on type annotations, `--!` mode comments, or [`.luaurc`](https://rfcs.luau.org/config-luaurc) configuration files.
 
 ```sh
-mkdir cmake && cd cmake
-cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build . --target Luau.Repl.CLI --config RelWithDebInfo
-cmake --build . --target Luau.Analyze.CLI --config RelWithDebInfo
+# Run a script
+luau script.luau
+
+# Typecheck and lint your project
+luau-analyze src/
 ```
 
-Alternatively, on Linux and macOS, you can also use `make`:
+---
+
+## 🛠️ Building from Source
+
+### Prerequisites
+- A C++17 compatible compiler (GCC 7+, Clang 7+, MSVC 2017+)
+- [CMake](https://cmake.org/) (3.10+) or `make`
+
+### Building with CMake (Recommended)
+
+```sh
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build . --target Luau.Repl.CLI Luau.Analyze.CLI --config RelWithDebInfo
+```
+
+### Building with Make (Linux/macOS)
 
 ```sh
 make config=release luau luau-analyze
 ```
 
-To integrate Luau into your CMake application projects as a library, at the minimum, you'll need to depend on `Luau.Compiler` and `Luau.VM` projects. From there you need to create a new Luau state (using Lua 5.x API such as `lua_newstate`), compile source to bytecode and load it into the VM like this:
+---
+
+## 📦 Embedding Jaci in C++
+
+To embed Jaci in your C++ applications, link against the `Luau.Compiler` and `Luau.VM` targets:
 
 ```cpp
-// needs lua.h and luacode.h
-size_t bytecodeSize = 0;
-char* bytecode = luau_compile(source, strlen(source), NULL, &bytecodeSize);
-int result = luau_load(L, chunkname, bytecode, bytecodeSize, 0);
-free(bytecode);
+#include "lua.h"
+#include "lualib.h"
+#include "luacode.h"
 
-if (result == 0)
-    return 1; /* return chunk main function */
+int main() {
+    lua_State* L = luaL_newstate();
+    luaL_openlibs(L);
+
+    const char* source = "print('Hello from Jaci!')";
+    size_t bytecodeSize = 0;
+    char* bytecode = luau_compile(source, strlen(source), NULL, &bytecodeSize);
+
+    if (luau_load(L, "=main", bytecode, bytecodeSize, 0) == 0) {
+        lua_pcall(L, 0, 0, 0);
+    }
+
+    free(bytecode);
+    lua_close(L);
+    return 0;
+}
 ```
 
-For more details about the use of the host API, you currently need to consult [Lua 5.x API](https://www.lua.org/manual/5.1/manual.html#3). Luau closely tracks that API but has a few deviations, such as the need to compile source separately (which is important to be able to deploy VM without a compiler), and the lack of `__gc` support (use `lua_newuserdatadtor` instead).
+---
 
-To gain advantage of many performance improvements, it's highly recommended to use the `safeenv` feature, which sandboxes individual scripts' global tables from each other, and protects builtin libraries from monkey-patching. For this to work, you must call `luaL_sandbox` on the global state and `luaL_sandboxthread` for each new script's execution thread.
+## 🧪 Testing
 
-# Testing
+Jaci includes a comprehensive test suite covering compiler units, type inference, and VM conformance:
 
-Luau has an internal test suite; in CMake builds, it is split into two targets, `Luau.UnitTest` (for the bytecode compiler and type checker/linter tests) and `Luau.Conformance` (for the VM tests). The unit tests are written in C++, whereas the conformance tests are largely written in Luau (see `tests/conformance`).
+- **Unit Tests**: `Luau.UnitTest` (bytecode compiler, AST, and type checker/linter tests)
+- **Conformance Tests**: `Luau.Conformance` (VM tests)
 
-Makefile builds combine both into a single target that can be run via `make test`.
+Run all tests via `make`:
+```sh
+make test
+```
 
-# Dependencies
+---
 
-Luau uses C++ as its implementation language. The runtime requires C++11, while the compiler and analysis components require C++17. It should build without issues using Microsoft Visual Studio 2017 or later, or gcc-7 or clang-7 or later.
+## 🔄 Upstream Synchronization
 
-Other than the STL/CRT, Luau library components don't have external dependencies. The test suite depends on the [doctest](https://github.com/onqtam/doctest) testing framework, and the REPL command-line depends on [isocline](https://github.com/daanx/isocline).
+Jaci uses an automated GitHub Actions workflow that runs weekly to inspect upstream [`luau-lang/luau`](https://github.com/luau-lang/luau) for new commits and opens a Pull Request.
 
-# License
+Because Jaci is customized for general-purpose usage outside Roblox Studio, upstream changes are curated, tested, and selectively merged by maintainers to maintain stability and general-purpose optimizations.
 
-Luau implementation is distributed under the terms of [MIT License](https://github.com/luau-lang/luau/blob/master/LICENSE.txt). It is based on the Lua 5.x implementation, also under the MIT License.
+---
 
-When Luau is integrated into external projects, we ask that you honor the license agreement and include Luau attribution into the user-facing product documentation. Attribution making use of the [Luau logo](https://github.com/luau-lang/site/blob/master/logo.svg) is also encouraged when reasonable.
+## 📄 License & Attribution
+
+Jaci is distributed under the terms of the **[MIT License](LICENSE.txt)**.
+
+- Copyright (c) 2026 Júlia Klee
+- Copyright (c) 2019-2025 Roblox Corporation (Luau)
+- Copyright (c) 1994–2019 Lua.org, PUC-Rio (Lua 5.x)
