@@ -13,9 +13,13 @@ local ignore =
 	"_G.loadstring",
 	"_G.loadfile",
 	"_G.dofile",
-	"_G.io.stdin",
-	"_G.io.stdout",
-	"_G.io.stderr",
+	"_G.fs",
+	"_G.io",
+	"_G.ffi",
+	"_G.json",
+	"_G.hash",
+	"_G.process",
+	"_G.net",
 }
 
 function verify(real, rtti, path)

@@ -1,38 +1,46 @@
-# ADR 0004: FFI Native Dispatch
+# ADR 0004: FFI Native Dispatch & Memory Model
 
 ## Context
 
-Jaci targets general-purpose standalone programming outside Roblox Studio. Real-world applications need to call into existing C libraries (e.g., SQLite, OpenSSL, system APIs) without writing custom C++ bindings for each one. Luau provides no FFI mechanism; the only interop path is writing C closures manually and rebuilding the host.
+Jaci targets general-purpose standalone programming outside Roblox Studio. Real-world applications need direct, zero-friction interoperation with existing C libraries, operating system APIs, and raw memory structures without requiring custom C++ bindings for each dependency.
 
 ## Decision
 
-Add an `ffi` library to the VM that exposes `dlopen`/`dlsym` (POSIX) and `LoadLibrary`/`GetProcAddress` (Win32) to Luau scripts. The API provides:
+Implement a full Foreign Function Interface (`ffi`) directly inside the Jaci VM with the following capabilities:
 
-- `ffi.open(path)` -> Library userdata (wraps a shared library handle).
-- `ffi.sym(lib, name, rettype, argtypes...)` -> Symbol userdata (wraps a resolved function pointer with a type signature).
-- Calling a Symbol marshals Luau values to C types, dispatches the call, and pushes the return value.
-- Supported types: `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `f32`, `f64`, `ptr`, `str`, `buf`, `void`.
-- Helper functions: `ffi.cast`, `ffi.ptr`, `ffi.sizeof`, `ffi.nullptr`.
+### 1. Dynamic Library Management & Symbol Lookup
+- `ffi.open(path?)`: Dynamically load shared libraries (`.so`/`.dylib`/`.dll`) or access the default process image.
+- `ffi.C`: Standard C / process global namespace enabling direct access to standard library and exported functions.
+- `ffi.sym(lib, name, rettype, ...argtypes)`: Explicit symbol resolution with runtime type signatures.
 
-### Trampoline Strategy
+### 2. C Declaration Parser (`ffi.cdef`)
+- Parses standard C function declarations, typedefs, and struct prototypes directly from string literals.
+- Automatically maps C types (`int`, `size_t`, `const char*`, `double`, `void*`, `int64_t`, etc.) and binds symbols to `ffi.C` or library instances for natural invocation:
+  ```lua
+  ffi.cdef[[
+      double cos(double x);
+      size_t strlen(const char* s);
+  ]]
+  print(ffi.C.cos(0.0))
+  print(ffi.C.strlen("hello"))
+  ```
 
-Instead of depending on libffi, use typed function pointer casts:
-- For all-integer/pointer arguments: cast to `intptr_t (*)(intptr_t, ...)` variants.
-- For double-returning math-style functions: cast to `double (*)(double, ...)` variants.
-- Switch on argument count (max 16) to select the correct typedef.
-- This covers x86-64 System V and Win64 ABIs for the common case.
+### 3. Raw Memory & Struct Operations
+- `ffi.new(type, count?)`: Allocates a formatted Luau `buffer` sized to the type or array.
+- `ffi.ptr(buffer | string)`: Obtains a raw memory lightuserdata pointer.
+- `ffi.string(ptr, len?)`: Reads a C string or raw byte slice into a Luau string.
+- `ffi.copy(dst, src, len)` / `ffi.fill(dst, len, val)`: Direct memory transfer and setting.
+- `ffi.read(ptr, offset, type)` / `ffi.write(ptr, offset, type, val)`: Typed memory reads and writes.
+- `ffi.struct({ {name, type}, ... })`: Struct layout engine calculating natural field offsets and struct alignment.
+- `ffi.sizeof(type)` / `ffi.alignof(type)`: Type introspection.
+- `ffi.errno(val?)`: Access and set platform error status.
 
-**Known limitation:** Mixed integer+float positional arguments may not be dispatched correctly on all ABIs because variadic calls place floats differently than positional calls. This affects only exotic C signatures; common library APIs (libc, libm, SQLite, etc.) work correctly.
-
-AArch64 float argument dispatch is deferred to a follow-up using platform-specific inline assembly or a future libffi integration.
-
-### Security Posture
-
-The `ffi` library is inherently unsafe. It calls arbitrary native code with no bounds checking at the C boundary. Host embedders that need isolation must selectively open libraries instead of calling `luaL_openlibs()`. The library is registered by default to match Jaci's "reduced sandbox" philosophy for standalone use.
+### 4. Calling Convention Dispatch
+- On x86-64 System V AMD64: Direct register-mapped trampoline utilizing GPRs (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`) for integer/pointers and SSE registers (`xmm0`..`xmm7`) for floating-point values.
+- Portable typed fallback for other architectures.
 
 ## Consequences
 
-- Luau scripts can call into any C shared library without rebuilding the host binary.
-- The VM gains a link dependency on `libdl` (Linux/macOS). Windows uses kernel32 APIs already available.
-- Misuse of `ffi` can crash the process or corrupt memory. This is acceptable for a standalone runtime targeting system programmers.
-- Struct layout support is deferred to a follow-up ADR; structs are currently passed as raw `buffer` slices.
+- Full, idiomatic C interop is available in pure Luau.
+- Eliminates the need for manual C wrapper boilerplate.
+- Memory access is direct and unsafe, matching Jaci's systems programming focus.
