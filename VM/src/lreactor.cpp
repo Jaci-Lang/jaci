@@ -10,6 +10,7 @@
 #include <thread>
 #include <cstring>
 #include <cstdio>
+#include <string>
 
 namespace Jaci
 {
