@@ -278,11 +278,17 @@ bool traverseDirectory(const std::string& path, const std::function<void(const s
 #else
 static bool traverseDirectoryRec(const std::string& path, const std::function<void(const std::string& name)>& callback)
 {
-    int fd = open(path.c_str(), O_DIRECTORY);
+    int fd = open(path.c_str(), O_RDONLY | O_DIRECTORY);
+    if (fd < 0)
+        return false;
+
     DIR* dir = fdopendir(fd);
 
     if (!dir)
+    {
+        close(fd);
         return false;
+    }
 
     std::string buf;
 

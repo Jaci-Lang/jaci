@@ -17,8 +17,10 @@ static constexpr const char* kBuiltinDefinitionBaseSrc = R"BUILTIN_SRC(
 
 declare _G: any
 declare _VERSION: string
+declare arg: {string}?
 
 declare function gcinfo(): number
+declare function collectgarbage(opt: string?, arg: any?): any
 
 declare function print<T...>(...: T...)
 

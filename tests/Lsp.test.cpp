@@ -652,5 +652,15 @@ TEST_CASE("LspVfsStatsAndSnapshot")
     }
 }
 
+TEST_CASE("LspWorkspaceDefinitionsAndNocheck")
+{
+    LspServer server;
+    server.loadWorkspaceDefinitions("t");
+
+    server.openDocument("file:///t/test.luau", "local x = c_add(1, 2)\n");
+    CheckResult cr = server.getFrontend().check("/t/test.luau");
+    CHECK(cr.errors.empty());
+}
+
 TEST_SUITE_END();
 

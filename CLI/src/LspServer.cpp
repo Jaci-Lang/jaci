@@ -73,28 +73,34 @@ void DocumentState::applyIncrementalChange(const Lsp::Range& range, const std::s
 
 std::optional<SourceCode> LspFileResolver::readSource(const ModuleName& name)
 {
+    std::string fsPath = name;
+    if (fsPath.rfind("file://", 0) == 0)
+    {
+        fsPath = Lsp::uriToPath(fsPath);
+    }
+
     // Try to find open document first
     if (documents)
     {
         for (const auto& pair : *documents)
         {
-            if (pair.first == name || pair.second.path == name)
+            if (pair.first == name || pair.second.path == fsPath || pair.second.path == name)
             {
                 return SourceCode{pair.second.text, SourceCode::Module};
             }
         }
     }
 
-    auto it = cachedFiles.find(name);
+    auto it = cachedFiles.find(fsPath);
     if (it != cachedFiles.end())
     {
         return SourceCode{it->second.getText(), SourceCode::Module};
     }
 
-    std::optional<std::string> diskContent = readFile(name);
+    std::optional<std::string> diskContent = readFile(fsPath);
     if (diskContent)
     {
-        cachedFiles.emplace(name, Vfs::CompressedFileBuffer(*diskContent, /* autoCompress = */ true));
+        cachedFiles.emplace(fsPath, Vfs::CompressedFileBuffer(*diskContent, /* autoCompress = */ true));
         return SourceCode{std::move(*diskContent), SourceCode::Module};
     }
 
@@ -141,49 +147,128 @@ std::string LspFileResolver::getHumanReadableModuleName(const ModuleName& name) 
 
 const Config& LspConfigResolver::getConfig(const ModuleName& name, const TypeCheckLimits& limits) const
 {
-    std::optional<std::string> path = getParentPath(name);
-    if (!path)
+    std::string fsPath = name;
+    if (fsPath.rfind("file://", 0) == 0)
+    {
+        fsPath = Lsp::uriToPath(fsPath);
+    }
+
+    std::optional<std::string> current = getParentPath(fsPath);
+    if (!current)
         return defaultConfig;
 
-    auto it = configCache.find(*path);
+    auto it = configCache.find(*current);
     if (it != configCache.end())
         return it->second;
 
     Config config = defaultConfig;
-    std::optional<std::string> configPath = joinPaths(*path, kConfigName);
-    if (!isFile(*configPath))
-        configPath = std::nullopt;
-
-    std::optional<std::string> luauConfigPath = joinPaths(*path, kLuauConfigName);
-    if (!isFile(*luauConfigPath))
-        luauConfigPath = std::nullopt;
-
-    if (configPath)
+    std::vector<std::string> searchPaths;
+    std::optional<std::string> p = current;
+    while (p)
     {
-        if (std::optional<std::string> contents = readFile(*configPath))
+        searchPaths.push_back(*p);
+        p = getParentPath(*p);
+    }
+    std::reverse(searchPaths.begin(), searchPaths.end());
+
+    for (const auto& sp : searchPaths)
+    {
+        std::string configPath = joinPaths(sp, kConfigName);
+        std::string luauConfigPath = joinPaths(sp, kLuauConfigName);
+
+        if (isFile(configPath))
         {
-            Luau::ConfigOptions::AliasOptions aliasOpts;
-            aliasOpts.configLocation = *configPath;
-            aliasOpts.overwriteAliases = true;
-            Luau::ConfigOptions opts;
-            opts.aliasOptions = std::move(aliasOpts);
-            Luau::parseConfig(*contents, config, opts);
+            if (std::optional<std::string> contents = readFile(configPath))
+            {
+                Luau::ConfigOptions::AliasOptions aliasOpts;
+                aliasOpts.configLocation = configPath;
+                aliasOpts.overwriteAliases = true;
+                Luau::ConfigOptions opts;
+                opts.aliasOptions = std::move(aliasOpts);
+                Luau::parseConfig(*contents, config, opts);
+            }
+        }
+        else if (isFile(luauConfigPath))
+        {
+            if (std::optional<std::string> contents = readFile(luauConfigPath))
+            {
+                Luau::ConfigOptions::AliasOptions aliasOpts;
+                aliasOpts.configLocation = luauConfigPath;
+                aliasOpts.overwriteAliases = true;
+                Luau::InterruptCallbacks callbacks;
+                Luau::extractLuauConfig(*contents, config, aliasOpts, std::move(callbacks));
+            }
         }
     }
-    else if (luauConfigPath)
-    {
-        if (std::optional<std::string> contents = readFile(*luauConfigPath))
-        {
-            Luau::ConfigOptions::AliasOptions aliasOpts;
-            aliasOpts.configLocation = *luauConfigPath;
-            aliasOpts.overwriteAliases = true;
-            Luau::InterruptCallbacks callbacks;
-            Luau::extractLuauConfig(*contents, config, aliasOpts, std::move(callbacks));
-        }
-    }
 
-    auto inserted = configCache.emplace(*path, std::move(config));
+    auto inserted = configCache.emplace(*current, std::move(config));
     return inserted.first->second;
+}
+
+void LspServer::loadDefinitionFile(const std::string& path)
+{
+    if (std::optional<std::string> contents = readFile(path))
+    {
+        std::string pkgName = "@" + path;
+        unfreeze(frontend.globals.globalTypes);
+        unfreeze(frontend.globalsForAutocomplete.globalTypes);
+
+        LoadDefinitionFileResult result = frontend.loadDefinitionFile(
+            frontend.globals,
+            frontend.globals.globalScope,
+            *contents,
+            pkgName,
+            /* captureComments */ false,
+            /* typeCheckForAutocomplete */ false
+        );
+
+        if (!result.success)
+            fprintf(stderr, "LSP: failed to load definition file: %s\n", path.c_str());
+
+        LoadDefinitionFileResult acResult = frontend.loadDefinitionFile(
+            frontend.globalsForAutocomplete,
+            frontend.globalsForAutocomplete.globalScope,
+            *contents,
+            pkgName,
+            /* captureComments */ false,
+            /* typeCheckForAutocomplete */ true
+        );
+
+        if (!acResult.success)
+            fprintf(stderr, "LSP: failed to load definition file (autocomplete): %s\n", path.c_str());
+
+        freeze(frontend.globals.globalTypes);
+        freeze(frontend.globalsForAutocomplete.globalTypes);
+
+        frontend.clear();
+    }
+}
+
+void LspServer::loadWorkspaceDefinitions(const std::string& root)
+{
+    if (root.empty())
+        return;
+
+    std::vector<std::string> searchDirs = {
+        root,
+        joinPaths(root, "definitions"),
+        joinPaths(root, "types"),
+        joinPaths(root, "t"),
+        joinPaths(root, "src"),
+    };
+
+    for (const auto& dir : searchDirs)
+    {
+        if (isDirectory(dir))
+        {
+            traverseDirectory(dir, [this](const std::string& entry) {
+                if (entry.size() > 7 && entry.substr(entry.size() - 7) == ".d.luau")
+                {
+                    loadDefinitionFile(entry);
+                }
+            });
+        }
+    }
 }
 
 static FrontendOptions makeFrontendOptions()
@@ -201,7 +286,9 @@ LspServer::LspServer()
     , frontend(SolverMode::New, &fileResolver, &configResolver, makeFrontendOptions())
 {
     registerBuiltinGlobals(frontend, frontend.globals);
+    registerBuiltinGlobals(frontend, frontend.globalsForAutocomplete, true);
     freeze(frontend.globals.globalTypes);
+    freeze(frontend.globalsForAutocomplete.globalTypes);
 }
 
 LspServer::~LspServer() = default;
@@ -209,6 +296,11 @@ LspServer::~LspServer() = default;
 void LspServer::openDocument(const std::string& uri, const std::string& text, int version)
 {
     std::string path = Lsp::uriToPath(uri);
+    if (std::optional<std::string> parent = getParentPath(path))
+    {
+        loadWorkspaceDefinitions(*parent);
+    }
+
     DocumentState doc;
     doc.uri = uri;
     doc.path = path;
@@ -255,7 +347,43 @@ void LspServer::publishDiagnostics(const std::string& uri, std::ostream& out)
     if (!doc)
         return;
 
+    // Definition files (.d.luau) are loaded into the global scope via
+    // loadDefinitionFile and must not be analyzed as regular source.
+    if (doc->path.size() > 7 && doc->path.substr(doc->path.size() - 7) == ".d.luau")
+    {
+        Json::Object params;
+        params.emplace_back("uri", Json::Value(uri));
+        params.emplace_back("version", Json::Value(doc->version));
+        params.emplace_back("diagnostics", Json::Value(Json::Array{}));
+        JsonRpc::MessageWriter::writeNotification(out, "textDocument/publishDiagnostics", Json::Value(std::move(params)));
+        return;
+    }
+
+    const Config& config = configResolver.getConfig(doc->path, {});
+    if (config.mode == Mode::NoCheck)
+    {
+        Json::Object params;
+        params.emplace_back("uri", Json::Value(uri));
+        params.emplace_back("version", Json::Value(doc->version));
+        params.emplace_back("diagnostics", Json::Value(Json::Array{}));
+        JsonRpc::MessageWriter::writeNotification(out, "textDocument/publishDiagnostics", Json::Value(std::move(params)));
+        return;
+    }
+
     CheckResult cr = frontend.check(doc->path);
+
+    if (const SourceModule* sm = frontend.getSourceModule(doc->path))
+    {
+        if (sm->mode == Mode::NoCheck)
+        {
+            Json::Object params;
+            params.emplace_back("uri", Json::Value(uri));
+            params.emplace_back("version", Json::Value(doc->version));
+            params.emplace_back("diagnostics", Json::Value(Json::Array{}));
+            JsonRpc::MessageWriter::writeNotification(out, "textDocument/publishDiagnostics", Json::Value(std::move(params)));
+            return;
+        }
+    }
 
     std::vector<Lsp::Diagnostic> lspDiagnostics;
 
@@ -315,6 +443,10 @@ Json::Value LspServer::handleInitialize(const Json::Value& params)
         {
             rootUri = rootUriVal->getString();
             rootPath = Lsp::uriToPath(rootUri);
+            if (!rootPath.empty())
+            {
+                loadWorkspaceDefinitions(rootPath);
+            }
         }
     }
 

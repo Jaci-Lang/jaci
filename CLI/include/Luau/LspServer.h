@@ -114,6 +114,9 @@ public:
     void closeDocument(const std::string& uri);
     DocumentState* getDocument(const std::string& uri);
 
+    void loadDefinitionFile(const std::string& path);
+    void loadWorkspaceDefinitions(const std::string& root);
+
     Frontend& getFrontend() { return frontend; }
 
 private:
