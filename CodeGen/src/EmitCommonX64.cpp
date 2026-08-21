@@ -374,8 +374,18 @@ void emitInterrupt(AssemblyBuilderX64& build)
 {
     // rax = pcpos + 1
     // rbx = return address in native code
-
-    // note: rbx is non-volatile so it will be saved across interrupt call automatically
+    // [rsp] = saved original rbx value (pushed at handler.self)
+    //
+    // The inline fast-path in IrLoweringX64 deliberately does not spill or
+    // evict SSA-allocated registers before checking cb.interrupt; this
+    // out-of-line helper is therefore responsible for preserving every
+    // call-clobbered register across the C call to `interrupt(L, -1)`.
+    //
+    // Luau-pinned registers (rState, rNativeContext, rBase, rCode, rConstants,
+    // rClosure) are callee-saved in the System V / Windows x64 ABIs, so the
+    // C callback itself preserves them; we only need to save the volatile
+    // set below plus xmm0..xmm15 (conservative; covers both SysV and Windows
+    // call-clobbered XMMs without ABI branching).
 
     RegisterX64 rArg1 = IrCallWrapperX64::suggestArgumentRegister<0>(SizeX64::qword, build);
     RegisterX64 rArg2 = IrCallWrapperX64::suggestArgumentRegister<1>(SizeX64::qword, build);
@@ -394,6 +404,27 @@ void emitInterrupt(AssemblyBuilderX64& build)
     build.test(rax, rax);
     build.jcc(ConditionX64::Zero, skip);
 
+    // cb.interrupt != nullptr: Preserve volatile registers across the C call
+    static const RegisterX64 kVolatileGprs[] = {rcx, rdx, rsi, rdi, r8, r9, r10, r11};
+    constexpr int kGprCount = int(sizeof(kVolatileGprs) / sizeof(kVolatileGprs[0]));
+    constexpr int kXmmCount = 16;
+
+    const bool isWindows = build.abi == ABIX64::Windows;
+    const int shadowSpace = isWindows ? 32 : 0;
+    const int xmmOffset = shadowSpace;
+    const int gprOffset = shadowSpace + kXmmCount * 16;
+    const int stackSize = isWindows ? 360 : 328;
+
+    build.sub(rsp, stackSize);
+
+    // Save XMM registers
+    for (int i = 0; i < kXmmCount; ++i)
+        build.vmovups(addr[rsp + xmmOffset + i * 16], RegisterX64{SizeX64::xmmword, uint8_t(i)});
+
+    // Save volatile GPRs
+    for (int i = 0; i < kGprCount; ++i)
+        build.mov(qword[rsp + gprOffset + i * 8], kVolatileGprs[i]);
+
     // Call interrupt
     build.mov(rArg1, rState);
     build.mov(dwordReg(rArg2), -1);
@@ -402,17 +433,32 @@ void emitInterrupt(AssemblyBuilderX64& build)
     // Check if we need to exit
     build.mov(al, byte[rState + offsetof(lua_State, status)]);
     build.test(al, al);
-    build.jcc(ConditionX64::Zero, skip);
+
+    Label normalResume;
+    build.jcc(ConditionX64::Zero, normalResume);
 
     build.mov(rax, qword[rState + offsetof(lua_State, ci)]);
     build.sub(qword[rax + offsetof(CallInfo, savedpc)], sizeof(Instruction));
     emitExit(build, /* continueInVm */ false);
 
+    build.setLabel(normalResume);
+
+    // Restore volatile registers
+    for (int i = 0; i < kXmmCount; ++i)
+        build.vmovups(RegisterX64{SizeX64::xmmword, uint8_t(i)}, addr[rsp + xmmOffset + i * 16]);
+
+    for (int i = 0; i < kGprCount; ++i)
+        build.mov(kVolatileGprs[i], qword[rsp + gprOffset + i * 8]);
+
+    build.add(rsp, stackSize);
+
     build.setLabel(skip);
 
     emitUpdateBase(build); // interrupt may have reallocated stack
 
-    build.jmp(rbx);
+    build.mov(rax, rbx);
+    build.pop(rbx);
+    build.jmp(rax);
 }
 
 void emitFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int offset, int pcpos)

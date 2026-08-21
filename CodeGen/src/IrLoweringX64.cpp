@@ -2563,11 +2563,6 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
     {
         unsigned pcpos = uintOp(OP_A(inst));
 
-        // We unconditionally spill values here because that allows us to ignore register state when we synthesize interrupt handler
-        // This can be changed in the future if we can somehow record interrupt handler code separately
-        // Since interrupts are loop edges or call/ret, we don't have a significant opportunity for register reuse here anyway
-        regs.preserveAndFreeInstValues();
-
         ScopedRegX64 tmp{regs, SizeX64::qword};
 
         Label self;
@@ -3742,6 +3737,7 @@ void IrLoweringX64::finishFunction()
     for (InterruptHandler& handler : interruptHandlers)
     {
         build.setLabel(handler.self);
+        build.push(rbx);
         build.mov(eax, handler.pcpos + 1);
         build.lea(rbx, handler.next);
         build.jmp(helpers.interrupt);

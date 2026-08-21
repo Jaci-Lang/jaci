@@ -134,24 +134,25 @@ TEST_CASE_FIXTURE(IrAssemblyFixture, "PreserveIntChainedFromDoubleVmReg")
     build.inst(IrCmd::RETURN, build.vmReg(0), build.constInt(1));
     updateUseCounts(build.function);
 
-    // %1 after INTERRUPT spill is restored from R1 using vcvttsd2si conversion
+    // %1 is kept in eax across the inline interrupt check; out-of-line
+    // emitInterrupt saves/restores every call-clobbered reg around the C
+    // callback, so no recompute from R1 is required on the fast path.
     CHECK_EQ(
         "\n" + lower(),
         R"(
 ; align 32 using ud2
 bb_0:
-.L11:
+.L12:
   %0 = LOAD_DOUBLE R1
  vmovsd      xmm0,qword ptr [r14+010h]
   %1 = NUM_TO_INT %0
  vcvttsd2si  eax,xmm0
   INTERRUPT 0u
- mov         rax,qword ptr [r15+<offset>]
- cmp         qword ptr [rax+<offset>],0
- jne         .L12
-.L13:
+ mov         rdx,qword ptr [r15+<offset>]
+ cmp         qword ptr [rdx+<offset>],0
+ jne         .L13
+.L14:
   STORE_INT R0, %1
- vcvttsd2si  eax,qword ptr [r14+010h]
  mov         dword ptr [r14],eax
   STORE_TAG R0, tboolean
  mov         dword ptr [r14+0Ch],1
@@ -160,7 +161,7 @@ bb_0:
  vmovups     xmmword ptr [r14-010h],xmm0
  mov         rdi,r14
  mov         ecx,1
- jmp         .L7
+ jmp         .L8
 
 )"
     );
@@ -181,29 +182,28 @@ TEST_CASE_FIXTURE(IrAssemblyFixture, "PreserveIntChainedFromDoubleVmRegBoth")
     build.inst(IrCmd::RETURN, build.vmReg(0), build.constInt(2));
     updateUseCounts(build.function);
 
-    // Both %0 and %1 restore from R2, integer restore uses vcvttsd2si
+    // Both %0 (xmm0) and %1 (eax) are preserved across the inline interrupt
+    // check; out-of-line emitInterrupt saves/restores clobbered registers.
     CHECK_EQ(
         "\n" + lower(),
         R"(
 ; align 32 using ud2
 bb_0:
-.L11:
+.L12:
   %0 = LOAD_DOUBLE R2
  vmovsd      xmm0,qword ptr [r14+020h]
   %1 = NUM_TO_INT %0
  vcvttsd2si  eax,xmm0
   INTERRUPT 0u
- mov         rax,qword ptr [r15+<offset>]
- cmp         qword ptr [rax+<offset>],0
- jne         .L12
-.L13:
+ mov         rdx,qword ptr [r15+<offset>]
+ cmp         qword ptr [rdx+<offset>],0
+ jne         .L13
+.L14:
   STORE_INT R0, %1
- vcvttsd2si  eax,qword ptr [r14+020h]
  mov         dword ptr [r14],eax
   STORE_TAG R0, tboolean
  mov         dword ptr [r14+0Ch],1
   STORE_DOUBLE R1, %0
- vmovsd      xmm0,qword ptr [r14+020h]
  vmovsd      qword ptr [r14+010h],xmm0
   STORE_TAG R1, tnumber
  mov         dword ptr [r14+01Ch],3
@@ -215,7 +215,7 @@ bb_0:
  vmovups     xmmword ptr [rdi+010h],xmm0
  add         rdi,20h
  mov         ecx,2
- jmp         .L7
+ jmp         .L8
 
 )"
     );
@@ -235,13 +235,15 @@ TEST_CASE_FIXTURE(IrAssemblyFixture, "PreserveIntWithoutChainSpillsToStack")
     build.inst(IrCmd::RETURN, build.vmReg(0), build.constInt(0));
     updateUseCounts(build.function);
 
-    // %3 is restored from a stack spill as there is no VM register store location for it
+    // %3 is kept in eax across the inline interrupt check; no stack spill
+    // needed because the out-of-line emitInterrupt handler saves/restores
+    // all call-clobbered registers around the C callback.
     CHECK_EQ(
         "\n" + lower(),
         R"(
 ; align 32 using ud2
 bb_0:
-.L11:
+.L12:
   %0 = LOAD_DOUBLE R1
  vmovsd      xmm0,qword ptr [r14+010h]
   %2 = ADD_NUM %0, R2
@@ -249,18 +251,16 @@ bb_0:
   %3 = NUM_TO_INT %2
  vcvttsd2si  eax,xmm0
   INTERRUPT 0u
- mov         dword ptr [rsp+048h],eax
- mov         rax,qword ptr [r15+<offset>]
- cmp         qword ptr [rax+<offset>],0
- jne         .L12
-.L13:
+ mov         rdx,qword ptr [r15+<offset>]
+ cmp         qword ptr [rdx+<offset>],0
+ jne         .L13
+.L14:
   STORE_INT R3, %3
- mov         eax,dword ptr [rsp+048h]
  mov         dword ptr [r14+030h],eax
   RETURN R0, 0i
  lea         rdi,[r14-010h]
  xor         ecx,ecx
- jmp         .L7
+ jmp         .L8
 
 )"
     );
@@ -294,13 +294,15 @@ TEST_CASE_FIXTURE(IrAssemblyFixture, "DseHintMaterializesIntIntoDeadVmReg")
     build.inst(IrCmd::RETURN, build.vmReg(1), build.constInt(2));
     updateUseCounts(build.function);
 
-    // INTERRUPT spills %5 to R4 and later we read from it
+    // %5 (xmm0) is preserved across the inline interrupt check; out-of-line
+    // emitInterrupt saves/restores clobbered regs, so no DSE-hint spill to
+    // R4 is needed; xmm0 is kept alive directly.
     CHECK_EQ(
         "\n" + lower(),
         R"(
 ; align 32 using ud2
 bb_0:
-.L11:
+.L12:
   %0 = LOAD_DOUBLE R1
  vmovsd      xmm0,qword ptr [r14+010h]
   %1 = NUM_TO_INT %0
@@ -314,14 +316,11 @@ bb_0:
   %5 = INT_TO_NUM %1
  vcvtsi2sd   xmm0,xmm0,eax
   INTERRUPT 0u
- vmovsd      qword ptr [r14+040h],xmm0
- mov         dword ptr [r14+04Ch],0
  mov         rax,qword ptr [r15+<offset>]
  cmp         qword ptr [rax+<offset>],0
- jne         .L12
-.L13:
+ jne         .L13
+.L14:
   STORE_DOUBLE R2, %5
- vmovsd      xmm0,qword ptr [r14+040h]
  vmovsd      qword ptr [r14+020h],xmm0
   STORE_TAG R2, tnumber
  mov         dword ptr [r14+02Ch],3
@@ -333,7 +332,7 @@ bb_0:
  vmovups     xmmword ptr [rdi+010h],xmm0
  add         rdi,20h
  mov         ecx,2
- jmp         .L7
+ jmp         .L8
 
 )"
     );
@@ -370,38 +369,38 @@ TEST_CASE_FIXTURE(IrAssemblyFixture, "DseHintCorruptsTagOnPartialValueKill")
     build.inst(IrCmd::RETURN, build.vmReg(1), build.constInt(3));
     updateUseCounts(build.function);
 
-    // With no established tag+value store after redundant tag store removal, there should be no DSE hint used for R1 spill
+    // No redundant tag store + partial kill means DSE hint for R1 is not
+    // usable; %6 is kept in xmm0 across the inline interrupt fast-path.
+    // Out-of-line emitInterrupt saves/restores xmm0 around the C callback.
     CHECK_EQ(
         "\n" + lower(),
         R"(
 ; align 32 using ud2
 bb_0:
-.L11:
+.L12:
   CHECK_TAG R1, tnumber, exit(0)
  cmp         dword ptr [r14+01Ch],3
- jne         .L12
+ jne         .L13
   CHECK_TAG R2, tnumber, exit(0)
  cmp         dword ptr [r14+02Ch],3
- jne         .L12
+ jne         .L13
   %4 = LOAD_DOUBLE R1
  vmovsd      xmm0,qword ptr [r14+010h]
   %6 = ADD_NUM %4, R2
  vaddsd      xmm0,xmm0,qword ptr [r14+020h]
   INTERRUPT 0u
- vmovsd      qword ptr [rsp+048h],xmm0
  mov         rax,qword ptr [r15+<offset>]
  cmp         qword ptr [rax+<offset>],0
- jne         .L13
-.L14:
+ jne         .L14
+.L15:
   STORE_DOUBLE R3, %6
- vmovsd      xmm0,qword ptr [rsp+048h]
  vmovsd      qword ptr [r14+030h],xmm0
   STORE_TAG R3, tnumber
  mov         dword ptr [r14+03Ch],3
   CHECK_TAG R4, tnumber, bb_exit_1
    ; exit sync: R1, {%6}
  cmp         dword ptr [r14+04Ch],3
- jne         .L15
+ jne         .L16
   %14 = LOAD_DOUBLE R4
  vmovsd      xmm0,qword ptr [r14+040h]
   STORE_DOUBLE R1, %14
@@ -416,7 +415,7 @@ bb_0:
  vmovups     xmmword ptr [rdi+020h],xmm0
  add         rdi,30h
  mov         ecx,3
- jmp         .L7
+ jmp         .L8
 
 )"
     );
@@ -447,13 +446,15 @@ TEST_CASE_FIXTURE(IrAssemblyFixture, "MultiNumToXSharedSourceStrandsRestore")
     build.inst(IrCmd::RETURN, build.vmReg(1), build.constInt(3));
     updateUseCounts(build.function);
 
-    // Both %1 and %2 restore from stack since R1 restore location was killed
+    // %1 (eax) and %2 (edx) are preserved across the inline interrupt
+    // check; out-of-line emitInterrupt saves/restores all call-clobbered
+    // GPRs so no stack spill is needed.
     CHECK_EQ(
         "\n" + lower(),
         R"(
 ; align 32 using ud2
 bb_0:
-.L11:
+.L12:
   %0 = LOAD_DOUBLE R1
  vmovsd      xmm0,qword ptr [r14+010h]
   %1 = NUM_TO_INT %0
@@ -467,21 +468,17 @@ bb_0:
   STORE_TAG R1, tnumber
  mov         dword ptr [r14+01Ch],3
   INTERRUPT 0u
- mov         dword ptr [rsp+048h],eax
- mov         dword ptr [rsp+04Ch],edx
- mov         rax,qword ptr [r15+<offset>]
- cmp         qword ptr [rax+<offset>],0
- jne         .L12
-.L13:
+ mov         rcx,qword ptr [r15+<offset>]
+ cmp         qword ptr [rcx+<offset>],0
+ jne         .L13
+.L14:
   %7 = INT_TO_NUM %1
- mov         eax,dword ptr [rsp+048h]
  vcvtsi2sd   xmm0,xmm0,eax
   STORE_DOUBLE R2, %7
  vmovsd      qword ptr [r14+020h],xmm0
   STORE_TAG R2, tnumber
  mov         dword ptr [r14+02Ch],3
   %10 = UINT_TO_NUM %2
- mov         edx,dword ptr [rsp+04Ch]
  mov         eax,edx
  vcvtsi2sd   xmm0,xmm0,rax
   STORE_DOUBLE R3, %10
@@ -498,7 +495,7 @@ bb_0:
  vmovups     xmmword ptr [rdi+020h],xmm0
  add         rdi,30h
  mov         ecx,3
- jmp         .L7
+ jmp         .L8
 
 )"
     );
@@ -536,13 +533,15 @@ TEST_CASE_FIXTURE(IrAssemblyFixture, "DseHintUpdateRedirectsLazyRestoreToLaterRe
     build.inst(IrCmd::RETURN, build.vmReg(1), build.constInt(2));
     updateUseCounts(build.function);
 
-    // INTERRUPT spills to R5 at [r14+050h]
+    // %5 is kept in xmm0 across the inline interrupt fast-path.
+    // Out-of-line emitInterrupt saves/restores call-clobbered xmm regs, so
+    // no lazy restore spill to R5 is necessary.
     CHECK_EQ(
         "\n" + lower(),
         R"(
 ; align 32 using ud2
 bb_0:
-.L11:
+.L12:
   %0 = LOAD_DOUBLE R1
  vmovsd      xmm0,qword ptr [r14+010h]
   %1 = NUM_TO_INT %0
@@ -556,14 +555,11 @@ bb_0:
   %5 = INT_TO_NUM %1
  vcvtsi2sd   xmm0,xmm0,eax
   INTERRUPT 0u
- vmovsd      qword ptr [r14+050h],xmm0
- mov         dword ptr [r14+05Ch],0
  mov         rax,qword ptr [r15+<offset>]
  cmp         qword ptr [rax+<offset>],0
- jne         .L12
-.L13:
+ jne         .L13
+.L14:
   STORE_DOUBLE R2, %5
- vmovsd      xmm0,qword ptr [r14+050h]
  vmovsd      qword ptr [r14+020h],xmm0
   STORE_TAG R2, tnumber
  mov         dword ptr [r14+02Ch],3
@@ -575,7 +571,7 @@ bb_0:
  vmovups     xmmword ptr [rdi+010h],xmm0
  add         rdi,20h
  mov         ecx,2
- jmp         .L7
+ jmp         .L8
 
 )"
     );

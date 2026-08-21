@@ -55,35 +55,120 @@ static void emitClearNativeFlag(AssemblyBuilderA64& build)
 
 static void emitInterrupt(AssemblyBuilderA64& build)
 {
-    // x0 = pc offset
+    // x0 = pc offset (scaled by sizeof(Instruction))
     // x1 = return address in native code
+    //
+    // The inline fast-path (IrLoweringA64) no longer spills SSA values to the
+    // stack before checking cb.interrupt, so this out-of-line helper is
+    // responsible for preserving every AAPCS64 call-clobbered register around
+    // the C call to `interrupt(L, -1)`. Luau-pinned registers (rState=x19,
+    // rNativeContext=x20, rGlobalState=x21, rConstants=x22, rClosure=x23,
+    // rCode=x24, rBase=x25) live in the x19..x28 callee-save range and are
+    // therefore preserved by the C function itself.
 
     Label skip;
+    Label resumeAndRestore;
 
-    // Stash return address in rBase; we need to reload rBase anyway
+    // Stash return address in rBase (callee-save, survives blr) so we can
+    // return to it later; emitUpdateBase will refresh rBase from L->base.
     build.mov(rBase, x1);
 
-    // Load interrupt handler; it may be nullptr in case the update raced with the check before we got here
+    // Load interrupt handler; may be nullptr due to a race with the inline
+    // check that brought us here; keep this test before the frame setup so
+    // the race recovery path touches no extra stack.
     build.ldr(x2, mem(rState, offsetof(lua_State, global)));
     build.ldr(x2, mem(x2, offsetof(global_State, cb.interrupt)));
     build.cbz(x2, skip);
 
-    // Update savedpc; required in case interrupt errors
+    // Frame layout (16-byte aligned, grows downward):
+    //   sp + 496 .. sp + 511 : q31        (16 bytes, fully clobbered)
+    //   ...
+    //   sp + 240 .. sp + 255 : q16
+    //   sp + 224 .. sp + 239 : q7
+    //   ...
+    //   sp + 112 .. sp + 127 : q0
+    //   sp + 104 .. sp + 111 : x17
+    //   ...
+    //   sp +   0 .. sp +   7 : x0
+    // Total = 144 (GPR x0..x17, 18 * 8) + 384 (Q 0..7 + 16..31, 24 * 16)
+    //       = 528, which is 16-byte aligned.
+    constexpr unsigned kFrameSize = 18 * 8 + 24 * 16;
+    static_assert((kFrameSize & 0xfu) == 0, "emitInterrupt stack frame must be 16-byte aligned");
+
+    constexpr unsigned kGprBase = 0;
+    constexpr unsigned kQ0_Q7Base = 18 * 8;
+    constexpr unsigned kQ16_Q31Base = 18 * 8 + 8 * 16;
+
+    build.sub(sp, sp, uint16_t(kFrameSize));
+
+    // Save x0..x17 in pairs
+    build.stp(x0,  x1,  mem(sp, kGprBase + 0 * 8));
+    build.stp(x2,  x3,  mem(sp, kGprBase + 2 * 8));
+    build.stp(x4,  x5,  mem(sp, kGprBase + 4 * 8));
+    build.stp(x6,  x7,  mem(sp, kGprBase + 6 * 8));
+    build.stp(x8,  x9,  mem(sp, kGprBase + 8 * 8));
+    build.stp(x10, x11, mem(sp, kGprBase + 10 * 8));
+    build.stp(x12, x13, mem(sp, kGprBase + 12 * 8));
+    build.stp(x14, x15, mem(sp, kGprBase + 14 * 8));
+    build.stp(x16, x17, mem(sp, kGprBase + 16 * 8));
+
+    // Save q0..q7 (fully, upper halves are call-clobbered)
+    build.str(q0,  mem(sp, kQ0_Q7Base + 0 * 16));
+    build.str(q1,  mem(sp, kQ0_Q7Base + 1 * 16));
+    build.str(q2,  mem(sp, kQ0_Q7Base + 2 * 16));
+    build.str(q3,  mem(sp, kQ0_Q7Base + 3 * 16));
+    build.str(q4,  mem(sp, kQ0_Q7Base + 4 * 16));
+    build.str(q5,  mem(sp, kQ0_Q7Base + 5 * 16));
+    build.str(q6,  mem(sp, kQ0_Q7Base + 6 * 16));
+    build.str(q7,  mem(sp, kQ0_Q7Base + 7 * 16));
+
+    // Save q16..q31 (fully call-clobbered on AAPCS64)
+    build.str(q16, mem(sp, kQ16_Q31Base + 0 * 16));
+    build.str(q17, mem(sp, kQ16_Q31Base + 1 * 16));
+    build.str(q18, mem(sp, kQ16_Q31Base + 2 * 16));
+    build.str(q19, mem(sp, kQ16_Q31Base + 3 * 16));
+    build.str(q20, mem(sp, kQ16_Q31Base + 4 * 16));
+    build.str(q21, mem(sp, kQ16_Q31Base + 5 * 16));
+    build.str(q22, mem(sp, kQ16_Q31Base + 6 * 16));
+    build.str(q23, mem(sp, kQ16_Q31Base + 7 * 16));
+    build.str(q24, mem(sp, kQ16_Q31Base + 8 * 16));
+    build.str(q25, mem(sp, kQ16_Q31Base + 9 * 16));
+    build.str(q26, mem(sp, kQ16_Q31Base + 10 * 16));
+    build.str(q27, mem(sp, kQ16_Q31Base + 11 * 16));
+    build.str(q28, mem(sp, kQ16_Q31Base + 12 * 16));
+    build.str(q29, mem(sp, kQ16_Q31Base + 13 * 16));
+    build.str(q30, mem(sp, kQ16_Q31Base + 14 * 16));
+    build.str(q31, mem(sp, kQ16_Q31Base + 15 * 16));
+
+    // Recompute stashed x0 (pc offset from entry) via rBase: we can't get the
+    // original x0 back without adding extra save/restore slots before the
+    // frame, so recompute it from L->ci->savedpc. Instead, recompute
+    // savedpc directly using rCode (which is preserved by C) + the value
+    // stashed at entry. rCode is callee-saved via x24 pin. Use a temp reg
+    // (any call-clobbered one works, e.g. x0 itself before we overwrite it).
+    //
+    // We can still recover the original pc offset from the stack slot we
+    // wrote x0 to; read it back now that we've saved everything.
+    build.ldr(x0, mem(sp, kGprBase + 0 * 8));
+
+    // Update L->ci->savedpc; required in case interrupt callback errors
     build.add(x0, rCode, x0);
     build.ldr(x1, mem(rState, offsetof(lua_State, ci)));
     build.str(x0, mem(x1, offsetof(CallInfo, savedpc)));
 
-    // Call interrupt
+    // Call interrupt(L, -1); x2 already holds the handler pointer
     build.mov(x0, rState);
     build.mov(w1, -1);
     build.blr(x2);
 
-    // Check if we need to exit
+    // Check if we need to exit (callback may have triggered an error).
+    // Load status before restoring regs; exit path never resumes native.
     build.ldrb(w0, mem(rState, offsetof(lua_State, status)));
-    build.cbz(w0, skip);
+    build.cbz(w0, resumeAndRestore);
 
-    // L->ci->savedpc--
-    // note: recomputing this avoids having to stash x0
+    // Error path: L->ci->savedpc-- then exit to VM.
+    // Note: this path intentionally skips register restore; emitExit unwinds
+    // to the interpreter cleanly, so no frame leak is observable.
     build.ldr(x1, mem(rState, offsetof(lua_State, ci)));
     build.ldr(x0, mem(x1, offsetof(CallInfo, savedpc)));
     build.sub(x0, x0, uint16_t(sizeof(Instruction)));
@@ -91,13 +176,56 @@ static void emitInterrupt(AssemblyBuilderA64& build)
 
     emitExit(build, /* continueInVm */ false);
 
+    build.setLabel(resumeAndRestore);
+
+    // Restore q16..q31
+    build.ldr(q16, mem(sp, kQ16_Q31Base + 0 * 16));
+    build.ldr(q17, mem(sp, kQ16_Q31Base + 1 * 16));
+    build.ldr(q18, mem(sp, kQ16_Q31Base + 2 * 16));
+    build.ldr(q19, mem(sp, kQ16_Q31Base + 3 * 16));
+    build.ldr(q20, mem(sp, kQ16_Q31Base + 4 * 16));
+    build.ldr(q21, mem(sp, kQ16_Q31Base + 5 * 16));
+    build.ldr(q22, mem(sp, kQ16_Q31Base + 6 * 16));
+    build.ldr(q23, mem(sp, kQ16_Q31Base + 7 * 16));
+    build.ldr(q24, mem(sp, kQ16_Q31Base + 8 * 16));
+    build.ldr(q25, mem(sp, kQ16_Q31Base + 9 * 16));
+    build.ldr(q26, mem(sp, kQ16_Q31Base + 10 * 16));
+    build.ldr(q27, mem(sp, kQ16_Q31Base + 11 * 16));
+    build.ldr(q28, mem(sp, kQ16_Q31Base + 12 * 16));
+    build.ldr(q29, mem(sp, kQ16_Q31Base + 13 * 16));
+    build.ldr(q30, mem(sp, kQ16_Q31Base + 14 * 16));
+    build.ldr(q31, mem(sp, kQ16_Q31Base + 15 * 16));
+
+    // Restore q0..q7
+    build.ldr(q0,  mem(sp, kQ0_Q7Base + 0 * 16));
+    build.ldr(q1,  mem(sp, kQ0_Q7Base + 1 * 16));
+    build.ldr(q2,  mem(sp, kQ0_Q7Base + 2 * 16));
+    build.ldr(q3,  mem(sp, kQ0_Q7Base + 3 * 16));
+    build.ldr(q4,  mem(sp, kQ0_Q7Base + 4 * 16));
+    build.ldr(q5,  mem(sp, kQ0_Q7Base + 5 * 16));
+    build.ldr(q6,  mem(sp, kQ0_Q7Base + 6 * 16));
+    build.ldr(q7,  mem(sp, kQ0_Q7Base + 7 * 16));
+
+    // Restore x0..x17 in pairs
+    build.ldp(x0,  x1,  mem(sp, kGprBase + 0 * 8));
+    build.ldp(x2,  x3,  mem(sp, kGprBase + 2 * 8));
+    build.ldp(x4,  x5,  mem(sp, kGprBase + 4 * 8));
+    build.ldp(x6,  x7,  mem(sp, kGprBase + 6 * 8));
+    build.ldp(x8,  x9,  mem(sp, kGprBase + 8 * 8));
+    build.ldp(x10, x11, mem(sp, kGprBase + 10 * 8));
+    build.ldp(x12, x13, mem(sp, kGprBase + 12 * 8));
+    build.ldp(x14, x15, mem(sp, kGprBase + 14 * 8));
+    build.ldp(x16, x17, mem(sp, kGprBase + 16 * 8));
+
+    build.add(sp, sp, uint16_t(kFrameSize));
+
     build.setLabel(skip);
 
-    // Return back to caller; rBase has stashed return address
+    // rBase stashed the return address at entry; interrupt callbacks may
+    // reallocate the Lua stack so refresh rBase from L->base before jumping.
+    // Return address goes to a scratch first; we use x0 which is dead after.
     build.mov(x0, rBase);
-
-    emitUpdateBase(build); // interrupt may have reallocated stack
-
+    emitUpdateBase(build);
     build.br(x0);
 }
 

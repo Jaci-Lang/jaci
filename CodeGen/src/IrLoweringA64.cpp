@@ -2746,8 +2746,6 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
     }
     case IrCmd::INTERRUPT:
     {
-        regs.spill(index);
-
         Label self;
 
         build.ldr(x0, mem(rGlobalState, offsetof(global_State, cb.interrupt)));
