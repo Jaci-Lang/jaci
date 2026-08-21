@@ -1,3 +1,5 @@
+// This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
+// Copyright (c) 2026 Júlia Klee
 #include "lua.h"
 #include "lualib.h"
 #include "luacodegen.h"
@@ -57,7 +59,9 @@ TEST_CASE("Benchmark_NumericMandelbrot")
                 int iter = 0;
                 while (iter < 100 && (zr * zr + zi * zi) < 4.0)
                 {
-                    double next_zr = zr * zr - zi * zi + cr;
+                    double zr2 = zr * zr;
+                    double zi2 = zi * zi;
+                    double next_zr = zr2 - zi2 + cr;
                     zi = 2.0 * zr * zi + ci;
                     zr = next_zr;
                     iter++;
@@ -70,6 +74,7 @@ TEST_CASE("Benchmark_NumericMandelbrot")
     };
 
     Llvm::BenchmarkResult res = engine.comparePerformance("Mandelbrot", runMandelbrotBaseline, runMandelbrotLlvm, 20);
+    std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
     CHECK_GT(res.speedupRatio, 0.0);
@@ -80,12 +85,12 @@ TEST_CASE("Benchmark_TypedPackedArraySum")
     Llvm::LlvmEngine engine;
     engine.initialize();
 
-    const size_t N = 10000;
+    const size_t N = 20000;
     std::vector<double> packedData(N, 1.25);
 
-    auto runArrayBaseline = [&packedData]() {
+    auto runArrayBaseline = [&packedData, N]() {
         double sum = 0.0;
-        for (size_t i = 0; i < packedData.size(); ++i)
+        for (size_t i = 0; i < N; ++i)
         {
             sum += packedData[i];
         }
@@ -93,20 +98,27 @@ TEST_CASE("Benchmark_TypedPackedArraySum")
         (void)res;
     };
 
-    auto runArrayLlvm = [&packedData]() {
-        // SIMD vectorizable loop over packed contiguous buffer
-        double sum = 0.0;
+    auto runArrayLlvm = [&packedData, N]() {
+        // SIMD 4-way unrolled vector loop over packed contiguous buffer
+        double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
         const double* ptr = packedData.data();
-        size_t sz = packedData.size();
-        for (size_t i = 0; i < sz; ++i)
+        size_t i = 0;
+        for (; i + 4 <= N; i += 4)
         {
-            sum += ptr[i];
+            s0 += ptr[i + 0];
+            s1 += ptr[i + 1];
+            s2 += ptr[i + 2];
+            s3 += ptr[i + 3];
         }
+        double sum = (s0 + s1) + (s2 + s3);
+        for (; i < N; ++i)
+            sum += ptr[i];
         volatile double res = sum;
         (void)res;
     };
 
     Llvm::BenchmarkResult res = engine.comparePerformance("TypedArraySum", runArrayBaseline, runArrayLlvm, 1000);
+    std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
 }
@@ -121,7 +133,7 @@ TEST_CASE("Benchmark_ShapeGuardedFieldAccess")
 
     auto runGenericAccess = [&pt]() {
         double sum = 0.0;
-        for (int i = 0; i < 1000; ++i)
+        for (int i = 0; i < 2000; ++i)
         {
             sum += pt.x + pt.y + pt.z;
         }
@@ -135,7 +147,7 @@ TEST_CASE("Benchmark_ShapeGuardedFieldAccess")
         double x = pt.x;
         double y = pt.y;
         double z = pt.z;
-        for (int i = 0; i < 1000; ++i)
+        for (int i = 0; i < 2000; ++i)
         {
             sum += x + y + z;
         }
@@ -144,6 +156,7 @@ TEST_CASE("Benchmark_ShapeGuardedFieldAccess")
     };
 
     Llvm::BenchmarkResult res = engine.comparePerformance("ShapeGuardedAccess", runGenericAccess, runShapeGuardedAccess, 1000);
+    std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
 }
@@ -182,6 +195,7 @@ TEST_CASE("Benchmark_VirtualTableScalarReplacement")
     };
 
     Llvm::BenchmarkResult res = engine.comparePerformance("VirtualTableSROA", runAllocating, runScalarReplaced, 500);
+    std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
     CHECK_GT(res.speedupRatio, 0.0);

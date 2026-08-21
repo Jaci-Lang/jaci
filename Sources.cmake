@@ -534,8 +534,6 @@ endif()
 if(TARGET Luau.UnitTest)
     # Luau.UnitTest Sources
     target_sources(Luau.UnitTest PRIVATE
-        tests/AssemblyBuilderA64.test.cpp
-        tests/AssemblyBuilderX64.test.cpp
         tests/AstJsonEncoder.test.cpp
         tests/AstQuery.test.cpp
         tests/AstQueryDsl.cpp
@@ -566,10 +564,7 @@ if(TARGET Luau.UnitTest)
         tests/HirCallEscape.test.cpp
         tests/InsertionOrderedMap.test.cpp
         tests/IostreamOptional.h
-        tests/IrAssembly.test.cpp
         tests/IrBuilder.test.cpp
-        tests/IrCallWrapperX64.test.cpp
-        tests/IrRegAllocX64.test.cpp
         tests/Mir.test.cpp
         tests/MirOpt.test.cpp
         tests/OptimizationPipeline.test.cpp

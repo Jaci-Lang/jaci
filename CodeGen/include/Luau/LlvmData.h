@@ -101,30 +101,35 @@ struct PicSite
 {
     uint32_t siteId = 0;
     std::string propertyName;
-    std::vector<PicEntry> entries;
-    uint32_t maxEntries = 4;
+    static constexpr uint8_t kMaxEntries = 4;
+    PicEntry entries[kMaxEntries] = {};
+    uint8_t count = 0;
     bool isMegamorphic = false;
 
-    int findSlot(uint32_t shapeId) const
+    inline int findSlot(uint32_t shapeId) const
     {
-        for (const auto& entry : entries)
-        {
-            if (entry.shapeId == shapeId)
-                return int(entry.slotOffset);
-        }
+        // Unrolled inline search directly in L1 cache
+        if (count >= 1 && entries[0].shapeId == shapeId)
+            return int(entries[0].slotOffset);
+        if (count >= 2 && entries[1].shapeId == shapeId)
+            return int(entries[1].slotOffset);
+        if (count >= 3 && entries[2].shapeId == shapeId)
+            return int(entries[2].slotOffset);
+        if (count >= 4 && entries[3].shapeId == shapeId)
+            return int(entries[3].slotOffset);
         return -1;
     }
 
-    void addEntry(uint32_t shapeId, uint32_t slotOffset)
+    inline void addEntry(uint32_t shapeId, uint32_t slotOffset)
     {
         if (findSlot(shapeId) >= 0)
             return;
-        if (entries.size() >= maxEntries)
+        if (count >= kMaxEntries)
         {
             isMegamorphic = true;
             return;
         }
-        entries.push_back({shapeId, slotOffset});
+        entries[count++] = {shapeId, slotOffset};
     }
 };
 
