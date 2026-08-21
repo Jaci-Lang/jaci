@@ -21,12 +21,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout Luau repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Install valgrind
+      - name: Setup Ninja
+        uses: seanmpackard/setup-ninja@v1.0.0
+
+      - name: Setup Compiler Cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: benchmark-ubuntu
+
+      - name: Install valgrind and LLVM
         run: |
-          sudo apt-get update
-          sudo apt-get install valgrind
+          sudo apt-get update -qq
+          sudo apt-get install -y valgrind llvm clang
 
       - name: Build Luau (gcc)
         run: |
@@ -85,7 +93,7 @@ jobs:
           valgrind --tool=callgrind ./luau-compile --codegennull -O2 -t1 bench/other/regex.lua 2>&1 | filter regex-O2-t1-codegen | tee -a compile-output.txt
 
       - name: Checkout benchmark results
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: ${{ matrix.benchResultsRepo.name }}
           ref: ${{ matrix.benchResultsRepo.branch }}

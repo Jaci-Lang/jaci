@@ -13,48 +13,93 @@ on:
 jobs:
   build:
     strategy:
-      matrix: # not using ubuntu-latest to improve compatibility
+      matrix:
         os: [{name: ubuntu, version: ubuntu-22.04}, {name: macos, version: macos-latest}, {name: windows, version: windows-latest}]
-    name: ${{matrix.os.name}}
+    name: build-${{matrix.os.name}}
     runs-on: ${{matrix.os.version}}
     steps:
-    - uses: actions/checkout@v1
-    - name: configure
-      run: cmake . -DCMAKE_BUILD_TYPE=Release
-    - name: build
-      run: cmake --build . --target Luau.Repl.CLI Luau.Analyze.CLI Luau.Compile.CLI --config Release -j 2
-    - uses: actions/upload-artifact@v4
-      if: matrix.os.name != 'windows'
+    - uses: actions/checkout@v4
+
+    - name: Setup Ninja
+      uses: seanmpackard/setup-ninja@v1.0.0
+
+    - name: Setup Compiler Cache
+      uses: hendrikmuhs/ccache-action@v1.2
       with:
-        name: luau-${{matrix.os.name}}
-        path: luau*
-        overwrite: true
-    - uses: actions/upload-artifact@v4
+        key: release-${{ matrix.os.name }}
+        variant: ${{ matrix.os.name == 'windows' && 'sccache' || 'ccache' }}
+
+    - name: Setup MSVC (Windows)
       if: matrix.os.name == 'windows'
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Configure CMake (Unix)
+      if: matrix.os.name != 'windows'
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+    - name: Configure CMake (Windows)
+      if: matrix.os.name == 'windows'
+      run: |
+        cmake -B build -G Ninja `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+          -DCMAKE_CXX_FLAGS="/MP /Gy /Gw /O2"
+
+    - name: Build Binaries
+      run: cmake --build build --target luau luau-analyze luau-compile luau-ast -j 4
+
+    - name: Package Release (Unix)
+      if: matrix.os.name != 'windows'
+      run: |
+        cd build
+        zip -j ../luau-${{ matrix.os.name }}.zip luau luau-analyze luau-compile luau-ast
+
+    - name: Package Release (Windows)
+      if: matrix.os.name == 'windows'
+      run: |
+        7z a luau-${{ matrix.os.name }}.zip .\build\luau.exe .\build\luau-analyze.exe .\build\luau-compile.exe .\build\luau-ast.exe
+
+    - uses: actions/upload-artifact@v4
       with:
-        name: luau-${{matrix.os.name}}
-        path: Release\luau*.exe
+        name: luau-${{ matrix.os.name }}
+        path: luau-${{ matrix.os.name }}.zip
         overwrite: true
+
   web:
+    name: build-web
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
+
+    - uses: actions/checkout@v4
       with:
         repository: emscripten-core/emsdk
         path: emsdk
-    - name: emsdk install
+
+    - name: Setup Compiler Cache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: release-web
+
+    - name: Setup Emscripten
       run: |
         cd emsdk
         ./emsdk install latest
         ./emsdk activate latest
-    - name: make
+
+    - name: Build Web Target
       run: |
         source emsdk/emsdk_env.sh
-        emcmake cmake . -DLUAU_BUILD_WEB=ON -DCMAKE_BUILD_TYPE=Release
-        make -j2 Luau.Web
+        emcmake cmake -B build -G Ninja -DLUAU_BUILD_WEB=ON -DCMAKE_BUILD_TYPE=Release
+        cmake --build build --target Luau.Web -j 4
+
     - uses: actions/upload-artifact@v4
       with:
         name: Luau.Web.js
-        path: Luau.Web.js
+        path: build/Luau.Web.js
         overwrite: true
