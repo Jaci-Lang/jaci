@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Ninja
-        uses: seanmpackard/setup-ninja@v1.0.0
+        uses: ninja-build/setup-ninja@v5
 
       - name: Setup Compiler Cache
         uses: hendrikmuhs/ccache-action@v1.2
