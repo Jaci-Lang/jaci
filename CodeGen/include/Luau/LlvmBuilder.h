@@ -89,6 +89,7 @@ public:
 
     // External Calls & Deoptimization
     LlvmValue emitCall(const std::string& callee, Type retType, const std::vector<LlvmValue>& args);
+    LlvmValue emitFfiCall(const std::string& callee, Type retType, const std::vector<LlvmValue>& args, bool isPointer = false);
     void emitDeoptExit(uint32_t pcpos, const std::vector<std::pair<uint8_t, LlvmValue>>& liveRegs);
 
     // Complete Module IR string

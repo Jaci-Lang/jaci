@@ -345,6 +345,28 @@ LlvmValue LlvmBuilder::emitCall(const std::string& callee, Type retType, const s
     return res.empty() ? LlvmValue() : LlvmValue(res, retType);
 }
 
+LlvmValue LlvmBuilder::emitFfiCall(const std::string& callee, Type retType, const std::vector<LlvmValue>& args, bool isPointer)
+{
+    std::string res = retType.isVoid() ? "" : nextTemp("ffi_ret");
+    irStream << "  ";
+    if (!res.empty())
+        irStream << res << " = ";
+
+    if (isPointer)
+        irStream << "call ccc " << getLlvmTypeName(retType) << " " << callee << "(";
+    else
+        irStream << "call ccc " << getLlvmTypeName(retType) << " @" << callee << "(";
+
+    for (size_t i = 0; i < args.size(); ++i)
+    {
+        if (i > 0)
+            irStream << ", ";
+        irStream << getLlvmTypeName(args[i].type) << " " << args[i].name;
+    }
+    irStream << ")\n";
+    return res.empty() ? LlvmValue() : LlvmValue(res, retType);
+}
+
 void LlvmBuilder::emitDeoptExit(uint32_t pcpos, const std::vector<std::pair<uint8_t, LlvmValue>>& liveRegs)
 {
     LlvmValue pcVal = constInt32(int32_t(pcpos));
