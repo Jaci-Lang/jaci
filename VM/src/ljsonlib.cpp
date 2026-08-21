@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <cctype>
 
 #ifndef LUA_JSONLIBNAME
 #define LUA_JSONLIBNAME "json"
@@ -22,6 +23,15 @@ struct EncodeState {
     int indent;
     int current_indent;
     std::vector<const void*> visited;
+
+    void indent_line() {
+        if (indent > 0) {
+            out += '\n';
+            for (int i = 0; i < current_indent; ++i) {
+                out += ' ';
+            }
+        }
+    }
 
     void encode_value(int idx) {
         int type = lua_type(L, idx);
@@ -96,104 +106,107 @@ struct EncodeState {
                 }
                 visited.push_back(p);
 
-                // Check if the table is an array (1-based contiguous integer keys)
-                bool is_array = true;
-                int max_idx = 0;
-                int count = 0;
+                bool is_array = false;
+                bool has_tag = false;
 
-                int t_idx = idx < 0 ? lua_gettop(L) + idx + 1 : idx;
-
-                lua_pushnil(L);
-                while (lua_next(L, t_idx) != 0) {
-                    if (lua_type(L, -2) == LUA_TNUMBER) {
-                        double k = lua_tonumber(L, -2);
-                        if (k == std::floor(k) && k >= 1) {
-                            if (k > max_idx) max_idx = (int)k;
-                        } else {
+                if (lua_getmetatable(L, idx)) {
+                    lua_getfield(L, -1, "__jsontype");
+                    if (lua_isstring(L, -1)) {
+                        const char* t = lua_tostring(L, -1);
+                        if (strcmp(t, "array") == 0) {
+                            is_array = true;
+                            has_tag = true;
+                        } else if (strcmp(t, "object") == 0) {
                             is_array = false;
-                            lua_pop(L, 2);
-                            break;
+                            has_tag = true;
                         }
-                    } else {
-                        is_array = false;
-                        lua_pop(L, 2);
-                        break;
                     }
-                    count++;
-                    lua_pop(L, 1);
+                    lua_pop(L, 2);
                 }
 
-                if (is_array && count != max_idx) {
-                    is_array = false;
+                if (!has_tag) {
+                    size_t len = lua_objlen(L, idx);
+                    if (len > 0) {
+                        is_array = true;
+                        lua_pushnil(L);
+                        while (lua_next(L, idx) != 0) {
+                            if (lua_type(L, -2) != LUA_TNUMBER) {
+                                is_array = false;
+                                lua_pop(L, 2);
+                                break;
+                            }
+                            double k = lua_tonumber(L, -2);
+                            if (k <= 0 || k > (double)len || k != std::floor(k)) {
+                                is_array = false;
+                                lua_pop(L, 2);
+                                break;
+                            }
+                            lua_pop(L, 1);
+                        }
+                    } else {
+                        // Empty table default: object if any key, else array if tagged
+                        is_array = false;
+                    }
                 }
 
                 if (is_array) {
-                    out += "[";
-                    if (max_idx > 0 && indent > 0) out += "\n";
+                    out += '[';
                     current_indent += indent;
-                    for (int i = 1; i <= max_idx; ++i) {
-                        if (indent > 0) out.append(current_indent, ' ');
-                        lua_rawgeti(L, t_idx, i);
+                    size_t len = lua_objlen(L, idx);
+                    for (size_t i = 1; i <= len; ++i) {
+                        if (i > 1) {
+                            out += ',';
+                        }
+                        indent_line();
+                        lua_rawgeti(L, idx, (int)i);
                         encode_value(lua_gettop(L));
                         lua_pop(L, 1);
-                        if (i < max_idx) {
-                            out += ",";
-                            if (indent > 0) out += "\n";
-                        } else {
-                            if (indent > 0) out += "\n";
-                        }
                     }
                     current_indent -= indent;
-                    if (max_idx > 0 && indent > 0) out.append(current_indent, ' ');
-                    out += "]";
+                    if (len > 0) indent_line();
+                    out += ']';
                 } else {
-                    out += "{";
+                    out += '{';
+                    current_indent += indent;
                     bool first = true;
                     lua_pushnil(L);
-
-                    current_indent += indent;
-                    while (lua_next(L, t_idx) != 0) {
+                    while (lua_next(L, idx) != 0) {
                         if (!first) {
-                            out += ",";
+                            out += ',';
                         }
-                        if (indent > 0) out += "\n";
-                        if (indent > 0) out.append(current_indent, ' ');
                         first = false;
+                        indent_line();
 
-                        // Encode key
-                        if (lua_type(L, -2) == LUA_TSTRING || lua_type(L, -2) == LUA_TBUFFER) {
-                            lua_pushvalue(L, -2);
-                            encode_value(lua_gettop(L));
-                            lua_pop(L, 1);
-                        } else if (lua_type(L, -2) == LUA_TNUMBER) {
-                            double k = lua_tonumber(L, -2);
-                            char buf[64];
-                            if (k == std::floor(k)) {
-                                snprintf(buf, sizeof(buf), "\"%.0f\"", k);
-                            } else {
-                                snprintf(buf, sizeof(buf), "\"%.14g\"", k);
-                            }
-                            out += buf;
+                        // Key must be converted to string
+                        if (lua_type(L, -2) == LUA_TSTRING) {
+                            encode_value(lua_gettop(L) - 1);
                         } else {
-                            luaL_error(L, "JSON encode error: table key must be a string or number");
+                            out += '"';
+                            luaL_Strbuf sb;
+                            luaL_buffinit(L, &sb);
+                            luaL_addvalueany(&sb, lua_gettop(L) - 1);
+                            luaL_pushresult(&sb);
+                            out += lua_tostring(L, -1);
+                            lua_pop(L, 1);
+                            out += '"';
                         }
 
-                        out += (indent > 0) ? ": " : ":";
+                        out += ':';
+                        if (indent > 0) out += ' ';
+
                         encode_value(lua_gettop(L));
                         lua_pop(L, 1);
                     }
                     current_indent -= indent;
-                    if (!first && indent > 0) {
-                        out += "\n";
-                        out.append(current_indent, ' ');
-                    }
-                    out += "}";
+                    if (!first) indent_line();
+                    out += '}';
                 }
+
                 visited.pop_back();
                 break;
             }
             default:
-                luaL_error(L, "JSON encode error: unsupported type %s", lua_typename(L, type));
+                luaL_error(L, "JSON encode error: unsupported type %s", luaL_typename(L, idx));
         }
     }
 };
@@ -201,98 +214,151 @@ struct EncodeState {
 static int json_encode(lua_State* L) {
     luaL_checkany(L, 1);
     int indent = 0;
-    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
-        luaL_checktype(L, 2, LUA_TTABLE);
+    if (lua_istable(L, 2)) {
         lua_getfield(L, 2, "indent");
-        if (lua_type(L, -1) == LUA_TNUMBER) {
-            indent = (int)lua_tointeger(L, -1);
+        if (lua_isnumber(L, -1)) {
+            indent = (int)lua_tonumber(L, -1);
         }
         lua_pop(L, 1);
+    } else if (lua_isnumber(L, 2)) {
+        indent = (int)lua_tonumber(L, 2);
     }
 
     EncodeState state;
     state.L = L;
-    state.indent = indent;
+    state.indent = indent > 0 ? indent : 0;
     state.current_indent = 0;
+
     state.encode_value(1);
 
-    lua_pushlstring(L, state.out.c_str(), state.out.length());
+    lua_pushlstring(L, state.out.data(), state.out.size());
+    return 1;
+}
+
+static int json_pretty(lua_State* L) {
+    luaL_checkany(L, 1);
+    EncodeState state;
+    state.L = L;
+    state.indent = 2;
+    state.current_indent = 0;
+    state.encode_value(1);
+    lua_pushlstring(L, state.out.data(), state.out.size());
     return 1;
 }
 
 struct DecodeState {
+    const char* p;
+    const char* end;
     lua_State* L;
-    const char* str;
-    size_t len;
-    size_t pos;
-    std::string err;
+    std::string error;
 
     void skip_whitespace() {
-        while (pos < len && (str[pos] == ' ' || str[pos] == '\t' || str[pos] == '\n' || str[pos] == '\r')) {
-            pos++;
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+            p++;
         }
     }
 
-    bool decode_value() {
+    bool parse_value() {
         skip_whitespace();
-        if (pos >= len) {
-            err = "unexpected end of input";
+        if (p >= end) {
+            error = "unexpected end of input";
             return false;
         }
 
-        char c = str[pos];
-        if (c == 'n') {
-            if (pos + 3 < len && str[pos+1] == 'u' && str[pos+2] == 'l' && str[pos+3] == 'l') {
-                lua_pushlightuserdata(L, (void*)json_null_marker);
-                pos += 4;
-                return true;
-            }
-            err = "expected 'null'";
-            return false;
-        } else if (c == 't') {
-            if (pos + 3 < len && str[pos+1] == 'r' && str[pos+2] == 'u' && str[pos+3] == 'e') {
-                lua_pushboolean(L, 1);
-                pos += 4;
-                return true;
-            }
-            err = "expected 'true'";
-            return false;
-        } else if (c == 'f') {
-            if (pos + 4 < len && str[pos+1] == 'a' && str[pos+2] == 'l' && str[pos+3] == 's' && str[pos+4] == 'e') {
-                lua_pushboolean(L, 0);
-                pos += 5;
-                return true;
-            }
-            err = "expected 'false'";
-            return false;
-        } else if (c == '"') {
-            return decode_string();
-        } else if (c == '[') {
-            return decode_array();
-        } else if (c == '{') {
-            return decode_object();
-        } else if (c == '-' || (c >= '0' && c <= '9')) {
-            return decode_number();
+        switch (*p) {
+            case 'n': return parse_null();
+            case 't': return parse_true();
+            case 'f': return parse_false();
+            case '"': return parse_string();
+            case '[': return parse_array();
+            case '{': return parse_object();
+            default:
+                if (*p == '-' || (*p >= '0' && *p <= '9')) {
+                    return parse_number();
+                }
+                error = std::string("unexpected character: '") + *p + "'";
+                return false;
         }
+    }
 
-        err = "unexpected character";
+    bool parse_null() {
+        if (end - p >= 4 && strncmp(p, "null", 4) == 0) {
+            p += 4;
+            lua_pushlightuserdata(L, (void*)json_null_marker);
+            return true;
+        }
+        error = "invalid null literal";
         return false;
     }
 
-    bool decode_string() {
-        pos++; // skip "
+    bool parse_true() {
+        if (end - p >= 4 && strncmp(p, "true", 4) == 0) {
+            p += 4;
+            lua_pushboolean(L, 1);
+            return true;
+        }
+        error = "invalid true literal";
+        return false;
+    }
+
+    bool parse_false() {
+        if (end - p >= 5 && strncmp(p, "false", 5) == 0) {
+            p += 5;
+            lua_pushboolean(L, 0);
+            return true;
+        }
+        error = "invalid false literal";
+        return false;
+    }
+
+    bool parse_number() {
+        const char* start = p;
+        if (*p == '-') p++;
+        if (p >= end || !isdigit((unsigned char)*p)) {
+            error = "invalid number format";
+            return false;
+        }
+        while (p < end && isdigit((unsigned char)*p)) p++;
+        if (p < end && *p == '.') {
+            p++;
+            if (p >= end || !isdigit((unsigned char)*p)) {
+                error = "invalid fractional number";
+                return false;
+            }
+            while (p < end && isdigit((unsigned char)*p)) p++;
+        }
+        if (p < end && (*p == 'e' || *p == 'E')) {
+            p++;
+            if (p < end && (*p == '+' || *p == '-')) p++;
+            if (p >= end || !isdigit((unsigned char)*p)) {
+                error = "invalid exponent in number";
+                return false;
+            }
+            while (p < end && isdigit((unsigned char)*p)) p++;
+        }
+
+        std::string num_str(start, p - start);
+        char* endptr = nullptr;
+        double n = strtod(num_str.c_str(), &endptr);
+        lua_pushnumber(L, n);
+        return true;
+    }
+
+    bool parse_string() {
+        p++; // skip opening quote
         std::string s;
-        while (pos < len) {
-            char c = str[pos++];
+        while (p < end) {
+            unsigned char c = (unsigned char)*p++;
             if (c == '"') {
-                lua_pushlstring(L, s.c_str(), s.length());
+                lua_pushlstring(L, s.data(), s.size());
                 return true;
-            } else if (c == '\\') {
-                if (pos >= len) {
-                    err = "unexpected end of input in string escape";
+            }
+            if (c == '\\') {
+                if (p >= end) {
+                    error = "unexpected end of escape sequence";
                     return false;
                 }
-                char esc = str[pos++];
+                char esc = *p++;
                 switch (esc) {
                     case '"': s += '"'; break;
                     case '\\': s += '\\'; break;
@@ -303,144 +369,115 @@ struct DecodeState {
                     case 'r': s += '\r'; break;
                     case 't': s += '\t'; break;
                     case 'u': {
-                        if (pos + 4 > len) {
-                            err = "unexpected end of input in \\u escape";
+                        if (end - p < 4) {
+                            error = "invalid unicode escape";
                             return false;
                         }
-                        unsigned int cp = 0;
+                        unsigned int codepoint = 0;
                         for (int i = 0; i < 4; ++i) {
-                            char hc = str[pos++];
-                            cp <<= 4;
-                            if (hc >= '0' && hc <= '9') cp |= (hc - '0');
-                            else if (hc >= 'a' && hc <= 'f') cp |= (hc - 'a' + 10);
-                            else if (hc >= 'A' && hc <= 'F') cp |= (hc - 'A' + 10);
+                            char h = *p++;
+                            codepoint <<= 4;
+                            if (h >= '0' && h <= '9') codepoint |= (h - '0');
+                            else if (h >= 'a' && h <= 'f') codepoint |= (h - 'a' + 10);
+                            else if (h >= 'A' && h <= 'F') codepoint |= (h - 'A' + 10);
                             else {
-                                err = "invalid \\u escape";
+                                error = "invalid hex in unicode escape";
                                 return false;
                             }
                         }
-                        
-                        // Basic utf-8 encode. Assumes valid scalar value.
-                        if (cp < 0x80) {
-                            s += (char)cp;
-                        } else if (cp < 0x800) {
-                            s += (char)(0xC0 | (cp >> 6));
-                            s += (char)(0x80 | (cp & 0x3F));
+                        if (codepoint <= 0x7F) {
+                            s += (char)codepoint;
+                        } else if (codepoint <= 0x7FF) {
+                            s += (char)(0xC0 | ((codepoint >> 6) & 0x1F));
+                            s += (char)(0x80 | (codepoint & 0x3F));
                         } else {
-                            s += (char)(0xE0 | (cp >> 12));
-                            s += (char)(0x80 | ((cp >> 6) & 0x3F));
-                            s += (char)(0x80 | (cp & 0x3F));
+                            s += (char)(0xE0 | ((codepoint >> 12) & 0x0F));
+                            s += (char)(0x80 | ((codepoint >> 6) & 0x3F));
+                            s += (char)(0x80 | (codepoint & 0x3F));
                         }
                         break;
                     }
                     default:
-                        err = "invalid escape character";
+                        error = "unknown escape sequence";
                         return false;
                 }
             } else {
-                s += c;
+                s += (char)c;
             }
         }
-        err = "unexpected end of input in string";
+        error = "unterminated string";
         return false;
     }
 
-    bool decode_number() {
-        size_t start = pos;
-        if (pos < len && str[pos] == '-') pos++;
-        while (pos < len && str[pos] >= '0' && str[pos] <= '9') pos++;
-        if (pos < len && str[pos] == '.') {
-            pos++;
-            while (pos < len && str[pos] >= '0' && str[pos] <= '9') pos++;
-        }
-        if (pos < len && (str[pos] == 'e' || str[pos] == 'E')) {
-            pos++;
-            if (pos < len && (str[pos] == '+' || str[pos] == '-')) pos++;
-            while (pos < len && str[pos] >= '0' && str[pos] <= '9') pos++;
-        }
-        
-        std::string num_str(str + start, pos - start);
-        try {
-            double num = std::stod(num_str);
-            lua_pushnumber(L, num);
+    bool parse_array() {
+        p++; // skip '['
+        lua_newtable(L);
+        int index = 1;
+        skip_whitespace();
+        if (p < end && *p == ']') {
+            p++;
             return true;
-        } catch (...) {
-            err = "invalid number format";
-            return false;
         }
+
+        while (p < end) {
+            if (!parse_value()) return false;
+            lua_rawseti(L, -2, index++);
+            skip_whitespace();
+            if (p >= end) break;
+            if (*p == ']') {
+                p++;
+                return true;
+            }
+            if (*p == ',') {
+                p++;
+            } else {
+                error = "expected ',' or ']' in array";
+                return false;
+            }
+        }
+        error = "unterminated array";
+        return false;
     }
 
-    bool decode_array() {
-        pos++; // skip [
+    bool parse_object() {
+        p++; // skip '{'
         lua_newtable(L);
         skip_whitespace();
-        if (pos < len && str[pos] == ']') {
-            pos++;
+        if (p < end && *p == '}') {
+            p++;
             return true;
         }
-        int i = 1;
-        while (true) {
-            if (!decode_value()) {
-                return false;
-            }
-            lua_rawseti(L, -2, i++);
-            skip_whitespace();
-            if (pos >= len) {
-                err = "unexpected end of input in array";
-                return false;
-            }
-            if (str[pos] == ']') {
-                pos++;
-                break;
-            }
-            if (str[pos] != ',') {
-                err = "expected ',' or ']'";
-                return false;
-            }
-            pos++; // skip ,
-        }
-        return true;
-    }
 
-    bool decode_object() {
-        pos++; // skip {
-        lua_newtable(L);
-        skip_whitespace();
-        if (pos < len && str[pos] == '}') {
-            pos++;
-            return true;
+        while (p < end) {
+            skip_whitespace();
+            if (p >= end || *p != '"') {
+                error = "expected string key in object";
+                return false;
+            }
+            if (!parse_string()) return false;
+            skip_whitespace();
+            if (p >= end || *p != ':') {
+                error = "expected ':' after key in object";
+                return false;
+            }
+            p++; // skip ':'
+            if (!parse_value()) return false;
+            lua_rawset(L, -3);
+            skip_whitespace();
+            if (p >= end) break;
+            if (*p == '}') {
+                p++;
+                return true;
+            }
+            if (*p == ',') {
+                p++;
+            } else {
+                error = "expected ',' or '}' in object";
+                return false;
+            }
         }
-        while (true) {
-            skip_whitespace();
-            if (pos >= len || str[pos] != '"') {
-                err = "expected string key in object";
-                return false;
-            }
-            if (!decode_string()) return false;
-            skip_whitespace();
-            if (pos >= len || str[pos] != ':') {
-                err = "expected ':'";
-                return false;
-            }
-            pos++; // skip :
-            if (!decode_value()) return false;
-            lua_settable(L, -3); // set key-value pair
-            skip_whitespace();
-            if (pos >= len) {
-                err = "unexpected end of input in object";
-                return false;
-            }
-            if (str[pos] == '}') {
-                pos++;
-                break;
-            }
-            if (str[pos] != ',') {
-                err = "expected ',' or '}'";
-                return false;
-            }
-            pos++; // skip ,
-        }
-        return true;
+        error = "unterminated object";
+        return false;
     }
 };
 
@@ -454,29 +491,92 @@ static int json_decode(lua_State* L) {
     }
 
     DecodeState state;
+    state.p = str;
+    state.end = str + len;
     state.L = L;
-    state.str = str;
-    state.len = len;
-    state.pos = 0;
 
-    if (state.decode_value()) {
-        state.skip_whitespace();
-        if (state.pos < state.len) {
-            lua_pushnil(L);
-            lua_pushstring(L, "trailing characters found after JSON value");
-            return 2;
-        }
-        return 1; // return the decoded value
-    } else {
+    if (!state.parse_value()) {
         lua_pushnil(L);
-        lua_pushstring(L, state.err.c_str());
-        return 2; // return nil, error_message
+        lua_pushlstring(L, state.error.data(), state.error.size());
+        return 2;
     }
+
+    state.skip_whitespace();
+    if (state.p != state.end) {
+        lua_pop(L, 1);
+        lua_pushnil(L);
+        std::string err = "trailing garbage after JSON";
+        lua_pushlstring(L, err.data(), err.size());
+        return 2;
+    }
+
+    return 1;
+}
+
+static int json_valid(lua_State* L) {
+    size_t len;
+    const char* str;
+    if (lua_type(L, 1) == LUA_TBUFFER) {
+        str = (const char*)luaL_checkbuffer(L, 1, &len);
+    } else if (lua_isstring(L, 1)) {
+        str = lua_tolstring(L, 1, &len);
+    } else {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    DecodeState state;
+    state.p = str;
+    state.end = str + len;
+    state.L = L;
+
+    int top = lua_gettop(L);
+    bool ok = state.parse_value();
+    if (ok) {
+        state.skip_whitespace();
+        if (state.p != state.end) ok = false;
+    }
+
+    // Clean up any values pushed during parsing
+    lua_settop(L, top);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+static int json_array(lua_State* L) {
+    int n = lua_gettop(L);
+    lua_createtable(L, n, 0);
+    for (int i = 1; i <= n; ++i) {
+        lua_pushvalue(L, i);
+        lua_rawseti(L, -2, i);
+    }
+    lua_createtable(L, 0, 1);
+    lua_pushstring(L, "array");
+    lua_setfield(L, -2, "__jsontype");
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+static int json_object(lua_State* L) {
+    if (lua_istable(L, 1)) {
+        lua_pushvalue(L, 1);
+    } else {
+        lua_newtable(L);
+    }
+    lua_createtable(L, 0, 1);
+    lua_pushstring(L, "object");
+    lua_setfield(L, -2, "__jsontype");
+    lua_setmetatable(L, -2);
+    return 1;
 }
 
 static const luaL_Reg jsonlib[] = {
     {"encode", json_encode},
     {"decode", json_decode},
+    {"pretty", json_pretty},
+    {"valid", json_valid},
+    {"array", json_array},
+    {"object", json_object},
     {NULL, NULL}
 };
 

@@ -5,22 +5,25 @@
 #include "lcommon.h"
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string>
+#include <vector>
 
 #define LUA_HASHLIBNAME "hash"
 
-static const char* get_hash_data(lua_State* L, size_t* len)
+static const char* get_hash_data(lua_State* L, int idx, size_t* len)
 {
-    if (lua_type(L, 1) == LUA_TSTRING)
+    if (lua_type(L, idx) == LUA_TSTRING)
     {
-        return lua_tolstring(L, 1, len);
+        return lua_tolstring(L, idx, len);
     }
-    else if (lua_isbuffer(L, 1))
+    else if (lua_isbuffer(L, idx))
     {
-        return (const char*)luaL_checkbuffer(L, 1, len);
+        return (const char*)luaL_checkbuffer(L, idx, len);
     }
     else
     {
-        luaL_typeerror(L, 1, "string or buffer");
+        luaL_typeerror(L, idx, "string or buffer");
         return NULL;
     }
 }
@@ -35,11 +38,19 @@ static void bytes_to_hex(const uint8_t* bytes, size_t len, char* hex)
     }
 }
 
+static int hex_char_to_val(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 // CRC-32 (ISO-HDLC)
 static int hash_crc32(lua_State* L)
 {
     size_t len = 0;
-    const char* data = get_hash_data(L, &len);
+    const char* data = get_hash_data(L, 1, &len);
 
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < len; ++i)
@@ -63,7 +74,7 @@ static int hash_crc32(lua_State* L)
 static int hash_fnv1a(lua_State* L)
 {
     size_t len = 0;
-    const char* data = get_hash_data(L, &len);
+    const char* data = get_hash_data(L, 1, &len);
 
     uint64_t hash = 0xcbf29ce484222325ULL;
     for (size_t i = 0; i < len; ++i)
@@ -167,10 +178,7 @@ static void md5_transform(uint32_t state[4], const uint8_t block[64])
 #undef HH
 #undef II
 
-    state[0] += a;
-    state[1] += b;
-    state[2] += c;
-    state[3] += d;
+    state[0] += a; state[1] += b; state[2] += c; state[3] += d;
 }
 
 static void compute_md5(const char* data, size_t len, uint8_t out[16])
@@ -178,7 +186,7 @@ static void compute_md5(const char* data, size_t len, uint8_t out[16])
     uint32_t state[4] = { 0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476 };
     uint8_t buffer[64];
     size_t offset = 0;
-    
+
     for (size_t i = 0; i < len; ++i)
     {
         buffer[offset++] = data[i];
@@ -188,8 +196,7 @@ static void compute_md5(const char* data, size_t len, uint8_t out[16])
             offset = 0;
         }
     }
-    
-    uint64_t bitlen = (uint64_t)len * 8;
+
     buffer[offset++] = 0x80;
     if (offset > 56)
     {
@@ -197,40 +204,42 @@ static void compute_md5(const char* data, size_t len, uint8_t out[16])
         md5_transform(state, buffer);
         offset = 0;
     }
+
     while (offset < 56) buffer[offset++] = 0;
-    
+
+    uint64_t bits = len * 8;
     for (int i = 0; i < 8; ++i)
-        buffer[56 + i] = (uint8_t)(bitlen >> (i * 8));
-        
+        buffer[56 + i] = (bits >> (i * 8)) & 0xFF;
+
     md5_transform(state, buffer);
-    
+
     for (int i = 0; i < 4; ++i)
     {
-        out[i*4]   = (uint8_t)(state[i]);
-        out[i*4+1] = (uint8_t)(state[i] >> 8);
-        out[i*4+2] = (uint8_t)(state[i] >> 16);
-        out[i*4+3] = (uint8_t)(state[i] >> 24);
+        out[i*4]   = state[i] & 0xFF;
+        out[i*4+1] = (state[i] >> 8) & 0xFF;
+        out[i*4+2] = (state[i] >> 16) & 0xFF;
+        out[i*4+3] = (state[i] >> 24) & 0xFF;
     }
 }
 
 static int hash_md5(lua_State* L)
 {
     size_t len = 0;
-    const char* data = get_hash_data(L, &len);
-    uint8_t out[16];
-    compute_md5(data, len, out);
-    lua_pushlstring(L, (const char*)out, 16);
+    const char* data = get_hash_data(L, 1, &len);
+    uint8_t digest[16];
+    compute_md5(data, len, digest);
+    lua_pushlstring(L, (const char*)digest, 16);
     return 1;
 }
 
 static int hash_md5hex(lua_State* L)
 {
     size_t len = 0;
-    const char* data = get_hash_data(L, &len);
-    uint8_t out[16];
-    compute_md5(data, len, out);
+    const char* data = get_hash_data(L, 1, &len);
+    uint8_t digest[16];
+    compute_md5(data, len, digest);
     char hex[32];
-    bytes_to_hex(out, 16, hex);
+    bytes_to_hex(digest, 16, hex);
     lua_pushlstring(L, hex, 32);
     return 1;
 }
@@ -278,7 +287,6 @@ static void compute_sha1(const char* data, size_t len, uint8_t out[20])
         }
     }
 
-    uint64_t bitlen = (uint64_t)len * 8;
     buffer[offset++] = 0x80;
     if (offset > 56)
     {
@@ -286,88 +294,89 @@ static void compute_sha1(const char* data, size_t len, uint8_t out[20])
         sha1_transform(state, buffer);
         offset = 0;
     }
+
     while (offset < 56) buffer[offset++] = 0;
 
+    uint64_t bits = len * 8;
     for (int i = 0; i < 8; ++i)
-        buffer[56 + i] = (uint8_t)(bitlen >> (56 - i * 8));
+        buffer[56 + i] = (bits >> ((7 - i) * 8)) & 0xFF;
 
     sha1_transform(state, buffer);
 
     for (int i = 0; i < 5; ++i)
     {
-        out[i*4]   = (uint8_t)(state[i] >> 24);
-        out[i*4+1] = (uint8_t)(state[i] >> 16);
-        out[i*4+2] = (uint8_t)(state[i] >> 8);
-        out[i*4+3] = (uint8_t)(state[i]);
+        out[i*4]   = (state[i] >> 24) & 0xFF;
+        out[i*4+1] = (state[i] >> 16) & 0xFF;
+        out[i*4+2] = (state[i] >> 8) & 0xFF;
+        out[i*4+3] = state[i] & 0xFF;
     }
 }
 
 static int hash_sha1(lua_State* L)
 {
     size_t len = 0;
-    const char* data = get_hash_data(L, &len);
-    uint8_t out[20];
-    compute_sha1(data, len, out);
-    lua_pushlstring(L, (const char*)out, 20);
+    const char* data = get_hash_data(L, 1, &len);
+    uint8_t digest[20];
+    compute_sha1(data, len, digest);
+    lua_pushlstring(L, (const char*)digest, 20);
     return 1;
 }
 
 static int hash_sha1hex(lua_State* L)
 {
     size_t len = 0;
-    const char* data = get_hash_data(L, &len);
-    uint8_t out[20];
-    compute_sha1(data, len, out);
+    const char* data = get_hash_data(L, 1, &len);
+    uint8_t digest[20];
+    compute_sha1(data, len, digest);
     char hex[40];
-    bytes_to_hex(out, 20, hex);
+    bytes_to_hex(digest, 20, hex);
     lua_pushlstring(L, hex, 40);
     return 1;
 }
 
 // SHA-256
-static const uint32_t sha256_k[64] = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+#define ROTR32(x,n) (((x) >> (n)) | ((x) << (32 - (n))))
+#define CH(x,y,z) (((x) & (y)) ^ (~(x) & (z)))
+#define MAJ(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
+#define EP0(x) (ROTR32(x,2) ^ ROTR32(x,13) ^ ROTR32(x,22))
+#define EP1(x) (ROTR32(x,6) ^ ROTR32(x,11) ^ ROTR32(x,25))
+#define SIG0(x) (ROTR32(x,7) ^ ROTR32(x,18) ^ ((x) >> 3))
+#define SIG1(x) (ROTR32(x,17) ^ ROTR32(x,19) ^ ((x) >> 10))
+
+static const uint32_t k_sha256[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 };
 
-#define ROTR32(x,n) (((x) >> (n)) | ((x) << (32 - (n))))
-
-static void sha256_transform(uint32_t state[8], const uint8_t buffer[64])
+static void sha256_transform(uint32_t state[8], const uint8_t data[64])
 {
-    uint32_t w[64], a, b, c, d, e, f, g, h, t1, t2;
+    uint32_t a, b, c, d, e, f, g, h, i, t1, t2, m[64];
 
-    for (int i = 0; i < 16; ++i)
-        w[i] = ((uint32_t)buffer[i*4] << 24) | ((uint32_t)buffer[i*4+1] << 16) | ((uint32_t)buffer[i*4+2] << 8) | ((uint32_t)buffer[i*4+3]);
+    for (i = 0; i < 16; ++i)
+        m[i] = ((uint32_t)data[i*4] << 24) | ((uint32_t)data[i*4+1] << 16) | ((uint32_t)data[i*4+2] << 8) | ((uint32_t)data[i*4+3]);
 
-    for (int i = 16; i < 64; ++i)
+    for (; i < 64; ++i)
+        m[i] = SIG1(m[i - 2]) + m[i - 7] + SIG0(m[i - 15]) + m[i - 16];
+
+    a = state[0]; b = state[1]; c = state[2]; d = state[3];
+    e = state[4]; f = state[5]; g = state[6]; h = state[7];
+
+    for (i = 0; i < 64; ++i)
     {
-        uint32_t s0 = ROTR32(w[i-15], 7) ^ ROTR32(w[i-15], 18) ^ (w[i-15] >> 3);
-        uint32_t s1 = ROTR32(w[i-2], 17) ^ ROTR32(w[i-2], 19) ^ (w[i-2] >> 10);
-        w[i] = w[i-16] + s0 + w[i-7] + s1;
+        t1 = h + EP1(e) + CH(e, f, g) + k_sha256[i] + m[i];
+        t2 = EP0(a) + MAJ(a, b, c);
+        h = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
     }
 
-    a = state[0]; b = state[1]; c = state[2]; d = state[3]; e = state[4]; f = state[5]; g = state[6]; h = state[7];
-
-    for (int i = 0; i < 64; ++i)
-    {
-        uint32_t S1 = ROTR32(e, 6) ^ ROTR32(e, 11) ^ ROTR32(e, 25);
-        uint32_t ch = (e & f) ^ (~e & g);
-        t1 = h + S1 + ch + sha256_k[i] + w[i];
-        
-        uint32_t S0 = ROTR32(a, 2) ^ ROTR32(a, 13) ^ ROTR32(a, 22);
-        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-        t2 = S0 + maj;
-
-        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
-    }
-
-    state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e; state[5] += f; state[6] += g; state[7] += h;
+    state[0] += a; state[1] += b; state[2] += c; state[3] += d;
+    state[4] += e; state[5] += f; state[6] += g; state[7] += h;
 }
 
 static void compute_sha256(const char* data, size_t len, uint8_t out[32])
@@ -389,7 +398,6 @@ static void compute_sha256(const char* data, size_t len, uint8_t out[32])
         }
     }
 
-    uint64_t bitlen = (uint64_t)len * 8;
     buffer[offset++] = 0x80;
     if (offset > 56)
     {
@@ -397,41 +405,273 @@ static void compute_sha256(const char* data, size_t len, uint8_t out[32])
         sha256_transform(state, buffer);
         offset = 0;
     }
+
     while (offset < 56) buffer[offset++] = 0;
 
+    uint64_t bits = len * 8;
     for (int i = 0; i < 8; ++i)
-        buffer[56 + i] = (uint8_t)(bitlen >> (56 - i * 8));
+        buffer[56 + i] = (bits >> ((7 - i) * 8)) & 0xFF;
 
     sha256_transform(state, buffer);
 
     for (int i = 0; i < 8; ++i)
     {
-        out[i*4]   = (uint8_t)(state[i] >> 24);
-        out[i*4+1] = (uint8_t)(state[i] >> 16);
-        out[i*4+2] = (uint8_t)(state[i] >> 8);
-        out[i*4+3] = (uint8_t)(state[i]);
+        out[i*4]   = (state[i] >> 24) & 0xFF;
+        out[i*4+1] = (state[i] >> 16) & 0xFF;
+        out[i*4+2] = (state[i] >> 8) & 0xFF;
+        out[i*4+3] = state[i] & 0xFF;
     }
 }
 
 static int hash_sha256(lua_State* L)
 {
     size_t len = 0;
-    const char* data = get_hash_data(L, &len);
-    uint8_t out[32];
-    compute_sha256(data, len, out);
-    lua_pushlstring(L, (const char*)out, 32);
+    const char* data = get_hash_data(L, 1, &len);
+    uint8_t digest[32];
+    compute_sha256(data, len, digest);
+    lua_pushlstring(L, (const char*)digest, 32);
     return 1;
 }
 
 static int hash_sha256hex(lua_State* L)
 {
     size_t len = 0;
-    const char* data = get_hash_data(L, &len);
+    const char* data = get_hash_data(L, 1, &len);
+    uint8_t digest[32];
+    compute_sha256(data, len, digest);
+    char hex[64];
+    bytes_to_hex(digest, 32, hex);
+    lua_pushlstring(L, hex, 64);
+    return 1;
+}
+
+// Generic HMAC helper (block size = 64 bytes for MD5, SHA-1, SHA-256)
+static void compute_hmac(
+    const char* key, size_t key_len,
+    const char* data, size_t data_len,
+    void (*hash_fn)(const char*, size_t, uint8_t*),
+    size_t hash_len,
+    uint8_t* out
+)
+{
+    uint8_t k_pad[64];
+    memset(k_pad, 0, sizeof(k_pad));
+
+    if (key_len > 64)
+    {
+        hash_fn(key, key_len, k_pad);
+    }
+    else
+    {
+        memcpy(k_pad, key, key_len);
+    }
+
+    uint8_t ipad[64];
+    uint8_t opad[64];
+    for (int i = 0; i < 64; ++i)
+    {
+        ipad[i] = k_pad[i] ^ 0x36;
+        opad[i] = k_pad[i] ^ 0x5C;
+    }
+
+    std::vector<char> inner;
+    inner.reserve(64 + data_len);
+    inner.insert(inner.end(), ipad, ipad + 64);
+    inner.insert(inner.end(), data, data + data_len);
+
+    std::vector<uint8_t> inner_hash(hash_len);
+    hash_fn(inner.data(), inner.size(), inner_hash.data());
+
+    std::vector<char> outer;
+    outer.reserve(64 + hash_len);
+    outer.insert(outer.end(), opad, opad + 64);
+    outer.insert(outer.end(), (const char*)inner_hash.data(), (const char*)inner_hash.data() + hash_len);
+
+    hash_fn(outer.data(), outer.size(), out);
+}
+
+static int hash_hmac_sha256(lua_State* L)
+{
+    size_t key_len = 0, data_len = 0;
+    const char* key = get_hash_data(L, 1, &key_len);
+    const char* data = get_hash_data(L, 2, &data_len);
+
     uint8_t out[32];
-    compute_sha256(data, len, out);
+    compute_hmac(key, key_len, data, data_len, compute_sha256, 32, out);
+    lua_pushlstring(L, (const char*)out, 32);
+    return 1;
+}
+
+static int hash_hmac_sha256hex(lua_State* L)
+{
+    size_t key_len = 0, data_len = 0;
+    const char* key = get_hash_data(L, 1, &key_len);
+    const char* data = get_hash_data(L, 2, &data_len);
+
+    uint8_t out[32];
+    compute_hmac(key, key_len, data, data_len, compute_sha256, 32, out);
     char hex[64];
     bytes_to_hex(out, 32, hex);
     lua_pushlstring(L, hex, 64);
+    return 1;
+}
+
+static int hash_hmac_sha1(lua_State* L)
+{
+    size_t key_len = 0, data_len = 0;
+    const char* key = get_hash_data(L, 1, &key_len);
+    const char* data = get_hash_data(L, 2, &data_len);
+
+    uint8_t out[20];
+    compute_hmac(key, key_len, data, data_len, compute_sha1, 20, out);
+    lua_pushlstring(L, (const char*)out, 20);
+    return 1;
+}
+
+static int hash_hmac_sha1hex(lua_State* L)
+{
+    size_t key_len = 0, data_len = 0;
+    const char* key = get_hash_data(L, 1, &key_len);
+    const char* data = get_hash_data(L, 2, &data_len);
+
+    uint8_t out[20];
+    compute_hmac(key, key_len, data, data_len, compute_sha1, 20, out);
+    char hex[40];
+    bytes_to_hex(out, 20, hex);
+    lua_pushlstring(L, hex, 40);
+    return 1;
+}
+
+static int hash_hmac_md5(lua_State* L)
+{
+    size_t key_len = 0, data_len = 0;
+    const char* key = get_hash_data(L, 1, &key_len);
+    const char* data = get_hash_data(L, 2, &data_len);
+
+    uint8_t out[16];
+    compute_hmac(key, key_len, data, data_len, compute_md5, 16, out);
+    lua_pushlstring(L, (const char*)out, 16);
+    return 1;
+}
+
+static int hash_hmac_md5hex(lua_State* L)
+{
+    size_t key_len = 0, data_len = 0;
+    const char* key = get_hash_data(L, 1, &key_len);
+    const char* data = get_hash_data(L, 2, &data_len);
+
+    uint8_t out[16];
+    compute_hmac(key, key_len, data, data_len, compute_md5, 16, out);
+    char hex[32];
+    bytes_to_hex(out, 16, hex);
+    lua_pushlstring(L, hex, 32);
+    return 1;
+}
+
+// Base64 encoding & decoding
+static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static int hash_base64_encode(lua_State* L)
+{
+    size_t len = 0;
+    const char* data = get_hash_data(L, 1, &len);
+
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+
+    for (size_t i = 0; i < len; i += 3)
+    {
+        uint32_t octet_a = i < len ? (unsigned char)data[i] : 0;
+        uint32_t octet_b = (i + 1) < len ? (unsigned char)data[i + 1] : 0;
+        uint32_t octet_c = (i + 2) < len ? (unsigned char)data[i + 2] : 0;
+
+        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+
+        out.push_back(b64_table[(triple >> 18) & 0x3F]);
+        out.push_back(b64_table[(triple >> 12) & 0x3F]);
+        out.push_back((i + 1) < len ? b64_table[(triple >> 6) & 0x3F] : '=');
+        out.push_back((i + 2) < len ? b64_table[triple & 0x3F] : '=');
+    }
+
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+static int hash_base64_decode(lua_State* L)
+{
+    size_t len = 0;
+    const char* data = get_hash_data(L, 1, &len);
+
+    static int8_t dtable[256];
+    static bool dtable_inited = false;
+    if (!dtable_inited)
+    {
+        memset(dtable, -1, sizeof(dtable));
+        for (int i = 0; i < 64; ++i)
+            dtable[(unsigned char)b64_table[i]] = (int8_t)i;
+        dtable_inited = true;
+    }
+
+    std::string out;
+    out.reserve((len / 4) * 3);
+
+    uint32_t buffer = 0;
+    int bits_collected = 0;
+
+    for (size_t i = 0; i < len; ++i)
+    {
+        unsigned char c = (unsigned char)data[i];
+        if (c == '=') break;
+        if (dtable[c] < 0) continue;
+
+        buffer = (buffer << 6) | dtable[c];
+        bits_collected += 6;
+
+        if (bits_collected >= 8)
+        {
+            bits_collected -= 8;
+            out.push_back((char)((buffer >> bits_collected) & 0xFF));
+        }
+    }
+
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+static int hash_hex_encode(lua_State* L)
+{
+    size_t len = 0;
+    const char* data = get_hash_data(L, 1, &len);
+    std::string out;
+    out.resize(len * 2);
+    bytes_to_hex((const uint8_t*)data, len, &out[0]);
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+static int hash_hex_decode(lua_State* L)
+{
+    size_t len = 0;
+    const char* data = get_hash_data(L, 1, &len);
+    if (len % 2 != 0)
+    {
+        luaL_error(L, "invalid hex string length");
+    }
+
+    std::string out;
+    out.resize(len / 2);
+    for (size_t i = 0; i < len; i += 2)
+    {
+        int hi = hex_char_to_val(data[i]);
+        int lo = hex_char_to_val(data[i + 1]);
+        if (hi < 0 || lo < 0)
+        {
+            luaL_error(L, "invalid hex character in string");
+        }
+        out[i / 2] = (char)((hi << 4) | lo);
+    }
+
+    lua_pushlstring(L, out.data(), out.size());
     return 1;
 }
 
@@ -444,7 +684,22 @@ static const luaL_Reg hashlib[] = {
     {"sha1hex", hash_sha1hex},
     {"sha256", hash_sha256},
     {"sha256hex", hash_sha256hex},
-    {NULL, NULL}
+    {"hmac_sha256", hash_hmac_sha256},
+    {"hmac_sha256hex", hash_hmac_sha256hex},
+    {"hmac_sha1", hash_hmac_sha1},
+    {"hmac_sha1hex", hash_hmac_sha1hex},
+    {"hmac_md5", hash_hmac_md5},
+    {"hmac_md5hex", hash_hmac_md5hex},
+    {"base64_encode", hash_base64_encode},
+    {"base64_decode", hash_base64_decode},
+    {"hex_encode", hash_hex_encode},
+    {"hex_decode", hash_hex_decode},
+    // Aliases
+    {"base64", hash_base64_encode},
+    {"unbase64", hash_base64_decode},
+    {"hex", hash_hex_encode},
+    {"unhex", hash_hex_decode},
+    {NULL, NULL},
 };
 
 int luaopen_hash(lua_State* L)

@@ -9,10 +9,10 @@
 #include <memory>
 #include <string>
 
-class ProcessFixture
+class NetFixture
 {
 public:
-    ProcessFixture()
+    NetFixture()
         : state(luaL_newstate(), lua_close)
     {
         L = state.get();
@@ -46,25 +46,32 @@ private:
     std::unique_ptr<lua_State, void (*)(lua_State*)> state;
 };
 
-TEST_SUITE_BEGIN("ProcessTests");
+TEST_SUITE_BEGIN("NetTests");
 
-TEST_CASE_FIXTURE(ProcessFixture, "ProcessSpawnAndEnv")
+TEST_CASE_FIXTURE(NetFixture, "NetUrlHelpers")
 {
     std::string err = run(R"(
-        process.env["JACI_TEST_VAR_PROC"] = "hello_proc"
-        assert(process.env["JACI_TEST_VAR_PROC"] == "hello_proc")
-        process.env["JACI_TEST_VAR_PROC"] = nil
-        assert(process.env["JACI_TEST_VAR_PROC"] == nil)
+        local parsed = net.parseurl("http://example.com:8080/api/v1?q=test")
+        assert(parsed ~= nil)
+        assert(parsed.scheme == "http")
+        assert(parsed.host == "example.com")
+        assert(parsed.port == 8080)
+        assert(parsed.path == "/api/v1?q=test")
 
-        local res = process.spawn("echo", {"hello world"})
-        assert(res.exitcode == 0)
-        assert(string.find(res.stdout, "hello world") ~= nil)
+        local encoded = net.urlencode("hello world & foo=bar")
+        assert(encoded == "hello+world+%26+foo%3Dbar")
+        assert(net.urldecode(encoded) == "hello world & foo=bar")
+    )");
+    CHECK(err == "");
+}
 
-        assert(type(process.pid) == "number" or type(process.pid()) == "number")
-        assert(type(process.cwd()) == "string")
-        assert(type(process.uptime()) == "number" and process.uptime() >= 0)
-        assert(type(process.os) == "string")
-        assert(type(process.arch) == "string")
+TEST_CASE_FIXTURE(NetFixture, "NetTcpLoopback")
+{
+    std::string err = run(R"(
+        local listener = net.listen("127.0.0.1", 0)
+        assert(listener ~= nil)
+
+        listener:close()
     )");
     CHECK(err == "");
 }

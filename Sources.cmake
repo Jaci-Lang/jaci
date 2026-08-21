@@ -140,6 +140,19 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/include/Luau/UnwindBuilder.h
     CodeGen/include/Luau/UnwindBuilderDwarf2.h
     CodeGen/include/Luau/UnwindBuilderWin.h
+    CodeGen/include/Luau/Hir.h
+    CodeGen/include/Luau/HirData.h
+    CodeGen/include/Luau/HirBuilder.h
+    CodeGen/include/Luau/HirAnalysis.h
+    CodeGen/include/Luau/HirDump.h
+    CodeGen/include/Luau/HirOpt.h
+    CodeGen/include/Luau/Mir.h
+    CodeGen/include/Luau/MirData.h
+    CodeGen/include/Luau/MirBuilder.h
+    CodeGen/include/Luau/MirAnalysis.h
+    CodeGen/include/Luau/MirDump.h
+    CodeGen/include/Luau/MirOpt.h
+    CodeGen/include/Luau/MirLowering.h
     CodeGen/include/Luau/BytecodeAnalysis.h
     CodeGen/include/Luau/BytecodeSummary.h
     CodeGen/include/luacodegen.h
@@ -157,6 +170,15 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/src/EmitBuiltinsX64.cpp
     CodeGen/src/EmitCommonX64.cpp
     CodeGen/src/EmitInstructionX64.cpp
+    CodeGen/src/HirAnalysis.cpp
+    CodeGen/src/HirBuilder.cpp
+    CodeGen/src/HirDump.cpp
+    CodeGen/src/HirOpt.cpp
+    CodeGen/src/MirAnalysis.cpp
+    CodeGen/src/MirBuilder.cpp
+    CodeGen/src/MirDump.cpp
+    CodeGen/src/MirLowering.cpp
+    CodeGen/src/MirOpt.cpp
     CodeGen/src/IrAnalysis.cpp
     CodeGen/src/IrBuilder.cpp
     CodeGen/src/IrCallWrapperX64.cpp
@@ -529,12 +551,18 @@ if(TARGET Luau.UnitTest)
         tests/FragmentAutocomplete.test.cpp
         tests/Frontend.test.cpp
         tests/Generalization.test.cpp
+        tests/Hir.test.cpp
+        tests/HirTable.test.cpp
+        tests/HirCallEscape.test.cpp
         tests/InsertionOrderedMap.test.cpp
         tests/IostreamOptional.h
         tests/IrAssembly.test.cpp
         tests/IrBuilder.test.cpp
         tests/IrCallWrapperX64.test.cpp
         tests/IrRegAllocX64.test.cpp
+        tests/Mir.test.cpp
+        tests/MirOpt.test.cpp
+        tests/OptimizationPipeline.test.cpp
         tests/JsonEmitter.test.cpp
         tests/Lexer.test.cpp
         tests/Linter.test.cpp
@@ -617,6 +645,7 @@ if(TARGET Luau.Conformance)
         tests/Json.test.cpp
         tests/Hash.test.cpp
         tests/Process.test.cpp
+        tests/Net.test.cpp
         tests/IrLowering.test.cpp
         tests/SharedCodeAllocator.test.cpp
         tests/main.cpp)

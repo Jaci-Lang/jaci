@@ -64,6 +64,20 @@ TEST_CASE_FIXTURE(JsonFixture, "JsonEncodeBasic")
         local obj = {a = 1}
         local encoded = json.encode(obj)
         assert(encoded == [[{"a":1}]])
+
+        -- Pretty printing
+        local p = json.pretty({1, 2})
+        assert(string.find(p, "\n") ~= nil)
+
+        -- Validation
+        assert(json.valid("[1, 2, 3]") == true)
+        assert(json.valid("{invalid") == false)
+
+        -- Explicit array/object
+        local empty_arr = json.array()
+        assert(json.encode(empty_arr) == "[]")
+        local empty_obj = json.object()
+        assert(json.encode(empty_obj) == "{}")
     )");
     CHECK(err == "");
 }

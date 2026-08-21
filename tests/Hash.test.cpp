@@ -68,4 +68,28 @@ TEST_CASE_FIXTURE(HashFixture, "HashVectors")
     CHECK(err == "");
 }
 
+TEST_CASE_FIXTURE(HashFixture, "HmacAndBase64")
+{
+    std::string err = run(R"(
+        -- HMAC-SHA256 test vector (RFC 4231 Test Case 2: key="Jefe", data="what do ya want for nothing?")
+        local hmac256 = hash.hmac_sha256hex("Jefe", "what do ya want for nothing?")
+        assert(hmac256 == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+
+        -- HMAC-MD5 test vector (RFC 2202 Test Case 2: key="Jefe", data="what do ya want for nothing?")
+        local hmac_md5 = hash.hmac_md5hex("Jefe", "what do ya want for nothing?")
+        assert(hmac_md5 == "750c783e6ab0b503eaa86e310a5db738")
+
+        -- Base64 encode & decode
+        local b64 = hash.base64_encode("Hello Jaci Runtime!")
+        assert(b64 == "SGVsbG8gSmFjaSBSdW50aW1lIQ==")
+        assert(hash.base64_decode(b64) == "Hello Jaci Runtime!")
+
+        -- Hex encode & decode
+        local hex = hash.hex_encode("Jaci")
+        assert(hex == "4a616369" or hex == "4A616369")
+        assert(hash.hex_decode("4a616369") == "Jaci")
+    )");
+    CHECK(err == "");
+}
+
 TEST_SUITE_END();
