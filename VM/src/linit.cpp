@@ -23,6 +23,11 @@ static const luaL_Reg lualibs[] = {
     {LUA_INTLIBNAME, luaopen_integer},
     {LUA_FSLIBNAME, luaopen_fs},
     {LUA_IOLIBNAME, luaopen_io},
+    {LUA_FFILIBNAME, luaopen_ffi},
+    {LUA_JSONLIBNAME, luaopen_json},
+    {LUA_HASHLIBNAME, luaopen_hash},
+    {LUA_PROCLIBNAME, luaopen_process},
+    {LUA_NETLIBNAME, luaopen_net},
     {NULL, NULL},
 };
 
@@ -40,6 +45,11 @@ static const luaL_Reg lualibs_NOINTEGER[] = {
     {LUA_VECLIBNAME, luaopen_vector},
     {LUA_FSLIBNAME, luaopen_fs},
     {LUA_IOLIBNAME, luaopen_io},
+    {LUA_FFILIBNAME, luaopen_ffi},
+    {LUA_JSONLIBNAME, luaopen_json},
+    {LUA_HASHLIBNAME, luaopen_hash},
+    {LUA_PROCLIBNAME, luaopen_process},
+    {LUA_NETLIBNAME, luaopen_net},
     {NULL, NULL},
 };
 

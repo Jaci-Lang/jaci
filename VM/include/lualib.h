@@ -160,6 +160,21 @@ LUALIB_API int luaopen_fs(lua_State* L);
 #define LUA_IOLIBNAME "io"
 LUALIB_API int luaopen_io(lua_State* L);
 
+#define LUA_FFILIBNAME "ffi"
+LUALIB_API int luaopen_ffi(lua_State* L);
+
+#define LUA_JSONLIBNAME "json"
+LUALIB_API int luaopen_json(lua_State* L);
+
+#define LUA_HASHLIBNAME "hash"
+LUALIB_API int luaopen_hash(lua_State* L);
+
+#define LUA_PROCLIBNAME "process"
+LUALIB_API int luaopen_process(lua_State* L);
+
+#define LUA_NETLIBNAME "net"
+LUALIB_API int luaopen_net(lua_State* L);
+
 // open all builtin libraries
 LUALIB_API void luaL_openlibs(lua_State* L);
 

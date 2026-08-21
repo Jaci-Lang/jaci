@@ -21,10 +21,19 @@ Performance is at the heart of Jaci. We actively optimize execution paths across
 - **Low-Overhead Runtime**: Minimal memory footprint, efficient garbage collection heuristics, and zero unnecessary runtime layers.
 
 ### 2. Enhanced FFI and Native Interoperability
-General-purpose programming requires direct and fast communication with host operating systems and native C/C++ libraries. Jaci focuses on developing and enhancing Foreign Function Interface (FFI) capabilities and native CodeGen integration, enabling near-zero-cost native calls without writing cumbersome C wrappers.
+General-purpose programming requires direct and fast communication with host operating systems and native C/C++ libraries. Jaci provides a built-in `ffi` module with dynamic library loading (`dlopen`/`LoadLibrary`) and typed call trampolines for near-zero-cost foreign function dispatch.
 
-### 3. Reduced Sandbox Limitations
-Upstream Luau intentionally restricts access to system resources, raw memory, and underlying platform facilities to sandbox scripts within Roblox Studio. Jaci systematically relaxes and removes these restrictions to provide full standalone capabilities, including expanded filesystem access, process management, and native system APIs.
+### 3. Reduced Sandbox Limitations & Rich Native Libraries
+Upstream Luau restricts access to system resources, raw memory, and underlying platform facilities. Jaci removes these restrictions and provides standard libraries to bootstrap standalone applications:
+- **`ffi`**: Load `.so`/`.dylib`/`.dll` libraries and call C functions directly with typed arguments.
+- **`fs`**: Filesystem operations (`readfile`, `writefile`, `mkdir`, `list`, `stat`, `copy`, `move`, `cwd`) with `buffer` and `string` support.
+- **`io`**: Stream IO with `io.open`, `io.popen`, `io.stdin`, `io.stdout`, `io.stderr`, buffered reads, and file iteration.
+- **`os`**: Extended environment control (`getenv`, `setenv`), command execution (`execute`), and process helpers.
+- **`process`**: Subprocess spawning with stdout/stderr capture, stdin piping, and environment management.
+- **`net`**: Synchronous TCP socket communication and HTTP/1.1 client (`net.request`, `net.connect`).
+- **`json`**: Native JSON encode and decode with cycle detection and formatting options.
+- **`hash`**: Built-in CRC32, FNV-1a, MD5, SHA-1, and SHA-256 digests on strings and buffers.
+- **`integer`**: 64-bit integer arithmetic and bitwise utilities.
 
 ### 4. Selective Upstream Synchronization
 Jaci tracks upstream Luau to continuously adopt core improvements in the compiler, type checker, and VM optimizations. Through an automated weekly CI pipeline, upstream changes are imported via Pull Requests and reviewed to ensure they meet Jaci's general-purpose criteria and do not reintroduce Roblox-specific constraints.

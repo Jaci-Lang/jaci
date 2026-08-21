@@ -415,6 +415,11 @@ target_sources(Luau.VM PRIVATE
     VM/src/lutf8lib.cpp
     VM/src/lveclib.cpp
     VM/src/lintlib.cpp
+    VM/src/lffilib.cpp
+    VM/src/ljsonlib.cpp
+    VM/src/lhashlib.cpp
+    VM/src/lproclib.cpp
+    VM/src/lnetlib.cpp
     VM/src/lvmexecute.cpp
     VM/src/lclass.cpp
     VM/src/lclasslib.cpp
@@ -608,6 +613,10 @@ if(TARGET Luau.Conformance)
         tests/DirectFieldAccess.test.cpp
         tests/FeedbackVector.test.cpp
         tests/Filesystem.test.cpp
+        tests/Ffi.test.cpp
+        tests/Json.test.cpp
+        tests/Hash.test.cpp
+        tests/Process.test.cpp
         tests/IrLowering.test.cpp
         tests/SharedCodeAllocator.test.cpp
         tests/main.cpp)
