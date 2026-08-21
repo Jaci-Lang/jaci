@@ -14,6 +14,7 @@
 #include "Luau/AnalyzeRequirer.h"
 #include "Luau/FileUtils.h"
 #include "Luau/Flags.h"
+#include "Luau/LspServer.h"
 #include "Luau/RequireNavigator.h"
 
 #include "lua.h"
@@ -142,6 +143,7 @@ static void displayHelp(const char* argv0)
     printf("  --mode=strict: default to strict mode when typechecking\n");
     printf("  --solver={new|old}: selects which typechecker to use (defaults to the new solver)\n");
     printf("  --timetrace: record compiler time tracing information into trace.json\n");
+    printf("  --lsp: start Language Server Protocol (LSP) mode over stdio\n");
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -433,6 +435,8 @@ int main(int argc, char** argv)
             basePath = std::string{argv[i] + 10};
         else if (strcmp(argv[i], "--solver=old") == 0)
             solverMode = Luau::SolverMode::Old;
+        else if (strcmp(argv[i], "--lsp") == 0)
+            return Luau::runLspServer();
     }
 
 #if !defined(LUAU_ENABLE_TIME_TRACE)

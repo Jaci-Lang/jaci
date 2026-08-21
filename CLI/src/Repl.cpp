@@ -15,6 +15,7 @@
 #include "Luau/FileUtils.h"
 #include "Luau/Flags.h"
 #include "Luau/JitInliner.h"
+#include "Luau/LspServer.h"
 #include "Luau/Profiler.h"
 #include "Luau/ReplRequirer.h"
 #include "Luau/Require.h"
@@ -762,6 +763,7 @@ static void displayHelp(const char* argv0)
     printf("  --program-args,-a: declare start of arguments to be passed to the Luau program\n");
     printf("  --fflags=<flags>: comma-separated list of fast flags to enable/disable (--fflags=true,false,LuauFlag1=true,LuauFlag2=false).\n");
     printf("  --jit-inliner: enable JIT bytecode inliner\n");
+    printf("  --lsp: start Language Server Protocol (LSP) mode over stdio\n");
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -853,6 +855,10 @@ int replMain(int argc, char** argv)
         else if (strcmp(argv[i], "--jit-inliner") == 0)
         {
             jitInliner = true;
+        }
+        else if (strcmp(argv[i], "--lsp") == 0)
+        {
+            return Luau::runLspServer();
         }
         else if (strncmp(argv[i], "--fflags=", 9) == 0)
         {

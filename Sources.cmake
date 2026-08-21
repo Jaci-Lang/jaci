@@ -491,12 +491,19 @@ target_sources(isocline PRIVATE
 
 # Common sources shared between all CLI apps
 target_sources(Luau.CLI.lib PRIVATE
+    CLI/include/Luau/AnalyzeRequirer.h
     CLI/include/Luau/FileUtils.h
     CLI/include/Luau/Flags.h
+    CLI/include/Luau/JsonRpc.h
+    CLI/include/Luau/LspProtocol.h
+    CLI/include/Luau/LspServer.h
     CLI/include/Luau/VfsNavigator.h
 
+    CLI/src/AnalyzeRequirer.cpp
     CLI/src/FileUtils.cpp
     CLI/src/Flags.cpp
+    CLI/src/JsonRpc.cpp
+    CLI/src/LspServer.cpp
     CLI/src/VfsNavigator.cpp
 )
 
@@ -520,10 +527,7 @@ endif()
 if(TARGET Luau.Analyze.CLI)
     # Luau.Analyze.CLI Sources
     target_sources(Luau.Analyze.CLI PRIVATE
-        CLI/include/Luau/AnalyzeRequirer.h
-
         CLI/src/Analyze.cpp
-        CLI/src/AnalyzeRequirer.cpp
     )
 endif()
 
@@ -582,6 +586,7 @@ if(TARGET Luau.UnitTest)
         tests/JsonEmitter.test.cpp
         tests/Lexer.test.cpp
         tests/Linter.test.cpp
+        tests/Lsp.test.cpp
         tests/LValue.test.cpp
         tests/Module.test.cpp
         tests/NonstrictMode.test.cpp

@@ -94,7 +94,7 @@ target_include_directories(Luau.Common PUBLIC Common/include)
 
 target_compile_features(Luau.CLI.lib PUBLIC cxx_std_17)
 target_include_directories(Luau.CLI.lib PUBLIC CLI/include)
-target_link_libraries(Luau.CLI.lib PRIVATE Luau.Common Luau.Config)
+target_link_libraries(Luau.CLI.lib PUBLIC Luau.Analysis PRIVATE Luau.Common Luau.Config Luau.Compiler Luau.VM Luau.Require)
 
 target_compile_features(Luau.Ast PUBLIC cxx_std_17)
 target_include_directories(Luau.Ast PUBLIC Ast/include)
@@ -286,7 +286,7 @@ if(LUAU_BUILD_CLI)
 
     target_include_directories(Luau.Repl.CLI PRIVATE extern extern/isocline/include)
 
-    target_link_libraries(Luau.Repl.CLI PRIVATE Luau.Compiler Luau.Inliner Luau.Config Luau.CodeGen Luau.VM Luau.Require Luau.CLI.lib isocline)
+    target_link_libraries(Luau.Repl.CLI PRIVATE Luau.Compiler Luau.Analysis Luau.Inliner Luau.Config Luau.CodeGen Luau.VM Luau.Require Luau.CLI.lib isocline)
 
     target_link_libraries(Luau.Repl.CLI PRIVATE osthreads)
     target_link_libraries(Luau.Reduce.CLI PRIVATE osthreads)
@@ -312,7 +312,7 @@ if(LUAU_BUILD_TESTS)
     target_compile_options(Luau.UnitTest PRIVATE ${LUAU_OPTIONS})
     target_compile_definitions(Luau.UnitTest PRIVATE DOCTEST_CONFIG_DOUBLE_STRINGIFY DOCTEST_CONFIG_USE_STD_HEADERS)
     target_include_directories(Luau.UnitTest PRIVATE extern VM/include)
-    target_link_libraries(Luau.UnitTest PRIVATE Luau.Analysis Luau.Bytecode Luau.Compiler Luau.CodeGen Luau.VM)
+    target_link_libraries(Luau.UnitTest PRIVATE Luau.Analysis Luau.Bytecode Luau.Compiler Luau.CodeGen Luau.VM Luau.CLI.lib Luau.Require)
 
     target_compile_options(Luau.Conformance PRIVATE ${LUAU_OPTIONS})
     target_compile_definitions(Luau.Conformance PRIVATE DOCTEST_CONFIG_DOUBLE_STRINGIFY DOCTEST_CONFIG_USE_STD_HEADERS)
@@ -328,7 +328,7 @@ if(LUAU_BUILD_TESTS)
     target_compile_options(Luau.CLI.Test PRIVATE ${LUAU_OPTIONS})
     target_compile_definitions(Luau.CLI.Test PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
     target_include_directories(Luau.CLI.Test PRIVATE extern CLI)
-    target_link_libraries(Luau.CLI.Test PRIVATE Luau.Compiler Luau.Inliner Luau.Config Luau.CodeGen Luau.VM Luau.Require Luau.CLI.lib isocline)
+    target_link_libraries(Luau.CLI.Test PRIVATE Luau.Compiler Luau.Analysis Luau.Inliner Luau.Config Luau.CodeGen Luau.VM Luau.Require Luau.CLI.lib isocline)
     target_link_libraries(Luau.CLI.Test PRIVATE osthreads)
 
     target_sources(t_native_interop_test PRIVATE t/native_interop_test.cpp)
