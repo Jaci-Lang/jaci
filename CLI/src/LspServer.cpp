@@ -32,41 +32,26 @@ namespace Luau
 void DocumentState::updateText(std::string newText)
 {
     text = std::move(newText);
-    lineOffsets.clear();
-    lineOffsets.push_back(0);
-    for (size_t i = 0; i < text.size(); ++i)
-    {
-        if (text[i] == '\n')
-            lineOffsets.push_back(i + 1);
-    }
+    text.shrink_to_fit();
+    lineOffsets.build(text);
 }
 
 size_t DocumentState::getOffset(const Lsp::Position& pos) const
 {
-    if (pos.line < 0)
-        return 0;
-    if (static_cast<size_t>(pos.line) >= lineOffsets.size())
-        return text.size();
-
-    size_t lineStart = lineOffsets[pos.line];
-    size_t lineEnd = (static_cast<size_t>(pos.line) + 1 < lineOffsets.size()) ? lineOffsets[pos.line + 1] : text.size();
-
-    size_t charOffset = lineStart + std::max(0, pos.character);
-    return std::min(charOffset, lineEnd);
+    return lineOffsets.getOffset(pos.line, pos.character, text.size());
 }
 
 Lsp::Position DocumentState::getPosition(size_t offset) const
 {
-    if (offset > text.size())
-        offset = text.size();
-
-    auto it = std::upper_bound(lineOffsets.begin(), lineOffsets.end(), offset);
-    int line = static_cast<int>(std::distance(lineOffsets.begin(), it) - 1);
-    if (line < 0)
-        line = 0;
-
-    int character = static_cast<int>(offset - lineOffsets[line]);
+    int line = 0;
+    int character = 0;
+    lineOffsets.getPosition(offset, line, character, text.size());
     return Lsp::Position{line, character};
+}
+
+size_t DocumentState::getMemoryUsage() const
+{
+    return text.capacity() + lineOffsets.memoryUsage() + uri.capacity() + path.capacity();
 }
 
 void DocumentState::applyIncrementalChange(const Lsp::Range& range, const std::string& newText)
@@ -100,11 +85,28 @@ std::optional<SourceCode> LspFileResolver::readSource(const ModuleName& name)
         }
     }
 
+    auto it = cachedFiles.find(name);
+    if (it != cachedFiles.end())
+    {
+        return SourceCode{it->second.getText(), SourceCode::Module};
+    }
+
     std::optional<std::string> diskContent = readFile(name);
     if (diskContent)
-        return SourceCode{*diskContent, SourceCode::Module};
+    {
+        cachedFiles.emplace(name, Vfs::CompressedFileBuffer(*diskContent, /* autoCompress = */ true));
+        return SourceCode{std::move(*diskContent), SourceCode::Module};
+    }
 
     return std::nullopt;
+}
+
+size_t LspFileResolver::getCacheMemoryUsage() const
+{
+    size_t total = 0;
+    for (const auto& pair : cachedFiles)
+        total += pair.first.capacity() + pair.second.memoryUsage();
+    return total;
 }
 
 std::optional<ModuleInfo> LspFileResolver::resolveModule(const ModuleInfo* context, AstExpr* node, const TypeCheckLimits& limits)
@@ -1590,6 +1592,56 @@ Json::Value LspServer::handleLuauRequireGraph(const Json::Value& params)
     return Json::Value(std::move(result));
 }
 
+Json::Value LspServer::handleLuauVfsStats(const Json::Value& params)
+{
+    size_t openDocsMemory = 0;
+    size_t openDocsCount = documents.size();
+    for (const auto& pair : documents)
+        openDocsMemory += pair.second.getMemoryUsage();
+
+    size_t cachedFilesCount = fileResolver.cachedFiles.size();
+    size_t cachedFilesMemory = fileResolver.getCacheMemoryUsage();
+
+    size_t rawCachedSize = 0;
+    for (const auto& pair : fileResolver.cachedFiles)
+        rawCachedSize += pair.second.uncompressedSize();
+
+    double savingsPercent = 0.0;
+    if (rawCachedSize > 0 && cachedFilesMemory < rawCachedSize)
+    {
+        savingsPercent = (1.0 - (static_cast<double>(cachedFilesMemory) / static_cast<double>(rawCachedSize))) * 100.0;
+    }
+
+    Json::Object stats;
+    stats.emplace_back("openDocumentsCount", Json::Value(static_cast<int64_t>(openDocsCount)));
+    stats.emplace_back("openDocumentsMemoryBytes", Json::Value(static_cast<int64_t>(openDocsMemory)));
+    stats.emplace_back("cachedFilesCount", Json::Value(static_cast<int64_t>(cachedFilesCount)));
+    stats.emplace_back("cachedFilesMemoryBytes", Json::Value(static_cast<int64_t>(cachedFilesMemory)));
+    stats.emplace_back("rawCachedSizeBytes", Json::Value(static_cast<int64_t>(rawCachedSize)));
+    stats.emplace_back("compressionSavingsPercent", Json::Value(savingsPercent));
+
+    return Json::Value(std::move(stats));
+}
+
+Json::Value LspServer::handleLuauVfsSnapshot(const Json::Value& params)
+{
+    Json::Array files;
+    for (const auto& pair : documents)
+    {
+        Json::Object docObj;
+        docObj.emplace_back("uri", Json::Value(pair.first));
+        docObj.emplace_back("path", Json::Value(pair.second.path));
+        docObj.emplace_back("version", Json::Value(pair.second.version));
+        docObj.emplace_back("compressed", Json::Value(Vfs::compress(pair.second.text)));
+        files.push_back(Json::Value(std::move(docObj)));
+    }
+
+    Json::Object res;
+    res.emplace_back("documentCount", Json::Value(static_cast<int64_t>(documents.size())));
+    res.emplace_back("documents", Json::Value(std::move(files)));
+    return Json::Value(std::move(res));
+}
+
 JsonRpc::Response LspServer::handleRequest(const JsonRpc::Request& req, std::ostream* outNotification)
 {
     if (req.method == "initialize")
@@ -1658,6 +1710,12 @@ JsonRpc::Response LspServer::handleRequest(const JsonRpc::Request& req, std::ost
 
     if (req.method == "luau/requireGraph")
         return JsonRpc::Response::ok(req.id, handleLuauRequireGraph(req.params));
+
+    if (req.method == "luau/vfsStats")
+        return JsonRpc::Response::ok(req.id, handleLuauVfsStats(req.params));
+
+    if (req.method == "luau/vfsSnapshot")
+        return JsonRpc::Response::ok(req.id, handleLuauVfsSnapshot(req.params));
 
     return JsonRpc::Response::err(req.id, -32601, "Method not found: " + req.method);
 }

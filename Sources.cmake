@@ -497,6 +497,7 @@ target_sources(Luau.CLI.lib PRIVATE
     CLI/include/Luau/JsonRpc.h
     CLI/include/Luau/LspProtocol.h
     CLI/include/Luau/LspServer.h
+    CLI/include/Luau/VfsCompress.h
     CLI/include/Luau/VfsNavigator.h
 
     CLI/src/AnalyzeRequirer.cpp
@@ -504,6 +505,7 @@ target_sources(Luau.CLI.lib PRIVATE
     CLI/src/Flags.cpp
     CLI/src/JsonRpc.cpp
     CLI/src/LspServer.cpp
+    CLI/src/VfsCompress.cpp
     CLI/src/VfsNavigator.cpp
 )
 

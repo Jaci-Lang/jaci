@@ -100,7 +100,7 @@ TEST_CASE("DocumentStateOffsetAndIncrementalEdit")
     doc.path = "/test.luau";
     doc.updateText("local a = 1\nlocal b = 2\nlocal c = 3");
 
-    CHECK(doc.lineOffsets.size() == 3);
+    CHECK(doc.lineOffsets.lineCount() == 3);
     CHECK(doc.getOffset(Lsp::Position{0, 0}) == 0);
     CHECK(doc.getOffset(Lsp::Position{1, 0}) == 12);
     CHECK(doc.getOffset(Lsp::Position{2, 0}) == 24);
@@ -569,4 +569,88 @@ TEST_CASE("LspBinaryJsonTransport")
     CHECK(respVal->get("result")->get("documentation") != nullptr);
 }
 
+TEST_CASE("VfsFastBinaryCompression")
+{
+    std::string code = R"(
+        local function fibonacci(n: number): number
+            if n <= 1 then
+                return n
+            else
+                return fibonacci(n - 1) + fibonacci(n - 2)
+            end
+        end
+
+        local function computeStats(items: {number})
+            local sum = 0
+            for _, v in ipairs(items) do
+                sum += v
+            end
+            return sum / #items
+        end
+
+        return {
+            fibonacci = fibonacci,
+            computeStats = computeStats,
+        }
+    )";
+
+    std::string compressed = Vfs::compress(code);
+    CHECK(!compressed.empty());
+    CHECK(compressed.size() < code.size()); // Achieves compression
+
+    std::string decompressed = Vfs::decompress(compressed, code.size());
+    CHECK(decompressed == code); // Perfect roundtrip lossless recovery
+}
+
+TEST_CASE("VfsCompactLineOffsets")
+{
+    std::string text = "line 0\nline 1 is longer\n\nline 3\n";
+    Vfs::CompactLineOffsets offsets(text);
+    CHECK(offsets.lineCount() == 5);
+
+    // Line 1 char 0
+    size_t off = offsets.getOffset(1, 0, text.size());
+    CHECK(off == 7);
+
+    int line = -1, character = -1;
+    offsets.getPosition(7, line, character, text.size());
+    CHECK(line == 1);
+    CHECK(character == 0);
+}
+
+TEST_CASE("LspVfsStatsAndSnapshot")
+{
+    LspServer server;
+    server.openDocument("file:///main.luau", "local x = 1\nlocal y = 2\nlocal z = x + y\n");
+
+    SUBCASE("VfsStats")
+    {
+        JsonRpc::Request req;
+        req.id = JsonRpc::Id(101);
+        req.method = "luau/vfsStats";
+        req.params = Json::Value(Json::Object{});
+
+        JsonRpc::Response resp = server.handleRequest(req);
+        CHECK(!resp.error.has_value());
+        CHECK(resp.result.has_value());
+        CHECK(resp.result->get("openDocumentsCount")->getInt() == 1);
+        CHECK(resp.result->get("openDocumentsMemoryBytes")->getInt() > 0);
+    }
+
+    SUBCASE("VfsSnapshot")
+    {
+        JsonRpc::Request req;
+        req.id = JsonRpc::Id(102);
+        req.method = "luau/vfsSnapshot";
+        req.params = Json::Value(Json::Object{});
+
+        JsonRpc::Response resp = server.handleRequest(req);
+        CHECK(!resp.error.has_value());
+        CHECK(resp.result.has_value());
+        CHECK(resp.result->get("documentCount")->getInt() == 1);
+        CHECK(resp.result->get("documents")->isArray());
+    }
+}
+
 TEST_SUITE_END();
+

@@ -7,6 +7,7 @@
 #include "Luau/Frontend.h"
 #include "Luau/JsonRpc.h"
 #include "Luau/LspProtocol.h"
+#include "Luau/VfsCompress.h"
 
 #include <iostream>
 #include <memory>
@@ -23,18 +24,20 @@ struct DocumentState
     std::string path;
     int version = 0;
     std::string text;
-    std::vector<size_t> lineOffsets;
+    Vfs::CompactLineOffsets lineOffsets;
 
     void updateText(std::string newText);
     void applyIncrementalChange(const Lsp::Range& range, const std::string& newText);
     size_t getOffset(const Lsp::Position& pos) const;
     Lsp::Position getPosition(size_t offset) const;
+    size_t getMemoryUsage() const;
 };
 
 class LspFileResolver : public FileResolver
 {
 public:
     std::unordered_map<std::string, DocumentState>* documents = nullptr;
+    mutable std::unordered_map<std::string, Vfs::CompressedFileBuffer> cachedFiles;
 
     explicit LspFileResolver(std::unordered_map<std::string, DocumentState>* docs)
         : documents(docs)
@@ -44,6 +47,9 @@ public:
     std::optional<SourceCode> readSource(const ModuleName& name) override;
     std::optional<ModuleInfo> resolveModule(const ModuleInfo* context, AstExpr* node, const TypeCheckLimits& limits) override;
     std::string getHumanReadableModuleName(const ModuleName& name) const override;
+
+    void clearCache() const { cachedFiles.clear(); }
+    size_t getCacheMemoryUsage() const;
 };
 
 class LspConfigResolver : public ConfigResolver
@@ -99,6 +105,8 @@ public:
     Json::Value handleLuauBytecode(const Json::Value& params);
     Json::Value handleLuauEval(const Json::Value& params);
     Json::Value handleLuauRequireGraph(const Json::Value& params);
+    Json::Value handleLuauVfsStats(const Json::Value& params);
+    Json::Value handleLuauVfsSnapshot(const Json::Value& params);
 
     // Direct document management for testing
     void openDocument(const std::string& uri, const std::string& text, int version = 1);
