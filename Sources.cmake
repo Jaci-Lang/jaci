@@ -153,6 +153,12 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/include/Luau/MirDump.h
     CodeGen/include/Luau/MirOpt.h
     CodeGen/include/Luau/MirLowering.h
+    CodeGen/include/Luau/Llvm.h
+    CodeGen/include/Luau/LlvmData.h
+    CodeGen/include/Luau/LlvmTable.h
+    CodeGen/include/Luau/LlvmBuilder.h
+    CodeGen/include/Luau/LlvmLowering.h
+    CodeGen/include/Luau/LlvmEngine.h
     CodeGen/include/Luau/BytecodeAnalysis.h
     CodeGen/include/Luau/BytecodeSummary.h
     CodeGen/include/luacodegen.h
@@ -179,6 +185,10 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/src/MirDump.cpp
     CodeGen/src/MirLowering.cpp
     CodeGen/src/MirOpt.cpp
+    CodeGen/src/LlvmTable.cpp
+    CodeGen/src/LlvmBuilder.cpp
+    CodeGen/src/LlvmLowering.cpp
+    CodeGen/src/LlvmEngine.cpp
     CodeGen/src/IrAnalysis.cpp
     CodeGen/src/IrBuilder.cpp
     CodeGen/src/IrCallWrapperX64.cpp
@@ -563,6 +573,10 @@ if(TARGET Luau.UnitTest)
         tests/Mir.test.cpp
         tests/MirOpt.test.cpp
         tests/OptimizationPipeline.test.cpp
+        tests/LlvmLowering.test.cpp
+        tests/LlvmTable.test.cpp
+        tests/LlvmOpt.test.cpp
+        tests/LlvmExecution.test.cpp
         tests/JsonEmitter.test.cpp
         tests/Lexer.test.cpp
         tests/Linter.test.cpp
