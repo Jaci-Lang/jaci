@@ -204,9 +204,148 @@ static int os_time(lua_State* L)
     return 1;
 }
 
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#endif
+
 static int os_difftime(lua_State* L)
 {
     lua_pushnumber(L, difftime((time_t)(luaL_checknumber(L, 1)), (time_t)(luaL_optnumber(L, 2, 0))));
+    return 1;
+}
+
+static int os_getenv(lua_State* L)
+{
+    const char* varname = luaL_checkstring(L, 1);
+    const char* val = getenv(varname);
+    if (val)
+        lua_pushstring(L, val);
+    else
+        lua_pushnil(L);
+    return 1;
+}
+
+static int os_setenv(lua_State* L)
+{
+    const char* varname = luaL_checkstring(L, 1);
+    if (lua_isnoneornil(L, 2))
+    {
+#if defined(_WIN32)
+        _putenv_s(varname, "");
+#else
+        unsetenv(varname);
+#endif
+        lua_pushboolean(L, true);
+        return 1;
+    }
+    const char* value = luaL_checkstring(L, 2);
+#if defined(_WIN32)
+    int res = _putenv_s(varname, value);
+    lua_pushboolean(L, res == 0);
+#else
+    int res = setenv(varname, value, 1);
+    lua_pushboolean(L, res == 0);
+#endif
+    return 1;
+}
+
+static int os_execute(lua_State* L)
+{
+    if (lua_isnoneornil(L, 1))
+    {
+        int status = system(NULL);
+        lua_pushboolean(L, status != 0);
+        return 1;
+    }
+    const char* cmd = luaL_checkstring(L, 1);
+    int status = system(cmd);
+    if (status == -1)
+    {
+        lua_pushnil(L);
+        lua_pushstring(L, strerror(errno));
+        lua_pushinteger(L, -1);
+        return 3;
+    }
+#if !defined(_WIN32)
+    if (WIFEXITED(status))
+    {
+        int exitCode = WEXITSTATUS(status);
+        lua_pushinteger(L, exitCode);
+        lua_pushliteral(L, "exit");
+        lua_pushinteger(L, exitCode);
+        return 3;
+    }
+    else if (WIFSIGNALED(status))
+    {
+        lua_pushnil(L);
+        lua_pushliteral(L, "signal");
+        lua_pushinteger(L, WTERMSIG(status));
+        return 3;
+    }
+#endif
+    lua_pushinteger(L, status);
+    return 1;
+}
+
+static int os_remove(lua_State* L)
+{
+    const char* filename = luaL_checkstring(L, 1);
+    if (remove(filename) == 0)
+    {
+        lua_pushboolean(L, true);
+        return 1;
+    }
+    lua_pushnil(L);
+    lua_pushfstring(L, "%s: %s", filename, strerror(errno));
+    lua_pushinteger(L, errno);
+    return 3;
+}
+
+static int os_rename(lua_State* L)
+{
+    const char* from = luaL_checkstring(L, 1);
+    const char* to = luaL_checkstring(L, 2);
+    if (rename(from, to) == 0)
+    {
+        lua_pushboolean(L, true);
+        return 1;
+    }
+    lua_pushnil(L);
+    lua_pushfstring(L, "%s -> %s: %s", from, to, strerror(errno));
+    lua_pushinteger(L, errno);
+    return 3;
+}
+
+static int os_exit(lua_State* L)
+{
+    int status = luaL_optinteger(L, 1, 0);
+    exit(status);
+}
+
+static int os_tmpname(lua_State* L)
+{
+#if defined(_WIN32)
+    char tempPath[MAX_PATH];
+    char tempFile[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, tempPath) == 0 || GetTempFileNameA(tempPath, "luau_", 0, tempFile) == 0)
+        luaL_error(L, "unable to generate a unique filename");
+    lua_pushstring(L, tempFile);
+#else
+    char name[] = "/tmp/luau_XXXXXX";
+    int fd = mkstemp(name);
+    if (fd == -1)
+        luaL_error(L, "unable to generate a unique filename");
+    close(fd);
+    lua_pushstring(L, name);
+#endif
     return 1;
 }
 
@@ -214,7 +353,14 @@ static const luaL_Reg syslib[] = {
     {"clock", os_clock},
     {"date", os_date},
     {"difftime", os_difftime},
+    {"execute", os_execute},
+    {"exit", os_exit},
+    {"getenv", os_getenv},
+    {"remove", os_remove},
+    {"rename", os_rename},
+    {"setenv", os_setenv},
     {"time", os_time},
+    {"tmpname", os_tmpname},
     {NULL, NULL},
 };
 
@@ -223,3 +369,4 @@ int luaopen_os(lua_State* L)
     luaL_register(L, LUA_OSLIBNAME, syslib);
     return 1;
 }
+

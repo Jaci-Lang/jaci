@@ -202,6 +202,76 @@ void* createCliRequireContext(lua_State* L)
     return ctx;
 }
 
+static std::string getFilePath(const char* name);
+
+static int lua_loadfile(lua_State* L)
+{
+    const char* filename = luaL_checkstring(L, 1);
+    const char* chunkname = luaL_optstring(L, 2, filename);
+
+    std::string path = getFilePath(filename);
+    std::optional<std::string> source = readFile(path.empty() ? filename : path);
+    if (!source)
+    {
+        lua_pushnil(L);
+        lua_pushfstring(L, "cannot open %s", filename);
+        return 2;
+    }
+
+    lua_setsafeenv(L, LUA_ENVIRONINDEX, false);
+
+    std::string bytecode = Luau::compile(*source, copts());
+    if (luau_load(L, chunkname, bytecode.data(), bytecode.size(), 0) == 0)
+        return 1;
+
+    lua_pushnil(L);
+    lua_insert(L, -2); // put before error message
+    return 2;          // return nil plus error message
+}
+
+static int lua_dofile(lua_State* L)
+{
+    const char* filename = luaL_optstring(L, 1, NULL);
+    std::optional<std::string> source;
+    std::string chunkname;
+
+    if (filename)
+    {
+        std::string path = getFilePath(filename);
+        source = readFile(path.empty() ? filename : path);
+        if (!source)
+            luaL_error(L, "cannot open %s", filename);
+        chunkname = "@" + normalizePath(filename);
+    }
+    else
+    {
+        source = readStdin();
+        if (!source)
+            luaL_error(L, "cannot read stdin");
+        chunkname = "=stdin";
+    }
+
+    lua_setsafeenv(L, LUA_ENVIRONINDEX, false);
+
+    std::string bytecode = Luau::compile(*source, copts());
+    if (luau_load(L, chunkname.c_str(), bytecode.data(), bytecode.size(), 0) != 0)
+        lua_error(L);
+
+    if (codegen)
+    {
+        Luau::CodeGen::CompilationOptions nativeOptions;
+        if (codegenCold)
+            nativeOptions.flags = Luau::CodeGen::CodeGen_ColdFunctions;
+        if (countersActive())
+            nativeOptions.recordCounters = true;
+        Luau::CodeGen::compile(L, -1, nativeOptions);
+    }
+
+    int n = lua_gettop(L) - 1;
+    lua_call(L, 0, LUA_MULTRET);
+    return lua_gettop(L) - n;
+}
+
 void setupState(lua_State* L)
 {
     if (codegen)
@@ -214,6 +284,8 @@ void setupState(lua_State* L)
 
     static const luaL_Reg funcs[] = {
         {"loadstring", lua_loadstring},
+        {"loadfile", lua_loadfile},
+        {"dofile", lua_dofile},
         {"collectgarbage", lua_collectgarbage},
 #ifdef CALLGRIND
         {"callgrind", lua_callgrind},
@@ -226,8 +298,6 @@ void setupState(lua_State* L)
     lua_pop(L, 1);
 
     luaopen_require(L, requireConfigInit, createCliRequireContext(L));
-
-    luaL_sandbox(L);
 }
 
 void setupArguments(lua_State* L, int argc, char** argv)

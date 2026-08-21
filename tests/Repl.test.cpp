@@ -448,4 +448,19 @@ TEST_CASE_FIXTURE(ReplFixture, "InteractiveStackReserve2")
     getCompletionSet("a");
 }
 
+TEST_CASE_FIXTURE(ReplFixture, "LoadfileAndDofile")
+{
+    runCode(L, R"(
+        fs.writefile("test_cli_eval.luau", "return 40 + 2")
+        local fn, err = loadfile("test_cli_eval.luau")
+        assert(fn ~= nil, "loadfile failed: " .. tostring(err))
+        assert(fn() == 42, "fn result mismatch")
+
+        local res = dofile("test_cli_eval.luau")
+        assert(res == 42, "dofile result mismatch")
+
+        fs.removefile("test_cli_eval.luau")
+    )");
+}
+
 TEST_SUITE_END();

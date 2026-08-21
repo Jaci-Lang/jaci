@@ -394,6 +394,8 @@ target_sources(Luau.VM PRIVATE
     VM/src/ldebug.cpp
     VM/src/ldo.cpp
     VM/src/lfunc.cpp
+    VM/src/lfslib.cpp
+    VM/src/liolib.cpp
     VM/src/lgc.cpp
     VM/src/lgcdebug.cpp
     VM/src/linit.cpp
@@ -605,6 +607,7 @@ if(TARGET Luau.Conformance)
         tests/Conformance.test.cpp
         tests/DirectFieldAccess.test.cpp
         tests/FeedbackVector.test.cpp
+        tests/Filesystem.test.cpp
         tests/IrLowering.test.cpp
         tests/SharedCodeAllocator.test.cpp
         tests/main.cpp)

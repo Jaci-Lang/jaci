@@ -54,6 +54,8 @@ declare function select<A...>(i: string | number, ...: A...): ...any
 -- FIXME: This type is not entirely correct - `loadstring` returns a function or
 -- (nil, string).
 declare function loadstring<A...>(src: string, chunkname: string?): (((A...) -> any)?, string?)
+declare function loadfile<A...>(filename: string?, chunkname: string?): (((A...) -> any)?, string?)
+declare function dofile(filename: string?): ...any
 
 @checked declare function newproxy(mt: boolean?): any
 
@@ -173,6 +175,13 @@ declare os: {
     date: ((formatString: "*t" | "!*t", time: number?) -> DateTypeResult) & ((formatString: string?, time: number?) -> string),
     difftime: (t2: DateTypeResult | number, t1: DateTypeResult | number) -> number,
     clock: () -> number,
+    getenv: @checked (varname: string) -> string?,
+    setenv: @checked (varname: string, value: string?) -> boolean,
+    execute: @checked (command: string?) -> (number?, string?, number?),
+    remove: @checked (path: string) -> (boolean, string?, number?),
+    rename: @checked (oldpath: string, newpath: string) -> (boolean, string?, number?),
+    exit: @checked (code: number?, close: boolean?) -> never,
+    tmpname: () -> string,
 }
 
 )BUILTIN_SRC";
@@ -387,6 +396,75 @@ declare integer: {
 
 )BUILTIN_SRC";
 
+static constexpr const char* kBuiltinDefinitionFsSrc = R"BUILTIN_SRC(
+
+export type FileStat = {
+    exists: boolean,
+    isFile: boolean,
+    isDirectory: boolean,
+    size: number,
+    modified: number,
+}
+
+declare fs: {
+    readfile: @checked (path: string) -> string,
+    writefile: @checked (path: string, contents: string | buffer) -> (),
+    appendfile: @checked (path: string, contents: string | buffer) -> (),
+    removefile: @checked (path: string) -> (),
+    removedir: @checked (path: string, recursive: boolean?) -> (),
+    mkdir: @checked (path: string, recursive: boolean?) -> (),
+    list: @checked (path: string) -> {string},
+    isfile: @checked (path: string) -> boolean,
+    isdir: @checked (path: string) -> boolean,
+    exists: @checked (path: string) -> boolean,
+    stat: @checked (path: string) -> FileStat?,
+    copy: @checked (from: string, to: string, overwrite: boolean?) -> (),
+    move: @checked (from: string, to: string) -> (),
+    cwd: () -> string,
+
+    readFile: @checked (path: string) -> string,
+    writeFile: @checked (path: string, contents: string | buffer) -> (),
+    appendFile: @checked (path: string, contents: string | buffer) -> (),
+    removeFile: @checked (path: string) -> (),
+    removeDir: @checked (path: string, recursive: boolean?) -> (),
+    makeDir: @checked (path: string, recursive: boolean?) -> (),
+    readDir: @checked (path: string) -> {string},
+    isFile: @checked (path: string) -> boolean,
+    isDir: @checked (path: string) -> boolean,
+}
+
+)BUILTIN_SRC";
+
+static constexpr const char* kBuiltinDefinitionIoSrc = R"BUILTIN_SRC(
+
+export type FileHandle = {
+    close: (self: FileHandle) -> (boolean, string?, number?),
+    flush: (self: FileHandle) -> (boolean, string?),
+    lines: (self: FileHandle) -> () -> string?,
+    read: (self: FileHandle, ...string | number) -> ...any,
+    seek: (self: FileHandle, whence: ("set" | "cur" | "end")?, offset: number?) -> (number?, string?),
+    write: (self: FileHandle, ...string | number | buffer) -> (FileHandle | boolean, string?),
+}
+
+declare io: {
+    close: (file: FileHandle?) -> (boolean, string?, number?),
+    flush: () -> (boolean, string?),
+    input: ((file: FileHandle | string) -> FileHandle) & (() -> FileHandle),
+    output: ((file: FileHandle | string) -> FileHandle) & (() -> FileHandle),
+    lines: (filename: string?) -> () -> string?,
+    open: @checked (filename: string, mode: string?) -> (FileHandle?, string?),
+    popen: @checked (command: string, mode: string?) -> (FileHandle?, string?),
+    read: (...string | number) -> ...any,
+    tmpfile: () -> (FileHandle?, string?),
+    type: (obj: any) -> "file" | "closed file" | nil,
+    write: (...string | number | buffer) -> (boolean, string?),
+    stdin: FileHandle,
+    stdout: FileHandle,
+    stderr: FileHandle,
+}
+
+)BUILTIN_SRC";
+
 static const char* kBuiltinDefinitionClassSrc = R"CLASS_SRC(
 declare class: {
     isinstance: @checked (o: unknown, c: class) -> boolean,
@@ -401,6 +479,8 @@ std::string getBuiltinDefinitionSource()
     result += kBuiltinDefinitionBit32Src;
     result += kBuiltinDefinitionMathSrc;
     result += kBuiltinDefinitionOsSrc;
+    result += kBuiltinDefinitionFsSrc;
+    result += kBuiltinDefinitionIoSrc;
     result += kBuiltinDefinitionCoroutineSrc;
     result += kBuiltinDefinitionTableSrc;
     result += kBuiltinDefinitionDebugSrc;
