@@ -135,49 +135,52 @@ jobs:
           mkdir -p release-assets
           find artifacts -type f \( -name "*.zip" -o -name "*.js" \) -exec cp {} release-assets/ \;
           cd release-assets
-          sha256sum * > SHA256SUMS.txt
+          find . -maxdepth 1 -type f ! -name "SHA256SUMS.txt" -exec sha256sum {} + | sed 's|\./||' > SHA256SUMS.txt
           ls -la
-          echo "CHECKSUM_TABLE<<EOF" >> $GITHUB_ENV
-          awk '{print "| `" $2 "` | `" $1 "` |"}' SHA256SUMS.txt >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
 
-      - name: Generate Structured Release Notes
+      - name: Generate Dynamic Release Notes
         id: notes
         run: |
           VERSION="${{ github.event.inputs.version }}"
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          
-          cat << 'EOF' > release_notes.md
-          ## What's Changed in Jaci ${{ github.event.inputs.version }}
+          PREV_TAG=$(git describe --tags --abbrev=0 --exclude="$VERSION" HEAD^ 2>/dev/null || git describe --tags --abbrev=0 --exclude="$VERSION" 2>/dev/null || echo "")
 
-          Jaci is an independent Luau fork optimized for general-purpose programming, standalone applications, and native embedding outside Roblox Studio.
+          echo "Detected previous tag: $PREV_TAG"
 
-          ### Core Performance & Architectural Highlights
-          - **Multi-Tier LLVM Optimization Pipeline**: High-performance Native CodeGen (`IR → HIR → MIR → LLVM IR → Native Execution`) featuring SSA reconstruction, global instruction scheduling, and loop vectorization.
-          - **Advanced Table Optimizations**:
-            - Shape specialization & hoisted shape guards for near-zero cost property access.
-            - Fast unrolled Polymorphic Inline Caching (PIC) in L1 cache.
-            - Contiguous packed array specialization with SIMD auto-vectorization.
-            - Virtual Table Scalar Replacement (SROA) eliminating temporary heap allocations.
-          - **Native FFI & Systems Interoperability**: Direct C ABI foreign function calls (`ffi.C`, dynamic libraries, and memory pointers) with zero-cost primitive register mapping.
+          {
+            echo "## What's Changed in Jaci ${VERSION}"
+            echo ""
+            echo "### Changes & Commits"
+            if [ -n "$PREV_TAG" ]; then
+              CHANGES=$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:"* %s ([%h](https://github.com/${{ github.repository }}/commit/%H)) by @%an" 2>/dev/null || true)
+              if [ -z "$CHANGES" ]; then
+                CHANGES=$(git log "${PREV_TAG}..HEAD" --pretty=format:"* %s ([%h](https://github.com/${{ github.repository }}/commit/%H)) by @%an" 2>/dev/null || true)
+              fi
+              if [ -z "$CHANGES" ]; then
+                CHANGES="* No changes detected between ${PREV_TAG} and ${VERSION}."
+              fi
+              echo "$CHANGES"
+              echo ""
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${VERSION}"
+            else
+              CHANGES=$(git log -n 50 --no-merges --pretty=format:"* %s ([%h](https://github.com/${{ github.repository }}/commit/%H)) by @%an" 2>/dev/null || true)
+              if [ -z "$CHANGES" ]; then
+                CHANGES="* Initial release."
+              fi
+              echo "$CHANGES"
+            fi
+            echo ""
+            echo "### Checksums & Cryptographic Verification"
+            echo "| File | SHA-256 Checksum |"
+            echo "| :--- | :--- |"
+            while read -r hash file; do
+              echo "| \`$file\` | \`$hash\` |"
+            done < release-assets/SHA256SUMS.txt
+            echo ""
+            echo "### Installation & Quick Start"
+            echo "Download the appropriate zip archive for your platform, extract the binaries (\`luau\`, \`luau-analyze\`, \`luau-compile\`, \`luau-ast\`), and place them in your system \`\$PATH\`."
+          } > release_notes.md
 
-          ### Verification & Quality Assurance
-          - **100% Test Suite Coverage**: Passed all 5,000+ unit test cases and conformance suites across Linux, macOS, and Windows.
-
-          ### Checksums & Cryptographic Verification
-          | File | SHA-256 Checksum |
-          | :--- | :--- |
-          EOF
-
-          cat release-assets/SHA256SUMS.txt | while read -r hash file; do
-            echo "| \`$file\` | \`$hash\` |" >> release_notes.md
-          done
-
-          cat << 'EOF' >> release_notes.md
-
-          ### Installation & Quick Start
-          Download the appropriate zip archive for your platform, extract the binaries (`luau`, `luau-analyze`, `luau-compile`), and place them in your `$PATH`.
-          EOF
+          cat release_notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -191,3 +194,4 @@ jobs:
             release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

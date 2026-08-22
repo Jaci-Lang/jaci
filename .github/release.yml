@@ -1,0 +1,23 @@
+changelog:
+  categories:
+    - title: "Features & Enhancements"
+      labels:
+        - "feature"
+        - "enhancement"
+        - "feat"
+    - title: "Performance Optimizations"
+      labels:
+        - "performance"
+        - "optimization"
+        - "perf"
+    - title: "Bug Fixes"
+      labels:
+        - "fix"
+        - "bug"
+        - "bugfix"
+    - title: "Maintenance & Tooling"
+      labels:
+        - "maintenance"
+        - "ci"
+        - "chore"
+        - "tooling"
