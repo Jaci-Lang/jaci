@@ -118,6 +118,8 @@ public:
     void loadWorkspaceDefinitions(const std::string& root);
 
     Frontend& getFrontend() { return frontend; }
+    LspConfigResolver& getConfigResolver() { return configResolver; }
+    LspFileResolver& getFileResolver() { return fileResolver; }
 
 private:
     std::unordered_map<std::string, DocumentState> documents;

@@ -8,6 +8,7 @@
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Compiler.h"
 #include "Luau/FileUtils.h"
+#include "Luau/FragmentAutocomplete.h"
 #include "Luau/Frontend.h"
 #include "Luau/Lexer.h"
 #include "Luau/LuauConfig.h"
@@ -458,7 +459,7 @@ Json::Value LspServer::handleInitialize(const Json::Value& params)
 
     // Completion provider
     Json::Object completionProvider;
-    completionProvider.emplace_back("resolveProvider", Json::Value(false));
+    completionProvider.emplace_back("resolveProvider", Json::Value(true));
     Json::Array triggerChars;
     triggerChars.push_back(Json::Value("."));
     triggerChars.push_back(Json::Value(":"));
@@ -466,6 +467,8 @@ Json::Value LspServer::handleInitialize(const Json::Value& params)
     triggerChars.push_back(Json::Value("'"));
     triggerChars.push_back(Json::Value("/"));
     triggerChars.push_back(Json::Value("@"));
+    triggerChars.push_back(Json::Value("<"));
+    triggerChars.push_back(Json::Value(","));
     completionProvider.emplace_back("triggerCharacters", Json::Value(std::move(triggerChars)));
     capabilities.emplace_back("completionProvider", Json::Value(std::move(completionProvider)));
 
@@ -641,6 +644,11 @@ Json::Value LspServer::handleHover(const Json::Value& params)
     return Json::Value(std::move(result));
 }
 
+static bool endsWith(std::string_view str, std::string_view suffix)
+{
+    return str.size() >= suffix.size() && str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
 static Lsp::CompletionItemKind mapCompletionKind(AutocompleteEntryKind kind, std::optional<TypeId> ty)
 {
     if (ty)
@@ -693,20 +701,126 @@ Json::Value LspServer::handleCompletion(const Json::Value& params)
     Lsp::Position lspPos = Lsp::Position::fromJson(*posVal);
     Position luauPos = lspPos.toLuau();
 
+    auto stringCallback = [this, doc](
+        std::string tag,
+        std::optional<const ExternType*> ctx,
+        std::optional<std::string> contents
+    ) -> std::optional<AutocompleteEntryMap>
+    {
+        if (tag == "require" || tag == "Luau.require" || tag == "Require")
+        {
+            AutocompleteEntryMap result;
+            std::string currentPath = doc->path;
+            if (currentPath.rfind("file://", 0) == 0)
+                currentPath = Lsp::uriToPath(currentPath);
+
+            std::optional<std::string> baseDir = getParentPath(currentPath);
+            std::string prefix = contents.value_or("");
+
+            // 1. Alias suggestions (from .luaurc / luau.config)
+            TypeCheckLimits limits;
+            const Config& cfg = configResolver.getConfig(currentPath, limits);
+            for (const auto& aliasPair : cfg.aliases)
+            {
+                std::string aliasName = "@" + aliasPair.first;
+                if (prefix.empty() || aliasName.rfind(prefix, 0) == 0 || prefix == "@")
+                {
+                    AutocompleteEntry entry;
+                    entry.kind = AutocompleteEntryKind::RequirePath;
+                    entry.type = std::nullopt;
+                    entry.documentationSymbol = "Require Alias: " + aliasPair.first + " -> " + aliasPair.second.value;
+                    result.emplace(aliasName, std::move(entry));
+                }
+            }
+
+            // 2. Open documents in memory
+            for (const auto& pair : documents)
+            {
+                std::string openPath = pair.second.path;
+                if (openPath != currentPath && (endsWith(openPath, ".luau") || endsWith(openPath, ".lua")))
+                {
+                    size_t slash = openPath.find_last_of("/\\");
+                    std::string baseName = (slash != std::string::npos) ? openPath.substr(slash + 1) : openPath;
+                    if (prefix.empty() || baseName.rfind(prefix, 0) == 0)
+                    {
+                        AutocompleteEntry entry;
+                        entry.kind = AutocompleteEntryKind::RequirePath;
+                        entry.documentationSymbol = "Open Document: " + openPath;
+                        result.emplace("./" + baseName, std::move(entry));
+                    }
+                }
+            }
+
+            // 3. File system relative traversal
+            if (baseDir && isDirectory(*baseDir))
+            {
+                std::string searchDir = *baseDir;
+                size_t slashPos = prefix.find_last_of("/\\");
+                if (slashPos != std::string::npos)
+                {
+                    std::string relSub = prefix.substr(0, slashPos);
+                    searchDir = joinPaths(*baseDir, relSub);
+                }
+
+                if (isDirectory(searchDir))
+                {
+                    traverseDirectory(searchDir, [&](const std::string& entryPath) {
+                        size_t s = entryPath.find_last_of("/\\");
+                        std::string fileName = (s != std::string::npos) ? entryPath.substr(s + 1) : entryPath;
+                        if (fileName.rfind(".", 0) == 0) return; // skip hidden files
+
+                        if (isDirectory(entryPath))
+                        {
+                            AutocompleteEntry entry;
+                            entry.kind = AutocompleteEntryKind::RequirePath;
+                            entry.documentationSymbol = "Directory: " + fileName;
+                            std::string suggestName = (slashPos != std::string::npos ? prefix.substr(0, slashPos + 1) : "./") + fileName;
+                            result.emplace(suggestName, std::move(entry));
+                        }
+                        else if (endsWith(entryPath, ".luau") || endsWith(entryPath, ".lua"))
+                        {
+                            AutocompleteEntry entry;
+                            entry.kind = AutocompleteEntryKind::RequirePath;
+                            entry.documentationSymbol = "Module: " + fileName;
+                            std::string suggestName = (slashPos != std::string::npos ? prefix.substr(0, slashPos + 1) : "./") + fileName;
+                            result.emplace(suggestName, std::move(entry));
+                        }
+                    });
+                }
+            }
+
+            if (!result.empty())
+                return result;
+        }
+        return std::nullopt;
+    };
+
+    AutocompleteResult acResult;
     FrontendOptions opts;
     opts.forAutocomplete = true;
     opts.retainFullTypeGraphs = true;
-    frontend.check(doc->path, opts);
 
-    AutocompleteResult acResult = autocomplete(
-        frontend,
-        doc->path,
-        luauPos,
-        [](std::string, std::optional<const ExternType*>, std::optional<std::string>) -> std::optional<AutocompleteEntryMap>
+    // High-performance Fragment Autocomplete fast-path
+    SourceModule* srcModule = frontend.getSourceModule(doc->path);
+    if (srcModule && frontend.isDirty(doc->path, true))
+    {
+        ParseOptions parseOptions;
+        parseOptions.captureComments = true;
+        ParseResult parseResult = Parser::parse(doc->text.c_str(), doc->text.length(), *srcModule->names, *srcModule->allocator, parseOptions);
+        FragmentContext context{doc->text, parseResult, opts};
+        FragmentAutocompleteStatusResult fragResult = Luau::tryFragmentAutocomplete(frontend, doc->path, luauPos, context, stringCallback);
+        if (fragResult.status == FragmentAutocompleteStatus::Success && fragResult.result)
         {
-            return std::nullopt;
+            acResult = std::move(fragResult.result->acResults);
         }
-    );
+    }
+
+    // Fallback to full frontend check if fragment autocomplete was not applicable or did not yield results
+    if (acResult.entryMap.empty())
+    {
+        frontend.check(doc->path, opts);
+        acResult = autocomplete(frontend, doc->path, luauPos, stringCallback);
+    }
 
     Json::Array items;
     for (const auto& pair : acResult.entryMap)
@@ -716,6 +830,28 @@ Json::Value LspServer::handleCompletion(const Json::Value& params)
         item.kind = mapCompletionKind(pair.second.kind, pair.second.type);
         item.deprecated = pair.second.deprecated;
 
+        // Intelligent ranking with sortText
+        std::string sortPrefix;
+        if (pair.second.deprecated)
+            sortPrefix = "9999_";
+        else if (pair.second.typeCorrect == TypeCorrectKind::Correct)
+            sortPrefix = "0000_";
+        else if (pair.second.typeCorrect == TypeCorrectKind::CorrectFunctionResult)
+            sortPrefix = "0001_";
+        else if (pair.second.kind == AutocompleteEntryKind::Binding)
+            sortPrefix = "0002_";
+        else if (pair.second.kind == AutocompleteEntryKind::Property)
+            sortPrefix = "0003_";
+        else if (pair.second.kind == AutocompleteEntryKind::Module || pair.second.kind == AutocompleteEntryKind::RequirePath)
+            sortPrefix = "0004_";
+        else if (pair.second.kind == AutocompleteEntryKind::Keyword)
+            sortPrefix = "0005_";
+        else if (pair.second.kind == AutocompleteEntryKind::Type)
+            sortPrefix = "0006_";
+        else
+            sortPrefix = "0010_";
+        item.sortText = sortPrefix + pair.first;
+
         if (pair.second.type)
         {
             item.detail = toString(*pair.second.type);
@@ -723,25 +859,51 @@ Json::Value LspServer::handleCompletion(const Json::Value& params)
             if (const FunctionType* fn = get<FunctionType>(followed))
             {
                 std::string sig = "(";
+                std::string snippetArgs = "(";
                 size_t argIdx = 0;
                 for (auto pit = TypePackIterator(fn->argTypes); pit != end(fn->argTypes); ++pit, ++argIdx)
                 {
-                    if (argIdx > 0) sig += ", ";
+                    if (argIdx > 0)
+                    {
+                        sig += ", ";
+                        snippetArgs += ", ";
+                    }
                     std::string pName = (argIdx < fn->argNames.size() && fn->argNames[argIdx]) ? fn->argNames[argIdx]->name : ("arg" + std::to_string(argIdx + 1));
                     sig += pName + ": " + toString(*pit);
+                    snippetArgs += "${" + std::to_string(argIdx + 1) + ":" + pName + "}";
                 }
                 sig += ")";
+                snippetArgs += ")";
                 if (fn->retTypes)
                     sig += " -> " + toString(fn->retTypes);
                 item.detail = sig;
+
+                if (pair.second.parens == ParenthesesRecommendation::CursorInside)
+                {
+                    item.insertText = pair.first + (argIdx > 0 ? snippetArgs : "($1)");
+                    item.insertTextFormat = Lsp::InsertTextFormat::Snippet;
+                }
+                else if (pair.second.parens == ParenthesesRecommendation::CursorAfter)
+                {
+                    item.insertText = pair.first + "()$0";
+                    item.insertTextFormat = Lsp::InsertTextFormat::Snippet;
+                }
             }
         }
 
-        if (pair.second.insertText)
+        if (pair.second.insertText && item.insertText.empty())
             item.insertText = *pair.second.insertText;
 
         if (pair.second.documentationSymbol)
             item.documentation = *pair.second.documentationSymbol;
+
+        // Data for lazy resolveProvider
+        Json::Object dataObj;
+        dataObj.emplace_back("uri", Json::Value(uri));
+        dataObj.emplace_back("label", Json::Value(pair.first));
+        if (pair.second.documentationSymbol)
+            dataObj.emplace_back("docSymbol", Json::Value(*pair.second.documentationSymbol));
+        item.data = Json::Value(std::move(dataObj));
 
         items.push_back(item.toJson());
     }
@@ -756,17 +918,57 @@ Json::Value LspServer::handleCompletion(const Json::Value& params)
 Json::Value LspServer::handleCompletionResolve(const Json::Value& params)
 {
     Json::Object item = params.isObject() ? params.getObject() : Json::Object{};
-    if (!params.has("documentation"))
+    const auto* docVal = params.get("documentation");
+    const auto* detailVal = params.get("detail");
+
+    std::string existingDoc = "";
+    if (docVal)
     {
-        std::string detail = params.has("detail") ? params.get("detail")->getString() : "";
-        if (!detail.empty())
+        if (docVal->isString())
+            existingDoc = docVal->getString();
+        else if (docVal->isObject() && docVal->has("value"))
+            existingDoc = docVal->get("value")->getString();
+    }
+
+    std::string detail = detailVal && detailVal->isString() ? detailVal->getString() : "";
+
+    std::string markdown = "";
+    if (!detail.empty())
+    {
+        markdown += "```luau\n" + detail + "\n```\n";
+    }
+
+    if (!existingDoc.empty())
+    {
+        if (!markdown.empty())
+            markdown += "---\n";
+        markdown += existingDoc;
+    }
+
+    if (!markdown.empty())
+    {
+        bool found = false;
+        for (auto& pair : item)
         {
-            Json::Object doc;
-            doc.emplace_back("kind", Json::Value("markdown"));
-            doc.emplace_back("value", Json::Value("```luau\n" + detail + "\n```"));
-            item.emplace_back("documentation", Json::Value(std::move(doc)));
+            if (pair.first == "documentation")
+            {
+                Json::Object docObj;
+                docObj.emplace_back("kind", Json::Value("markdown"));
+                docObj.emplace_back("value", Json::Value(markdown));
+                pair.second = Json::Value(std::move(docObj));
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            Json::Object docObj;
+            docObj.emplace_back("kind", Json::Value("markdown"));
+            docObj.emplace_back("value", Json::Value(markdown));
+            item.emplace_back("documentation", Json::Value(std::move(docObj)));
         }
     }
+
     return Json::Value(std::move(item));
 }
 

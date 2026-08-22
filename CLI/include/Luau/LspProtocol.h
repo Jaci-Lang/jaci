@@ -152,6 +152,12 @@ enum class CompletionItemKind
     TypeParameter = 25,
 };
 
+enum class InsertTextFormat
+{
+    PlainText = 1,
+    Snippet = 2,
+};
+
 struct CompletionItem
 {
     std::string label;
@@ -159,7 +165,12 @@ struct CompletionItem
     std::string detail;
     std::string documentation;
     std::string insertText;
+    InsertTextFormat insertTextFormat = InsertTextFormat::PlainText;
+    std::string sortText;
+    std::string filterText;
     bool deprecated = false;
+    std::optional<Json::Value> data = std::nullopt;
+    std::vector<std::string> commitCharacters;
 
     Json::Value toJson() const
     {
@@ -177,8 +188,23 @@ struct CompletionItem
         }
         if (!insertText.empty())
             o.emplace_back("insertText", Json::Value(insertText));
+        if (insertTextFormat != InsertTextFormat::PlainText)
+            o.emplace_back("insertTextFormat", Json::Value(static_cast<int>(insertTextFormat)));
+        if (!sortText.empty())
+            o.emplace_back("sortText", Json::Value(sortText));
+        if (!filterText.empty())
+            o.emplace_back("filterText", Json::Value(filterText));
         if (deprecated)
             o.emplace_back("deprecated", Json::Value(true));
+        if (data)
+            o.emplace_back("data", *data);
+        if (!commitCharacters.empty())
+        {
+            Json::Array cc;
+            for (const auto& c : commitCharacters)
+                cc.push_back(Json::Value(c));
+            o.emplace_back("commitCharacters", Json::Value(std::move(cc)));
+        }
         return Json::Value(std::move(o));
     }
 };

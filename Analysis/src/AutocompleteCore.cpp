@@ -1782,7 +1782,8 @@ static std::optional<AutocompleteEntryMap> autocompleteStringParams(
         {
             if (tag == kRequireTagName && fileResolver)
             {
-                return convertRequireSuggestionsToAutocompleteEntryMap(fileResolver->getRequireSuggestions(module->name, candidateString));
+                if (std::optional<AutocompleteEntryMap> res = convertRequireSuggestionsToAutocompleteEntryMap(fileResolver->getRequireSuggestions(module->name, candidateString)))
+                    return res;
             }
             if (std::optional<AutocompleteEntryMap> ret = callback(tag, getMethodContainingExternType(module, candidate->func), candidateString))
             {

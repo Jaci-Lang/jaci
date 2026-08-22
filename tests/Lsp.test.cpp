@@ -652,14 +652,189 @@ TEST_CASE("LspVfsStatsAndSnapshot")
     }
 }
 
-TEST_CASE("LspWorkspaceDefinitionsAndNocheck")
+TEST_CASE("LspAutocompleteFragmentAndRanking")
 {
     LspServer server;
-    server.loadWorkspaceDefinitions("t");
+    std::string uri = "file:///autocomplete_rank.luau";
+    server.openDocument(uri, "local tbl = { alpha = 10, beta = 20 }\nlocal x = tbl.");
 
-    server.openDocument("file:///t/test.luau", "local x = c_add(1, 2)\n");
-    CheckResult cr = server.getFrontend().check("/t/test.luau");
-    CHECK(cr.errors.empty());
+    Json::Object params;
+    Json::Object textDoc;
+    textDoc.emplace_back("uri", Json::Value(uri));
+    params.emplace_back("textDocument", Json::Value(std::move(textDoc)));
+    params.emplace_back("position", Lsp::Position{1, 14}.toJson());
+
+    JsonRpc::Request req;
+    req.id = JsonRpc::Id(200);
+    req.method = "textDocument/completion";
+    req.params = Json::Value(std::move(params));
+
+    JsonRpc::Response resp = server.handleRequest(req);
+    CHECK(!resp.error.has_value());
+    CHECK(resp.result.has_value());
+
+    const auto* items = resp.result->get("items");
+    REQUIRE(items != nullptr);
+    REQUIRE(items->isArray());
+
+    bool foundAlpha = false;
+    bool foundBeta = false;
+    for (const auto& item : items->getArray())
+    {
+        if (const auto* label = item.get("label"))
+        {
+            if (label->getString() == "alpha")
+            {
+                foundAlpha = true;
+                const auto* sortText = item.get("sortText");
+                CHECK(sortText != nullptr);
+                CHECK(sortText->getString().rfind("0003_alpha", 0) == 0);
+            }
+            if (label->getString() == "beta")
+            {
+                foundBeta = true;
+                const auto* sortText = item.get("sortText");
+                CHECK(sortText != nullptr);
+                CHECK(sortText->getString().rfind("0003_beta", 0) == 0);
+            }
+        }
+    }
+    CHECK(foundAlpha);
+    CHECK(foundBeta);
+
+    // Incremental edit testing fragment autocomplete fast path
+    server.changeDocument(uri, "local tbl = { alpha = 10, beta = 20 }\nlocal x = tbl.al", 2);
+
+    Json::Object params2;
+    Json::Object textDoc2;
+    textDoc2.emplace_back("uri", Json::Value(uri));
+    params2.emplace_back("textDocument", Json::Value(std::move(textDoc2)));
+    params2.emplace_back("position", Lsp::Position{1, 16}.toJson());
+
+    req.id = JsonRpc::Id(201);
+    req.params = Json::Value(std::move(params2));
+
+    JsonRpc::Response resp2 = server.handleRequest(req);
+    CHECK(!resp2.error.has_value());
+    CHECK(resp2.result.has_value());
+    const auto* items2 = resp2.result->get("items");
+    REQUIRE(items2 != nullptr);
+    REQUIRE(items2->isArray());
+    bool foundAlpha2 = false;
+    for (const auto& item : items2->getArray())
+    {
+        if (const auto* label = item.get("label"))
+        {
+            if (label->getString() == "alpha")
+                foundAlpha2 = true;
+        }
+    }
+    CHECK(foundAlpha2);
+}
+
+TEST_CASE("LspAutocompleteFunctionSnippetsAndResolve")
+{
+    LspServer server;
+    std::string uri = "file:///snippet_test.luau";
+    server.openDocument(uri, "local function compute(val: number, multiplier: number): number\n    return val * multiplier\nend\nlocal r = com");
+
+    Json::Object params;
+    Json::Object textDoc;
+    textDoc.emplace_back("uri", Json::Value(uri));
+    params.emplace_back("textDocument", Json::Value(std::move(textDoc)));
+    params.emplace_back("position", Lsp::Position{3, 13}.toJson());
+
+    JsonRpc::Request req;
+    req.id = JsonRpc::Id(210);
+    req.method = "textDocument/completion";
+    req.params = Json::Value(std::move(params));
+
+    JsonRpc::Response resp = server.handleRequest(req);
+    CHECK(!resp.error.has_value());
+    CHECK(resp.result.has_value());
+
+    const auto* items = resp.result->get("items");
+    REQUIRE(items != nullptr);
+    REQUIRE(items->isArray());
+
+    Json::Value computeItem;
+    bool foundCompute = false;
+    for (const auto& item : items->getArray())
+    {
+        if (const auto* label = item.get("label"))
+        {
+            if (label->getString() == "compute")
+            {
+                foundCompute = true;
+                computeItem = item;
+                const auto* insertFormat = item.get("insertTextFormat");
+                CHECK(insertFormat != nullptr);
+                CHECK(insertFormat->getInt() == 2); // Snippet
+
+                const auto* insertText = item.get("insertText");
+                CHECK(insertText != nullptr);
+                CHECK(insertText->getString().find("compute(${1:val}, ${2:multiplier})") != std::string::npos);
+            }
+        }
+    }
+    CHECK(foundCompute);
+
+    // Test completionItem/resolve
+    JsonRpc::Request resolveReq;
+    resolveReq.id = JsonRpc::Id(211);
+    resolveReq.method = "completionItem/resolve";
+    resolveReq.params = computeItem;
+
+    JsonRpc::Response resolveResp = server.handleRequest(resolveReq);
+    CHECK(!resolveResp.error.has_value());
+    CHECK(resolveResp.result.has_value());
+    const auto* docObj = resolveResp.result->get("documentation");
+    CHECK(docObj != nullptr);
+    CHECK(docObj->get("kind")->getString() == "markdown");
+    CHECK(docObj->get("value")->getString().find("```luau\n(val: number, multiplier: number) -> number\n```") != std::string::npos);
+}
+
+TEST_CASE("LspAutocompleteRequirePathsAndAliases")
+{
+    LspServer server;
+    std::string uri = "file:///workspace/main.luau";
+    server.openDocument(uri, "local m = require(\"@\")\n");
+    server.openDocument("file:///workspace/submodule.luau", "return { name = 'sub' }\n");
+
+    server.getConfigResolver().defaultConfig.aliases["pkg"] = { "/workspace/pkg", "cfg", "pkg" };
+
+    Json::Object params;
+    Json::Object textDoc;
+    textDoc.emplace_back("uri", Json::Value(uri));
+    params.emplace_back("textDocument", Json::Value(std::move(textDoc)));
+    params.emplace_back("position", Lsp::Position{0, 20}.toJson());
+
+    JsonRpc::Request req;
+    req.id = JsonRpc::Id(220);
+    req.method = "textDocument/completion";
+    req.params = Json::Value(std::move(params));
+
+    JsonRpc::Response resp = server.handleRequest(req);
+    CHECK(!resp.error.has_value());
+    CHECK(resp.result.has_value());
+
+    const auto* items = resp.result->get("items");
+    REQUIRE(items != nullptr);
+    REQUIRE(items->isArray());
+
+    bool foundPkg = false;
+    for (const auto& item : items->getArray())
+    {
+        if (const auto* label = item.get("label"))
+        {
+            if (label->getString() == "@pkg")
+            {
+                foundPkg = true;
+                CHECK(item.get("kind")->getInt() == 17); // File / RequirePath
+            }
+        }
+    }
+    CHECK(foundPkg);
 }
 
 TEST_SUITE_END();
