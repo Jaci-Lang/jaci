@@ -1057,6 +1057,131 @@ static int luauF_tunpack(lua_State* L, StkId res, TValue* arg0, int nresults, St
     return -1;
 }
 
+static int luauF_tfreeze(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+    if (nparams == 1 && nresults <= 1 && ttistable(arg0))
+    {
+        LuaTable* t = hvalue(arg0);
+        if (t->readonly || t->metatable != NULL)
+            return -1; // fallback to C function for error reporting or metatable handling
+
+        t->readonly = 1;
+        setobj2s(L, res, arg0);
+        return 1;
+    }
+
+    return -1;
+}
+
+static int luauF_tisfrozen(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+    if (nparams == 1 && nresults <= 1 && ttistable(arg0))
+    {
+        LuaTable* t = hvalue(arg0);
+        setbvalue(res, t->readonly != 0);
+        return 1;
+    }
+
+    return -1;
+}
+
+static int luauF_tclone(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+    if (nparams == 1 && nresults <= 1 && ttistable(arg0))
+    {
+        LuaTable* t = hvalue(arg0);
+        if (t->metatable != NULL)
+            return -1;
+
+        LuaTable* nt = luaH_clone(L, t);
+        sethvalue(L, res, nt);
+        return 1;
+    }
+
+    return -1;
+}
+
+static int luauF_tclear(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+    if (nparams == 1 && nresults <= 0 && ttistable(arg0))
+    {
+        LuaTable* t = hvalue(arg0);
+        if (t->readonly)
+            return -1;
+
+        luaH_clear(t);
+        return 0;
+    }
+
+    return -1;
+}
+
+static int luauF_tfind(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+    if ((nparams == 2 || (nparams == 3 && ttisnumber(args + 1))) && nresults <= 1 && ttistable(arg0))
+    {
+        const TValue* target = args;
+        if (!ttisnumber(target) && !ttisstring(target) && !ttisboolean(target))
+            return -1;
+
+        LuaTable* t = hvalue(arg0);
+        if (t->metatable != NULL)
+            return -1;
+
+        int init = 1;
+        if (nparams == 3)
+        {
+            init = int(nvalue(args + 1));
+            if (init < 1)
+                return -1;
+        }
+
+        int sizearray = t->sizearray;
+        for (int i = init - 1; i < sizearray; ++i)
+        {
+            const TValue* el = &t->array[i];
+            if (ttisnil(el))
+                break;
+            if (ttype(el) == ttype(target) && luaO_rawequalObj(el, target))
+            {
+                setnvalue(res, double(i + 1));
+                return 1;
+            }
+            if (ttistable(el) || ttisuserdata(el))
+                return -1;
+        }
+
+        if (t->node == &luaH_dummynode)
+        {
+            setnilvalue(res);
+            return 1;
+        }
+    }
+
+    return -1;
+}
+
+static int luauF_tcreate(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+    if ((nparams == 1 || nparams == 2) && nresults <= 1 && ttisnumber(arg0))
+    {
+        int count = int(nvalue(arg0));
+        if (count < 0 || count > 1000000)
+            return -1;
+
+        LuaTable* t = luaH_new(L, count, 0);
+        if (nparams == 2 && !ttisnil(args))
+        {
+            for (int i = 0; i < count; ++i)
+                setobj2t(L, &t->array[i], args);
+        }
+        sethvalue(L, res, t);
+        return 1;
+    }
+
+    return -1;
+}
+
 static int luauF_vector(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
 {
     if (nparams >= 2 && nresults <= 1 && ttisnumber(arg0) && ttisnumber(args))
@@ -2761,6 +2886,13 @@ const luau_FastFunction luauF_table[256] = {
 
     luauF_bufferreadlong,
     luauF_bufferwritelong,
+
+    luauF_tfreeze,
+    luauF_tisfrozen,
+    luauF_tclone,
+    luauF_tclear,
+    luauF_tfind,
+    luauF_tcreate,
 
 // When adding builtins, add them above this line; what follows is 64 "dummy" entries with luauF_missing fallback.
 // This is important so that older versions of the runtime that don't support newer builtins automatically fall back via luauF_missing.

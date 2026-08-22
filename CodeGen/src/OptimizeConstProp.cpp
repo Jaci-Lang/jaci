@@ -1581,6 +1581,15 @@ static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid
     case LBF_TABLE_INSERT:
         state.invalidateHeap();
         return; // table.insert does not modify result registers.
+    case LBF_TABLE_CLEAR:
+        state.invalidateHeap();
+        return;
+    case LBF_TABLE_FREEZE:
+    case LBF_TABLE_ISFROZEN:
+    case LBF_TABLE_CLONE:
+    case LBF_TABLE_FIND:
+    case LBF_TABLE_CREATE:
+        break;
     case LBF_RAWSET:
         state.invalidateHeap();
         break;

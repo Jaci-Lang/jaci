@@ -87,6 +87,14 @@ public:
     // Vectorization & Loop Hints
     void attachLoopVectorizeHint(bool enable = true);
 
+    // Static Table & Assembly Data Emission (Zero runtime allocation & static constant loads)
+    void emitStaticDoubleArrayGlobal(const std::string& globalSymbol, const std::vector<double>& values);
+    void emitStaticInt64ArrayGlobal(const std::string& globalSymbol, const std::vector<int64_t>& values);
+    void emitStaticStructGlobal(const std::string& globalSymbol, const std::vector<double>& fieldValues);
+    LlvmValue emitLoadStaticDoubleArray(const std::string& globalSymbol, size_t size, const LlvmValue& index);
+    LlvmValue emitLoadStaticStructField(const std::string& globalSymbol, uint32_t fieldIndex, Type fieldType);
+    LlvmValue emitTableFreeze(const LlvmValue& tablePtr);
+
     // External Calls & Deoptimization
     LlvmValue emitCall(const std::string& callee, Type retType, const std::vector<LlvmValue>& args);
     LlvmValue emitFfiCall(const std::string& callee, Type retType, const std::vector<LlvmValue>& args, bool isPointer = false);

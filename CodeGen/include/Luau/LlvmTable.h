@@ -5,6 +5,7 @@
 #include "Luau/LlvmData.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,10 +35,21 @@ public:
     uint32_t getArrayElementSize(ArraySpecialization spec) const;
     Type getArrayElementType(ArraySpecialization spec) const;
 
+    // Static Data Promotion in Assembly / JIT / AOT (Direct zero-overhead static data)
+    uint32_t registerStaticArray(const std::vector<double>& values, bool isFrozen = true);
+    uint32_t registerStaticIntArray(const std::vector<int64_t>& values, bool isFrozen = true);
+    uint32_t registerStaticDictionary(const std::vector<std::pair<std::string, double>>& properties, bool isFrozen = true);
+    const StaticTableDescriptor* getStaticTable(uint32_t tableId) const;
+    bool isStaticTable(uint32_t tableId) const;
+    std::optional<double> lookupStaticDouble(uint32_t tableId, const std::string& key) const;
+    std::optional<double> lookupStaticArrayElement(uint32_t tableId, size_t index) const;
+    const std::vector<StaticTableDescriptor>& getAllStaticTables() const;
+
 private:
     std::vector<TableLayoutDescriptor> layouts;
     std::unordered_map<uint32_t, PicSite> picSites;
     std::unordered_map<uint32_t, std::vector<std::string>> shapeProperties;
+    std::vector<StaticTableDescriptor> staticTables;
 };
 
 } // namespace Llvm

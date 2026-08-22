@@ -705,9 +705,9 @@ const TValue* luaH_getstr(LuaTable* t, TString* key)
     LuaNode* n = hashstr(t, key);
     for (;;)
     { // check whether `key' is somewhere in the chain
-        if (ttisstring(gkey(n)) && tsvalue(gkey(n)) == key)
+        if (LUAU_LIKELY(ttisstring(gkey(n)) && tsvalue(gkey(n)) == key))
             return gval(n); // that's it
-        if (gnext(n) == 0)
+        if (LUAU_LIKELY(gnext(n) == 0))
             break;
         n += gnext(n);
     }
@@ -723,9 +723,9 @@ const TValue* luaH_getp(LuaTable* t, void* key, int tag)
     for (;;)
     { // check whether `key' is somewhere in the chain
         const TKey* nk = gkey(n);
-        if (ttislightuserdata(nk) && pvalue(nk) == key && lightuserdatatag(nk) == tag)
+        if (LUAU_LIKELY(ttislightuserdata(nk) && pvalue(nk) == key && lightuserdatatag(nk) == tag))
             return gval(n); // that's it
-        if (gnext(n) == 0)
+        if (LUAU_LIKELY(gnext(n) == 0))
             break;
         n += gnext(n);
     }
@@ -748,18 +748,18 @@ const TValue* luaH_get(LuaTable* t, const TValue* key)
         int k;
         double n = nvalue(key);
         luai_num2int(k, n);
-        if (luai_numeq(cast_num(k), nvalue(key))) // index is int?
-            return luaH_getnum(t, k);             // use specialized version
-        LUAU_FALLTHROUGH;                         // else go through
+        if (LUAU_LIKELY(luai_numeq(cast_num(k), nvalue(key)))) // index is int?
+            return luaH_getnum(t, k);                          // use specialized version
+        LUAU_FALLTHROUGH;                                      // else go through
     }
     default:
     {
         LuaNode* n = mainposition(t, key);
         for (;;)
         { // check whether `key' is somewhere in the chain
-            if (luaO_rawequalKey(gkey(n), key))
+            if (LUAU_LIKELY(luaO_rawequalKey(gkey(n), key)))
                 return gval(n); // that's it
-            if (gnext(n) == 0)
+            if (LUAU_LIKELY(gnext(n) == 0))
                 break;
             n += gnext(n);
         }
@@ -772,7 +772,7 @@ TValue* luaH_set(lua_State* L, LuaTable* t, const TValue* key)
 {
     const TValue* p = luaH_get(t, key);
     invalidateTMcache(t);
-    if (p != luaO_nilobject)
+    if (LUAU_LIKELY(p != luaO_nilobject))
         return cast_to(TValue*, p);
     else
         return luaH_newkey(L, t, key);
@@ -789,14 +789,21 @@ TValue* luaH_newkey(lua_State* L, LuaTable* t, const TValue* key)
     return newkey(L, t, key);
 }
 
+TValue* luaH_newkeystr(lua_State* L, LuaTable* t, TString* key)
+{
+    TValue k;
+    setsvalue(L, &k, key);
+    return newkey(L, t, &k);
+}
+
 TValue* luaH_setnum(lua_State* L, LuaTable* t, int key)
 {
     // (1 <= key && key <= t->sizearray)
-    if (unsigned(key) - 1 < unsigned(t->sizearray))
+    if (LUAU_LIKELY(unsigned(key) - 1 < unsigned(t->sizearray)))
         return &t->array[key - 1];
     // hash fallback
     const TValue* p = luaH_getnum(t, key);
-    if (p != luaO_nilobject)
+    if (LUAU_LIKELY(p != luaO_nilobject))
         return cast_to(TValue*, p);
     else
     {
@@ -810,20 +817,17 @@ TValue* luaH_setstr(lua_State* L, LuaTable* t, TString* key)
 {
     const TValue* p = luaH_getstr(t, key);
     invalidateTMcache(t);
-    if (p != luaO_nilobject)
+    if (LUAU_LIKELY(p != luaO_nilobject))
         return cast_to(TValue*, p);
     else
-    {
-        TValue k;
-        setsvalue(L, &k, key);
-        return newkey(L, t, &k);
-    }
+        return luaH_newkeystr(L, t, key);
 }
 
 TValue* luaH_setp(lua_State* L, LuaTable* t, void* key, int tag)
 {
     const TValue* p = luaH_getp(t, key, tag);
-    if (p != luaO_nilobject)
+    invalidateTMcache(t);
+    if (LUAU_LIKELY(p != luaO_nilobject))
         return cast_to(TValue*, p);
     else
     {
@@ -936,10 +940,10 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
 
 void luaH_clear(LuaTable* tt)
 {
-    // clear array part
-    for (int i = 0; i < tt->sizearray; ++i)
+    // clear array part with high throughput memset
+    if (tt->sizearray > 0)
     {
-        setnilvalue(&tt->array[i]);
+        memset(tt->array, 0, tt->sizearray * sizeof(TValue));
     }
 
     maybesetaboundary(tt, 0);

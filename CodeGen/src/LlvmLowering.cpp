@@ -96,6 +96,25 @@ bool LlvmLowering::lowerFunction(const Mir::Function& mirFunction, Proto* proto,
         }
     }
 
+    // Emit static constant table data into LLVM assembly module
+    for (const auto& st : tableSpecializer.getAllStaticTables())
+    {
+        if (st.isArray)
+        {
+            if (!st.packedDoubles.empty())
+                builder.emitStaticDoubleArrayGlobal(st.globalSymbol, st.packedDoubles);
+            else if (!st.packedInt64s.empty())
+                builder.emitStaticInt64ArrayGlobal(st.globalSymbol, st.packedInt64s);
+        }
+        else
+        {
+            std::vector<double> vals;
+            for (const auto& e : st.entries)
+                vals.push_back(e.val.f64);
+            builder.emitStaticStructGlobal(st.globalSymbol, vals);
+        }
+    }
+
     // Function Signature: ptr @jaci_entry(ptr %L, ptr %closure, ptr %base)
     std::vector<Type> paramTypes = {Type(TypeKind::Pointer), Type(TypeKind::Pointer), Type(TypeKind::Pointer)};
     std::vector<std::string> paramNames = {"L", "closure", "base"};

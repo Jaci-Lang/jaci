@@ -142,6 +142,32 @@ struct TableLayoutDescriptor
     bool hasMetatable = false;
 };
 
+struct StaticTableEntry
+{
+    std::string key;
+    int64_t intKey = 0;
+    Type type;
+    union
+    {
+        int64_t i64;
+        double f64;
+        bool b;
+    } val = {};
+    std::string strVal;
+};
+
+struct StaticTableDescriptor
+{
+    uint32_t tableId = 0;
+    std::string globalSymbol;
+    bool isArray = false;
+    bool isFrozen = true;
+    std::vector<StaticTableEntry> entries;
+    std::vector<double> packedDoubles;
+    std::vector<int64_t> packedInt64s;
+    std::unordered_map<std::string, uint32_t> keyToEntryMap;
+};
+
 struct FunctionSpecializationKey
 {
     std::vector<Type> argTypes;

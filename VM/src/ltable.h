@@ -23,6 +23,7 @@ LUAI_FUNC TValue* luaH_setp(lua_State* L, LuaTable* t, void* key, int tag);
 LUAI_FUNC const TValue* luaH_get(LuaTable* t, const TValue* key);
 LUAI_FUNC TValue* luaH_set(lua_State* L, LuaTable* t, const TValue* key);
 LUAI_FUNC TValue* luaH_newkey(lua_State* L, LuaTable* t, const TValue* key);
+LUAI_FUNC TValue* luaH_newkeystr(lua_State* L, LuaTable* t, TString* key);
 LUAI_FUNC LuaTable* luaH_new(lua_State* L, int narray, int lnhash);
 LUAI_FUNC void luaH_resizearray(lua_State* L, LuaTable* t, int nasize);
 LUAI_FUNC void luaH_resizehash(lua_State* L, LuaTable* t, int nhsize);

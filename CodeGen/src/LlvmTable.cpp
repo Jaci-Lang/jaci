@@ -93,6 +93,118 @@ Type TableSpecializer::getArrayElementType(ArraySpecialization spec) const
     }
 }
 
+uint32_t TableSpecializer::registerStaticArray(const std::vector<double>& values, bool isFrozen)
+{
+    uint32_t id = uint32_t(staticTables.size());
+    StaticTableDescriptor desc;
+    desc.tableId = id;
+    desc.globalSymbol = "@jaci_static_array_" + std::to_string(id);
+    desc.isArray = true;
+    desc.isFrozen = isFrozen;
+    desc.packedDoubles = values;
+
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        StaticTableEntry entry;
+        entry.intKey = int64_t(i + 1);
+        entry.type = Type(TypeKind::Double);
+        entry.val.f64 = values[i];
+        desc.entries.push_back(std::move(entry));
+    }
+
+    staticTables.push_back(std::move(desc));
+    return id;
+}
+
+uint32_t TableSpecializer::registerStaticIntArray(const std::vector<int64_t>& values, bool isFrozen)
+{
+    uint32_t id = uint32_t(staticTables.size());
+    StaticTableDescriptor desc;
+    desc.tableId = id;
+    desc.globalSymbol = "@jaci_static_iarray_" + std::to_string(id);
+    desc.isArray = true;
+    desc.isFrozen = isFrozen;
+    desc.packedInt64s = values;
+
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        StaticTableEntry entry;
+        entry.intKey = int64_t(i + 1);
+        entry.type = Type(TypeKind::Int64);
+        entry.val.i64 = values[i];
+        desc.entries.push_back(std::move(entry));
+    }
+
+    staticTables.push_back(std::move(desc));
+    return id;
+}
+
+uint32_t TableSpecializer::registerStaticDictionary(const std::vector<std::pair<std::string, double>>& properties, bool isFrozen)
+{
+    uint32_t id = uint32_t(staticTables.size());
+    StaticTableDescriptor desc;
+    desc.tableId = id;
+    desc.globalSymbol = "@jaci_static_dict_" + std::to_string(id);
+    desc.isArray = false;
+    desc.isFrozen = isFrozen;
+
+    for (size_t i = 0; i < properties.size(); ++i)
+    {
+        StaticTableEntry entry;
+        entry.key = properties[i].first;
+        entry.type = Type(TypeKind::Double);
+        entry.val.f64 = properties[i].second;
+        desc.keyToEntryMap[entry.key] = uint32_t(desc.entries.size());
+        desc.entries.push_back(std::move(entry));
+    }
+
+    staticTables.push_back(std::move(desc));
+    return id;
+}
+
+const StaticTableDescriptor* TableSpecializer::getStaticTable(uint32_t tableId) const
+{
+    if (tableId < staticTables.size())
+        return &staticTables[tableId];
+    return nullptr;
+}
+
+bool TableSpecializer::isStaticTable(uint32_t tableId) const
+{
+    return tableId < staticTables.size();
+}
+
+std::optional<double> TableSpecializer::lookupStaticDouble(uint32_t tableId, const std::string& key) const
+{
+    const StaticTableDescriptor* desc = getStaticTable(tableId);
+    if (!desc || desc->isArray)
+        return std::nullopt;
+
+    auto it = desc->keyToEntryMap.find(key);
+    if (it != desc->keyToEntryMap.end() && it->second < desc->entries.size())
+    {
+        return desc->entries[it->second].val.f64;
+    }
+    return std::nullopt;
+}
+
+std::optional<double> TableSpecializer::lookupStaticArrayElement(uint32_t tableId, size_t index) const
+{
+    const StaticTableDescriptor* desc = getStaticTable(tableId);
+    if (!desc || !desc->isArray)
+        return std::nullopt;
+
+    if (index < desc->packedDoubles.size())
+        return desc->packedDoubles[index];
+
+    return std::nullopt;
+}
+
+const std::vector<StaticTableDescriptor>& TableSpecializer::getAllStaticTables() const
+{
+    return staticTables;
+}
+
 } // namespace Llvm
 } // namespace CodeGen
 } // namespace Luau

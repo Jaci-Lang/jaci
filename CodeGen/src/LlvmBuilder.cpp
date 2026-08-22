@@ -328,6 +328,79 @@ void LlvmBuilder::attachLoopVectorizeHint(bool enable)
     irStream << "  br label %loop_header, !llvm.loop !5\n";
 }
 
+void LlvmBuilder::emitStaticDoubleArrayGlobal(const std::string& globalSymbol, const std::vector<double>& values)
+{
+    irStream << globalSymbol << " = internal constant [" << values.size() << " x double] [";
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        if (i > 0)
+            irStream << ", ";
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%g", values[i]);
+        irStream << "double " << buf;
+    }
+    irStream << "], align 8\n";
+}
+
+void LlvmBuilder::emitStaticInt64ArrayGlobal(const std::string& globalSymbol, const std::vector<int64_t>& values)
+{
+    irStream << globalSymbol << " = internal constant [" << values.size() << " x i64] [";
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        if (i > 0)
+            irStream << ", ";
+        irStream << "i64 " << values[i];
+    }
+    irStream << "], align 8\n";
+}
+
+void LlvmBuilder::emitStaticStructGlobal(const std::string& globalSymbol, const std::vector<double>& fieldValues)
+{
+    irStream << globalSymbol << " = internal constant { ";
+    for (size_t i = 0; i < fieldValues.size(); ++i)
+    {
+        if (i > 0)
+            irStream << ", ";
+        irStream << "double";
+    }
+    irStream << " } { ";
+    for (size_t i = 0; i < fieldValues.size(); ++i)
+    {
+        if (i > 0)
+            irStream << ", ";
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%g", fieldValues[i]);
+        irStream << "double " << buf;
+    }
+    irStream << " }, align 8\n";
+}
+
+LlvmValue LlvmBuilder::emitLoadStaticDoubleArray(const std::string& globalSymbol, size_t size, const LlvmValue& index)
+{
+    std::string gep = nextTemp("stat_arr_gep");
+    irStream << "  " << gep << " = getelementptr inbounds [" << size << " x double], ptr " << globalSymbol << ", i64 0, " << getLlvmTypeName(index.type) << " " << index.name << "\n";
+    std::string load = nextTemp("stat_arr_val");
+    irStream << "  " << load << " = load double, ptr " << gep << ", align 8\n";
+    return LlvmValue(load, Type(TypeKind::Double));
+}
+
+LlvmValue LlvmBuilder::emitLoadStaticStructField(const std::string& globalSymbol, uint32_t fieldIndex, Type fieldType)
+{
+    std::string gep = nextTemp("stat_struct_gep");
+    irStream << "  " << gep << " = getelementptr inbounds ptr, ptr " << globalSymbol << ", i32 0, i32 " << fieldIndex << "\n";
+    std::string load = nextTemp("stat_struct_val");
+    irStream << "  " << load << " = load " << getLlvmTypeName(fieldType) << ", ptr " << gep << ", align 8\n";
+    return LlvmValue(load, fieldType);
+}
+
+LlvmValue LlvmBuilder::emitTableFreeze(const LlvmValue& tablePtr)
+{
+    std::string readonlyPtr = nextTemp("tfreeze_ptr");
+    irStream << "  " << readonlyPtr << " = getelementptr inbounds i8, ptr " << tablePtr.name << ", i64 5\n";
+    irStream << "  store i8 1, ptr " << readonlyPtr << "\n";
+    return tablePtr;
+}
+
 LlvmValue LlvmBuilder::emitCall(const std::string& callee, Type retType, const std::vector<LlvmValue>& args)
 {
     std::string res = retType.isVoid() ? "" : nextTemp("call");

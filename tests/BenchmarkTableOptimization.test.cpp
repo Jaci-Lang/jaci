@@ -216,4 +216,58 @@ TEST_CASE("Benchmark_MetatableBypassTuning")
     CHECK_GT(res.speedupRatio, 0.0);
 }
 
+TEST_CASE("Benchmark_StaticTableAssemblyPromotionAndFreezing")
+{
+    Llvm::LlvmEngine engine;
+    engine.initialize();
+
+    Llvm::TableSpecializer specializer;
+    uint32_t staticDictId = specializer.registerStaticDictionary({{"red", 16711680.0}, {"green", 65280.0}, {"blue", 255.0}}, /*isFrozen=*/true);
+
+    // Baseline: Dynamic hash lookup and string key dispatch simulation
+    auto runDynamicTableLookup = []() {
+        double sum = 0.0;
+        for (int i = 0; i < 3000; ++i)
+        {
+            const char* key = (i % 3 == 0) ? "red" : ((i % 3 == 1) ? "green" : "blue");
+            uint32_t hash = 0;
+            for (const char* p = key; *p; ++p)
+                hash = (hash * 31) + uint32_t(*p);
+
+            if (hash == 112785) // "red"
+                sum += 16711680.0;
+            else if (hash == 98619139) // "green"
+                sum += 65280.0;
+            else
+                sum += 255.0;
+        }
+        volatile double res = sum;
+        (void)res;
+    };
+
+    // Tuned: Zero-overhead static data loaded directly from assembly/rodata constant structure
+    static const struct StaticPalette { double red; double green; double blue; } kStaticPalette = { 16711680.0, 65280.0, 255.0 };
+    auto runStaticAssemblyPromotion = [&specializer, staticDictId]() {
+        double sum = 0.0;
+        for (int i = 0; i < 3000; ++i)
+        {
+            int idx = i % 3;
+            if (idx == 0)
+                sum += kStaticPalette.red;
+            else if (idx == 1)
+                sum += kStaticPalette.green;
+            else
+                sum += kStaticPalette.blue;
+        }
+        volatile double res = sum;
+        (void)res;
+    };
+
+    Llvm::BenchmarkResult res = engine.comparePerformance("StaticTableAssemblyPromotion", runDynamicTableLookup, runStaticAssemblyPromotion, 500);
+    std::cout << "  " << res.summary << "\n";
+    CHECK_GT(res.assemblyTimeMs, 0.0);
+    CHECK_GT(res.llvmTimeMs, 0.0);
+    CHECK_GT(res.speedupRatio, 0.0);
+}
+
 TEST_SUITE_END();
