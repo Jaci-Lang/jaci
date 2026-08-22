@@ -29,6 +29,8 @@
 #include <sys/wait.h>
 #else
 #include <windows.h>
+#include <process.h> // _getpid()
+#define getpid _getpid
 #endif
 
 namespace Luau
