@@ -652,6 +652,23 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
                 if (reqPath.rfind("@std/", 0) == 0 || reqPath == "@std")
                     continue;
 
+                static const char* kStdLibs[] = {
+                    "fs", "io", "ffi", "json", "hash", "crypto", "process", "net", "task",
+                    "math", "table", "string", "coroutine", "bit32", "utf8", "os", "debug",
+                    "buffer", "vector", "class", "integer", nullptr
+                };
+                bool isStd = false;
+                for (int s = 0; kStdLibs[s]; ++s)
+                {
+                    if (reqPath == kStdLibs[s])
+                    {
+                        isStd = true;
+                        break;
+                    }
+                }
+                if (isStd)
+                    continue;
+
                 // Resolve target path
                 std::string target = reqPath;
                 std::string resolvedTarget;

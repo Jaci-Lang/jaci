@@ -67,7 +67,7 @@ static luarequire_ConfigStatus convert(VfsNavigator::ConfigStatus status)
 static bool is_require_allowed(lua_State* L, void* ctx, const char* requirer_chunkname)
 {
     std::string_view chunkname = requirer_chunkname;
-    return chunkname == "=stdin" || (!chunkname.empty() && chunkname[0] == '@');
+    return chunkname == "=stdin" || chunkname == "=eval" || (!chunkname.empty() && chunkname[0] == '@');
 }
 
 static luarequire_NavigateResult reset(lua_State* L, void* ctx, const char* requirer_chunkname)
@@ -75,7 +75,7 @@ static luarequire_NavigateResult reset(lua_State* L, void* ctx, const char* requ
     ReplRequirer* req = static_cast<ReplRequirer*>(ctx);
 
     std::string chunkname = requirer_chunkname;
-    if (chunkname == "=stdin")
+    if (chunkname == "=stdin" || chunkname == "=eval")
         return convert(req->vfs.resetToStdIn());
     else if (!chunkname.empty() && chunkname[0] == '@')
         return convert(req->vfs.resetToPath(chunkname.substr(1)));

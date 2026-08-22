@@ -149,7 +149,7 @@ static int checkRegisteredModules(lua_State* L, const char* path)
     }
     lua_pop(L, 2);
 
-    // Support @std/<library> standard library module imports (e.g. @std/fs, @std/net, @std/task)
+    // Support @std/<library> or bare standard library module imports (e.g. @std/fs, net, task)
     if (strncmp(pathLower.c_str(), "@std/", 5) == 0)
     {
         std::string libName = pathLower.substr(5);
@@ -157,6 +157,25 @@ static int checkRegisteredModules(lua_State* L, const char* path)
         if (!lua_isnil(L, -1))
             return 1;
         lua_pop(L, 1);
+    }
+    else
+    {
+        static const char* kStdLibs[] = {
+            "fs", "io", "ffi", "json", "hash", "crypto", "process", "net", "task",
+            "math", "table", "string", "coroutine", "bit32", "utf8", "os", "debug",
+            "buffer", "vector", "class", "integer", nullptr
+        };
+        for (int i = 0; kStdLibs[i]; ++i)
+        {
+            if (pathLower == kStdLibs[i])
+            {
+                lua_getglobal(L, kStdLibs[i]);
+                if (!lua_isnil(L, -1))
+                    return 1;
+                lua_pop(L, 1);
+                break;
+            }
+        }
     }
 
     return 0;

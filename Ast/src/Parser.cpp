@@ -4450,6 +4450,13 @@ Parser::Name Parser::parseName(const char* context)
 
 Parser::Name Parser::parseIndexName(const char* context, const Position& previous)
 {
+    if (lexer.current().type == Lexeme::Name || lexer.current().type == Lexeme::ReservedAwait)
+    {
+        Name result(AstName(lexer.current().name), lexer.current().location);
+        nextLexeme();
+        return result;
+    }
+
     if (std::optional<Name> name = parseNameOpt(context))
         return *name;
 
