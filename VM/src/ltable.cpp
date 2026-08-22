@@ -57,7 +57,8 @@ const LuaNode luaH_dummynode = {
 #define dummynode (&luaH_dummynode)
 
 // hash is always reduced mod 2^k
-#define hashpow2(t, n) (gnode(t, lmod((n), sizenode(t))))
+#define sizenodemask(t) ((1 << (t)->lsizenode) - 1)
+#define hashpow2(t, n) (gnode(t, (n) & sizenodemask(t)))
 
 #define hashstr(t, str) hashpow2(t, (ALT_HASH_FUNCTION ? 0x87654321 : 0) ^ (str)->hash)
 #define hashboolean(t, p) hashpow2(t, (ALT_HASH_FUNCTION ? 0x87654321 : 0) ^ p)
@@ -396,8 +397,8 @@ static void setarrayvector(lua_State* L, LuaTable* t, int size)
         luaG_runerror(L, "table overflow");
     luaM_reallocarray(L, t->array, t->sizearray, size, TValue, t->memcat);
     TValue* array = t->array;
-    for (int i = t->sizearray; i < size; i++)
-        setnilvalue(&array[i]);
+    if (size > t->sizearray)
+        memset(&array[t->sizearray], 0, (size - t->sizearray) * sizeof(TValue));
     t->sizearray = size;
 }
 
@@ -411,19 +412,12 @@ static void setnodevector(lua_State* L, LuaTable* t, int size)
     }
     else
     {
-        int i;
         lsize = ceillog2(size);
         if (lsize > MAXBITS)
             luaG_runerror(L, "table overflow");
         size = twoto(lsize);
         t->node = luaM_newarray(L, size, LuaNode, t->memcat);
-        for (i = 0; i < size; i++)
-        {
-            LuaNode* n = gnode(t, i);
-            gnext(n) = 0;
-            setnilvalue(gkey(n));
-            setnilvalue(gval(n));
-        }
+        memset(t->node, 0, size * sizeof(LuaNode));
     }
     t->lsizenode = cast_byte(lsize);
     t->nodemask8 = cast_byte((1 << lsize) - 1);
@@ -677,24 +671,23 @@ static TValue* newkey(lua_State* L, LuaTable* t, const TValue* key)
 const TValue* luaH_getnum(LuaTable* t, int key)
 {
     // (1 <= key && key <= t->sizearray)
-    if (unsigned(key) - 1 < unsigned(t->sizearray))
+    if (LUAU_LIKELY(unsigned(key) - 1 < unsigned(t->sizearray)))
         return &t->array[key - 1];
-    else if (t->node != dummynode)
-    {
-        double nk = cast_num(key);
-        LuaNode* n = hashnum(t, nk);
-        for (;;)
-        { // check whether `key' is somewhere in the chain
-            if (ttisnumber(gkey(n)) && luai_numeq(nvalue(gkey(n)), nk))
-                return gval(n); // that's it
-            if (gnext(n) == 0)
-                break;
-            n += gnext(n);
-        }
+    if (LUAU_UNLIKELY(t->node == dummynode))
         return luaO_nilobject;
+
+    double nk = cast_num(key);
+    LuaNode* n = hashnum(t, nk);
+    for (;;)
+    { // check whether `key' is somewhere in the chain
+        if (ttisnumber(gkey(n)) && luai_numeq(nvalue(gkey(n)), nk))
+            return gval(n); // that's it
+        int next = gnext(n);
+        if (LUAU_LIKELY(next == 0))
+            break;
+        n += next;
     }
-    else
-        return luaO_nilobject;
+    return luaO_nilobject;
 }
 
 /*
@@ -702,14 +695,18 @@ const TValue* luaH_getnum(LuaTable* t, int key)
 */
 const TValue* luaH_getstr(LuaTable* t, TString* key)
 {
-    LuaNode* n = hashstr(t, key);
+    if (LUAU_UNLIKELY(t->node == dummynode))
+        return luaO_nilobject;
+
+    LuaNode* n = &t->node[key->hash & sizenodemask(t)];
     for (;;)
     { // check whether `key' is somewhere in the chain
         if (LUAU_LIKELY(ttisstring(gkey(n)) && tsvalue(gkey(n)) == key))
             return gval(n); // that's it
-        if (LUAU_LIKELY(gnext(n) == 0))
+        int next = gnext(n);
+        if (LUAU_LIKELY(next == 0))
             break;
-        n += gnext(n);
+        n += next;
     }
     return luaO_nilobject;
 }
@@ -719,15 +716,19 @@ const TValue* luaH_getstr(LuaTable* t, TString* key)
 */
 const TValue* luaH_getp(LuaTable* t, void* key, int tag)
 {
+    if (LUAU_UNLIKELY(t->node == dummynode))
+        return luaO_nilobject;
+
     LuaNode* n = hashpointer(t, key);
     for (;;)
     { // check whether `key' is somewhere in the chain
         const TKey* nk = gkey(n);
         if (LUAU_LIKELY(ttislightuserdata(nk) && pvalue(nk) == key && lightuserdatatag(nk) == tag))
             return gval(n); // that's it
-        if (LUAU_LIKELY(gnext(n) == 0))
+        int next = gnext(n);
+        if (LUAU_LIKELY(next == 0))
             break;
-        n += gnext(n);
+        n += next;
     }
     return luaO_nilobject;
 }
@@ -754,14 +755,18 @@ const TValue* luaH_get(LuaTable* t, const TValue* key)
     }
     default:
     {
+        if (LUAU_UNLIKELY(t->node == dummynode))
+            return luaO_nilobject;
+
         LuaNode* n = mainposition(t, key);
         for (;;)
         { // check whether `key' is somewhere in the chain
             if (LUAU_LIKELY(luaO_rawequalKey(gkey(n), key)))
                 return gval(n); // that's it
-            if (LUAU_LIKELY(gnext(n) == 0))
+            int next = gnext(n);
+            if (LUAU_LIKELY(next == 0))
                 break;
-            n += gnext(n);
+            n += next;
         }
         return luaO_nilobject;
     }
@@ -791,6 +796,20 @@ TValue* luaH_newkey(lua_State* L, LuaTable* t, const TValue* key)
 
 TValue* luaH_newkeystr(lua_State* L, LuaTable* t, TString* key)
 {
+    if (t->node != dummynode)
+    {
+        LuaNode* mp = &t->node[key->hash & sizenodemask(t)];
+        if (ttisnil(gval(mp)) && ttisnil(gkey(mp)))
+        {
+            TValue k;
+            setsvalue(L, &k, key);
+            setnodekey(L, mp, &k);
+            luaC_barriert(L, t, &k);
+            LUAU_ASSERT(ttisnil(gval(mp)));
+            return gval(mp);
+        }
+    }
+
     TValue k;
     setsvalue(L, &k, key);
     return newkey(L, t, &k);
@@ -801,6 +820,7 @@ TValue* luaH_setnum(lua_State* L, LuaTable* t, int key)
     // (1 <= key && key <= t->sizearray)
     if (LUAU_LIKELY(unsigned(key) - 1 < unsigned(t->sizearray)))
         return &t->array[key - 1];
+    invalidateTMcache(t);
     // hash fallback
     const TValue* p = luaH_getnum(t, key);
     if (LUAU_LIKELY(p != luaO_nilobject))

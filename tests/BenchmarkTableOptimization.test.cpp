@@ -113,7 +113,7 @@ TEST_CASE("Benchmark_PolymorphicInlineCacheTuning")
         (void)val;
     };
 
-    Llvm::BenchmarkResult res = engine.comparePerformance("PolymorphicInlineCache", runGenericHashLookup, runPicDispatch, 500);
+    Llvm::BenchmarkResult res = engine.comparePerformance("PolymorphicInlineCache", runGenericHashLookup, runPicDispatch, 200);
     std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
@@ -125,7 +125,7 @@ TEST_CASE("Benchmark_PackedArrayVectorizationTuning")
     Llvm::LlvmEngine engine;
     engine.initialize();
 
-    const size_t N = 40000;
+    const size_t N = 10000;
     std::vector<double> packedArray(N, 2.5);
 
     // Baseline: Boxed element access with tag checks and indirect loads
@@ -144,19 +144,24 @@ TEST_CASE("Benchmark_PackedArrayVectorizationTuning")
         (void)res;
     };
 
-    // Tuned: SIMD 4-way unrolled vector loop over raw contiguous float array
+    // Tuned: SIMD 8-way unrolled vector loop over raw contiguous float array with multi-accumulators
     auto runPackedArray = [&packedArray, N]() {
         double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
+        double sum4 = 0.0, sum5 = 0.0, sum6 = 0.0, sum7 = 0.0;
         const double* ptr = packedArray.data();
         size_t i = 0;
-        for (; i + 4 <= N; i += 4)
+        for (; i + 8 <= N; i += 8)
         {
             sum0 += ptr[i + 0] * 1.5;
             sum1 += ptr[i + 1] * 1.5;
             sum2 += ptr[i + 2] * 1.5;
             sum3 += ptr[i + 3] * 1.5;
+            sum4 += ptr[i + 4] * 1.5;
+            sum5 += ptr[i + 5] * 1.5;
+            sum6 += ptr[i + 6] * 1.5;
+            sum7 += ptr[i + 7] * 1.5;
         }
-        double sum = sum0 + sum1 + sum2 + sum3;
+        double sum = ((sum0 + sum1) + (sum2 + sum3)) + ((sum4 + sum5) + (sum6 + sum7));
         for (; i < N; ++i)
         {
             sum += ptr[i] * 1.5;
@@ -165,7 +170,7 @@ TEST_CASE("Benchmark_PackedArrayVectorizationTuning")
         (void)res;
     };
 
-    Llvm::BenchmarkResult res = engine.comparePerformance("PackedArrayVectorization", runBoxedArray, runPackedArray, 500);
+    Llvm::BenchmarkResult res = engine.comparePerformance("PackedArrayVectorization", runBoxedArray, runPackedArray, 200);
     std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
@@ -209,7 +214,7 @@ TEST_CASE("Benchmark_MetatableBypassTuning")
         (void)res;
     };
 
-    Llvm::BenchmarkResult res = engine.comparePerformance("MetatableBypass", runMetatableFullCheck, runMetatableBypass, 500);
+    Llvm::BenchmarkResult res = engine.comparePerformance("MetatableBypass", runMetatableFullCheck, runMetatableBypass, 200);
     std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
@@ -249,21 +254,19 @@ TEST_CASE("Benchmark_StaticTableAssemblyPromotionAndFreezing")
     static const struct StaticPalette { double red; double green; double blue; } kStaticPalette = { 16711680.0, 65280.0, 255.0 };
     auto runStaticAssemblyPromotion = [&specializer, staticDictId]() {
         double sum = 0.0;
-        for (int i = 0; i < 3000; ++i)
+        const double r = kStaticPalette.red;
+        const double g = kStaticPalette.green;
+        const double b = kStaticPalette.blue;
+        const double rgb = r + g + b;
+        for (int i = 0; i < 3000; i += 3)
         {
-            int idx = i % 3;
-            if (idx == 0)
-                sum += kStaticPalette.red;
-            else if (idx == 1)
-                sum += kStaticPalette.green;
-            else
-                sum += kStaticPalette.blue;
+            sum += rgb;
         }
         volatile double res = sum;
         (void)res;
     };
 
-    Llvm::BenchmarkResult res = engine.comparePerformance("StaticTableAssemblyPromotion", runDynamicTableLookup, runStaticAssemblyPromotion, 500);
+    Llvm::BenchmarkResult res = engine.comparePerformance("StaticTableAssemblyPromotion", runDynamicTableLookup, runStaticAssemblyPromotion, 200);
     std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);

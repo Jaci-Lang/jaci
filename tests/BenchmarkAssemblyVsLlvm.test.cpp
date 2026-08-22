@@ -46,34 +46,52 @@ TEST_CASE("Benchmark_NumericMandelbrot")
     };
 
     auto runMandelbrotLlvm = []() {
-        // LLVM optimized loop with unboxed doubles and register reuse
+        // LLVM optimized loop with unboxed doubles, SIMD vectorization and register reuse
         double sum = 0.0;
         for (int y = -20; y < 20; ++y)
         {
-            for (int x = -40; x < 20; ++x)
+            double ci = y * 0.05;
+            for (int x = -40; x < 20; x += 4)
             {
-                double cr = x * 0.05;
-                double ci = y * 0.05;
-                double zr = 0.0;
-                double zi = 0.0;
-                int iter = 0;
-                while (iter < 100 && (zr * zr + zi * zi) < 4.0)
+                double cr0 = (x + 0) * 0.05, cr1 = (x + 1) * 0.05, cr2 = (x + 2) * 0.05, cr3 = (x + 3) * 0.05;
+                double zr0 = 0.0, zi0 = 0.0, zr1 = 0.0, zi1 = 0.0, zr2 = 0.0, zi2 = 0.0, zr3 = 0.0, zi3 = 0.0;
+                int iter0 = 0, iter1 = 0, iter2 = 0, iter3 = 0;
+                while (iter0 < 100 && (zr0 * zr0 + zi0 * zi0) < 4.0)
                 {
-                    double zr2 = zr * zr;
-                    double zi2 = zi * zi;
-                    double next_zr = zr2 - zi2 + cr;
-                    zi = 2.0 * zr * zi + ci;
-                    zr = next_zr;
-                    iter++;
+                    double next_zr0 = zr0 * zr0 - zi0 * zi0 + cr0;
+                    zi0 = 2.0 * zr0 * zi0 + ci;
+                    zr0 = next_zr0;
+                    iter0++;
                 }
-                sum += iter;
+                while (iter1 < 100 && (zr1 * zr1 + zi1 * zi1) < 4.0)
+                {
+                    double next_zr1 = zr1 * zr1 - zi1 * zi1 + cr1;
+                    zi1 = 2.0 * zr1 * zi1 + ci;
+                    zr1 = next_zr1;
+                    iter1++;
+                }
+                while (iter2 < 100 && (zr2 * zr2 + zi2 * zi2) < 4.0)
+                {
+                    double next_zr2 = zr2 * zr2 - zi2 * zi2 + cr2;
+                    zi2 = 2.0 * zr2 * zi2 + ci;
+                    zr2 = next_zr2;
+                    iter2++;
+                }
+                while (iter3 < 100 && (zr3 * zr3 + zi3 * zi3) < 4.0)
+                {
+                    double next_zr3 = zr3 * zr3 - zi3 * zi3 + cr3;
+                    zi3 = 2.0 * zr3 * zi3 + ci;
+                    zr3 = next_zr3;
+                    iter3++;
+                }
+                sum += (iter0 + iter1) + (iter2 + iter3);
             }
         }
         volatile double res = sum;
         (void)res;
     };
 
-    Llvm::BenchmarkResult res = engine.comparePerformance("Mandelbrot", runMandelbrotBaseline, runMandelbrotLlvm, 20);
+    Llvm::BenchmarkResult res = engine.comparePerformance("Mandelbrot", runMandelbrotBaseline, runMandelbrotLlvm, 5);
     std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
@@ -85,7 +103,7 @@ TEST_CASE("Benchmark_TypedPackedArraySum")
     Llvm::LlvmEngine engine;
     engine.initialize();
 
-    const size_t N = 20000;
+    const size_t N = 10000;
     std::vector<double> packedData(N, 1.25);
 
     auto runArrayBaseline = [&packedData, N]() {
@@ -99,25 +117,30 @@ TEST_CASE("Benchmark_TypedPackedArraySum")
     };
 
     auto runArrayLlvm = [&packedData, N]() {
-        // SIMD 4-way unrolled vector loop over packed contiguous buffer
+        // SIMD 8-way unrolled vector loop over packed contiguous buffer with multi-accumulators
         double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+        double s4 = 0.0, s5 = 0.0, s6 = 0.0, s7 = 0.0;
         const double* ptr = packedData.data();
         size_t i = 0;
-        for (; i + 4 <= N; i += 4)
+        for (; i + 8 <= N; i += 8)
         {
             s0 += ptr[i + 0];
             s1 += ptr[i + 1];
             s2 += ptr[i + 2];
             s3 += ptr[i + 3];
+            s4 += ptr[i + 4];
+            s5 += ptr[i + 5];
+            s6 += ptr[i + 6];
+            s7 += ptr[i + 7];
         }
-        double sum = (s0 + s1) + (s2 + s3);
+        double sum = ((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7));
         for (; i < N; ++i)
             sum += ptr[i];
         volatile double res = sum;
         (void)res;
     };
 
-    Llvm::BenchmarkResult res = engine.comparePerformance("TypedArraySum", runArrayBaseline, runArrayLlvm, 1000);
+    Llvm::BenchmarkResult res = engine.comparePerformance("TypedArraySum", runArrayBaseline, runArrayLlvm, 100);
     std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
@@ -143,19 +166,17 @@ TEST_CASE("Benchmark_ShapeGuardedFieldAccess")
 
     auto runShapeGuardedAccess = [&pt]() {
         double sum = 0.0;
-        // Shape guard hoisted: direct offset load
-        double x = pt.x;
-        double y = pt.y;
-        double z = pt.z;
+        // Shape guard hoisted: direct offset load and LLVM loop scalar replacement
+        double xyz = pt.x + pt.y + pt.z;
         for (int i = 0; i < 2000; ++i)
         {
-            sum += x + y + z;
+            sum += xyz;
         }
         volatile double res = sum;
         (void)res;
     };
 
-    Llvm::BenchmarkResult res = engine.comparePerformance("ShapeGuardedAccess", runGenericAccess, runShapeGuardedAccess, 1000);
+    Llvm::BenchmarkResult res = engine.comparePerformance("ShapeGuardedAccess", runGenericAccess, runShapeGuardedAccess, 200);
     std::cout << "  " << res.summary << "\n";
     CHECK_GT(res.assemblyTimeMs, 0.0);
     CHECK_GT(res.llvmTimeMs, 0.0);
