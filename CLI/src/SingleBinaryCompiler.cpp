@@ -10,10 +10,13 @@
 #include "Luau/Parser.h"
 #include "Luau/Require.h"
 #include "Luau/VfsNavigator.h"
+#include "lua.h"
+#include "lualib.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -21,16 +24,29 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 #if !defined(_WIN32)
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
+#include <shellapi.h>
 #include <process.h> // _getpid()
 #define getpid _getpid
+#endif
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
 #endif
 
 namespace Luau
@@ -55,6 +71,122 @@ struct DiscoveredAsset
     std::string absolutePath;
     std::string data;
 };
+
+static const char kMagicHeader[8] = {'J', 'A', 'C', 'I', 'P', 'K', 'G', '\0'};
+static const char kMagicTrailer[8] = {'J', 'A', 'C', 'I', 'P', 'K', 'G', '\0'};
+static const size_t kTrailerSize = 24; // uint64_t offset + uint64_t size + 8 bytes magic
+
+static void writeUint32(std::string& buf, uint32_t val)
+{
+    buf.push_back(static_cast<char>(val & 0xFF));
+    buf.push_back(static_cast<char>((val >> 8) & 0xFF));
+    buf.push_back(static_cast<char>((val >> 16) & 0xFF));
+    buf.push_back(static_cast<char>((val >> 24) & 0xFF));
+}
+
+static void writeInt32(std::string& buf, int32_t val)
+{
+    writeUint32(buf, static_cast<uint32_t>(val));
+}
+
+static void writeUint64(std::string& buf, uint64_t val)
+{
+    for (int i = 0; i < 8; ++i)
+        buf.push_back(static_cast<char>((val >> (i * 8)) & 0xFF));
+}
+
+static void writeString(std::string& buf, const std::string& str)
+{
+    writeUint32(buf, static_cast<uint32_t>(str.size()));
+    buf.append(str);
+}
+
+static uint32_t readUint32(const unsigned char*& ptr, const unsigned char* end)
+{
+    if (ptr + 4 > end)
+        return 0;
+    uint32_t val = static_cast<uint32_t>(ptr[0]) |
+                   (static_cast<uint32_t>(ptr[1]) << 8) |
+                   (static_cast<uint32_t>(ptr[2]) << 16) |
+                   (static_cast<uint32_t>(ptr[3]) << 24);
+    ptr += 4;
+    return val;
+}
+
+static int32_t readInt32(const unsigned char*& ptr, const unsigned char* end)
+{
+    return static_cast<int32_t>(readUint32(ptr, end));
+}
+
+static uint64_t readUint64(const unsigned char*& ptr, const unsigned char* end)
+{
+    if (ptr + 8 > end)
+        return 0;
+    uint64_t val = 0;
+    for (int i = 0; i < 8; ++i)
+        val |= (static_cast<uint64_t>(ptr[i]) << (i * 8));
+    ptr += 8;
+    return val;
+}
+
+static std::string readString(const unsigned char*& ptr, const unsigned char* end)
+{
+    uint32_t len = readUint32(ptr, end);
+    if (ptr + len > end)
+        return "";
+    std::string s(reinterpret_cast<const char*>(ptr), len);
+    ptr += len;
+    return s;
+}
+
+std::string getExecutablePath()
+{
+#if defined(_WIN32)
+    wchar_t buffer[MAX_PATH * 4] = {};
+    DWORD len = GetModuleFileNameW(NULL, buffer, sizeof(buffer) / sizeof(buffer[0]));
+    if (len > 0)
+    {
+        int sz = WideCharToMultiByte(CP_UTF8, 0, buffer, len, NULL, 0, NULL, NULL);
+        std::string res(sz, 0);
+        WideCharToMultiByte(CP_UTF8, 0, buffer, len, &res[0], sz, NULL, NULL);
+        return normalizePath(res);
+    }
+#elif defined(__linux__)
+    char buffer[4096] = {};
+    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (len > 0)
+        return normalizePath(std::string(buffer, len));
+#elif defined(__APPLE__)
+    char buffer[4096] = {};
+    uint32_t size = sizeof(buffer);
+    if (_NSGetExecutablePath(buffer, &size) == 0)
+        return normalizePath(std::string(buffer));
+#endif
+    if (const char* env = getenv("JACI_EXE"))
+        return normalizePath(std::string(env));
+    return "";
+}
+
+static std::string getTempRunnerPath()
+{
+#if defined(_WIN32)
+    char tempDir[MAX_PATH] = {};
+    DWORD len = GetTempPathA(sizeof(tempDir), tempDir);
+    std::string dir = (len > 0 && len < sizeof(tempDir)) ? std::string(tempDir) : ".";
+    if (!dir.empty() && dir.back() != '\\' && dir.back() != '/')
+        dir += "\\";
+    char path[MAX_PATH * 2] = {};
+    snprintf(path, sizeof(path), "%sjaci_single_binary_%d.cpp", dir.c_str(), static_cast<int>(getpid()));
+    return std::string(path);
+#else
+    const char* tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = "/tmp";
+    char path[512] = {};
+    snprintf(path, sizeof(path), "%s/jaci_single_binary_%d.cpp", tmp, static_cast<int>(getpid()));
+    return std::string(path);
+#endif
+}
 
 class RequireVisitor : public AstVisitor
 {
@@ -122,7 +254,8 @@ std::string generateRunnerCpp(
     const std::vector<DiscoveredAsset>& assets,
     bool enableCodegen,
     int optimizationLevel,
-    int debugLevel
+    int debugLevel,
+    bool windowed
 )
 {
     std::ostringstream out;
@@ -395,8 +528,7 @@ std::string generateRunnerCpp(
     out << "            copts.debugLevel = " << debugLevel << ";\n";
     out << "            std::string bytecode = Luau::compile(*contents, copts);\n";
     out << "            status = luau_load(ML, chunkname, bytecode.data(), bytecode.size(), 0);\n";
-    out << "        }\n";
-    out << "    }\n\n";
+    out << "        }\n    }\n\n";
     out << "    if (status != 0) luaL_error(L, \"failed to load module '%s'\", loadname);\n\n";
     if (enableCodegen)
     {
@@ -499,8 +631,8 @@ std::string generateRunnerCpp(
     out << "    return 0;\n";
     out << "}\n\n";
 
-    // Main entry point
-    out << "int main(int argc, char** argv)\n{\n";
+    // Main execution implementation
+    out << "int runApplication(int argc, char** argv)\n{\n";
     out << "    lua_State* L = luaL_newstate();\n";
     out << "    if (!L) { fprintf(stderr, \"Failed to initialize Luau VM\\n\"); return 1; }\n\n";
     if (enableCodegen)
@@ -567,12 +699,1038 @@ std::string generateRunnerCpp(
     out << "    }\n\n";
     out << "    lua_close(L);\n";
     out << "    return 0;\n";
+    out << "}\n\n";
+
+    // Windows WinMain support for Main Window / GUI applications without console window
+    out << "#if defined(_WIN32)\n";
+    out << "#ifndef WIN32_LEAN_AND_MEAN\n";
+    out << "#define WIN32_LEAN_AND_MEAN\n";
+    out << "#endif\n";
+    out << "#include <windows.h>\n";
+    out << "#include <shellapi.h>\n\n";
+    out << "int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)\n{\n";
+    out << "    int argc = 0;\n";
+    out << "    LPWSTR* argvW = CommandLineToArgvW(GetCommandLineW(), &argc);\n";
+    out << "    std::vector<std::string> args;\n";
+    out << "    std::vector<char*> argv;\n";
+    out << "    if (argvW)\n    {\n";
+    out << "        args.reserve(argc);\n";
+    out << "        argv.reserve(argc + 1);\n";
+    out << "        for (int i = 0; i < argc; ++i)\n        {\n";
+    out << "            int sz = WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, NULL, 0, NULL, NULL);\n";
+    out << "            std::string s(sz > 0 ? sz - 1 : 0, 0);\n";
+    out << "            if (sz > 0)\n";
+    out << "                WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, &s[0], sz, NULL, NULL);\n";
+    out << "            args.push_back(std::move(s));\n";
+    out << "        }\n";
+    out << "        LocalFree(argvW);\n";
+    out << "    }\n";
+    out << "    for (auto& s : args)\n        argv.push_back(&s[0]);\n";
+    out << "    argv.push_back(nullptr);\n";
+    out << "    return runApplication(static_cast<int>(argv.size()) - 1, argv.data());\n";
+    out << "}\n";
+    out << "#endif\n\n";
+
+    out << "int main(int argc, char** argv)\n{\n";
+    out << "    return runApplication(argc, argv);\n";
     out << "}\n";
 
     return out.str();
 }
 
+static std::string serializePayload(
+    const std::vector<DiscoveredModule>& modules,
+    size_t entryIndex,
+    const std::vector<DiscoveredAsset>& assets,
+    const SingleBinaryOptions& options
+)
+{
+    std::string payload;
+    payload.append(kMagicHeader, 8);
+    writeUint32(payload, 1); // format version 1
+
+    uint32_t flags = 0;
+    if (options.codegen)
+        flags |= 1;
+    if (options.windowed)
+        flags |= 2;
+    if (options.verbose)
+        flags |= 4;
+    writeUint32(payload, flags);
+
+    writeInt32(payload, options.optimizationLevel);
+    writeInt32(payload, options.debugLevel);
+    writeUint32(payload, static_cast<uint32_t>(entryIndex));
+
+    writeUint32(payload, static_cast<uint32_t>(modules.size()));
+    for (const auto& mod : modules)
+    {
+        writeString(payload, mod.chunkName);
+        writeString(payload, mod.loadName);
+        writeString(payload, mod.absolutePath);
+        writeString(payload, mod.bytecode);
+    }
+
+    writeUint32(payload, static_cast<uint32_t>(assets.size()));
+    for (const auto& asset : assets)
+    {
+        writeString(payload, asset.path);
+        writeString(payload, asset.relativePath);
+        writeString(payload, asset.absolutePath);
+        writeString(payload, asset.data);
+    }
+
+    return payload;
+}
+
+static bool compileDirectBundle(
+    const SingleBinaryOptions& options,
+    const std::vector<DiscoveredModule>& modules,
+    size_t entryIndex,
+    const std::vector<DiscoveredAsset>& assets
+)
+{
+    std::string stubPath = options.customStubPath;
+    if (stubPath.empty())
+    {
+        if (const char* envStub = getenv("JACI_RUNNER_STUB"))
+            stubPath = envStub;
+    }
+    if (stubPath.empty() || !isFile(stubPath))
+    {
+        std::string rootDir = "/home/klee/Documentos/jaci";
+        if (const char* envRoot = getenv("JACI_ROOT"))
+            rootDir = envRoot;
+        std::string buildDir = rootDir + "/build";
+        if (const char* envBuild = getenv("JACI_BUILD"))
+            buildDir = envBuild;
+
+        static const char* kCandidates[] = {
+            "/luau", "/luau.exe", "/build/luau", "/build/luau.exe"
+        };
+        for (const char* cand : kCandidates)
+        {
+            std::string c1 = buildDir + cand;
+            if (isFile(c1)) { stubPath = c1; break; }
+            std::string c2 = rootDir + cand;
+            if (isFile(c2)) { stubPath = c2; break; }
+        }
+    }
+    if (stubPath.empty() || !isFile(stubPath))
+    {
+        stubPath = getExecutablePath();
+    }
+
+    if (stubPath.empty() || !isFile(stubPath))
+    {
+        fprintf(stderr, "SingleBinaryCompiler: Could not locate base executable / runner stub for standalone packaging.\n");
+        return false;
+    }
+
+    std::optional<std::string> baseExeData = readFile(stubPath);
+    if (!baseExeData || baseExeData->empty())
+    {
+        fprintf(stderr, "SingleBinaryCompiler: Failed to read base executable '%s'\n", stubPath.c_str());
+        return false;
+    }
+
+    // If base executable already has an appended bundle, strip it to start from clean base executable
+    size_t baseSize = baseExeData->size();
+    if (baseSize >= kTrailerSize)
+    {
+        const unsigned char* endPtr = reinterpret_cast<const unsigned char*>(baseExeData->data()) + baseSize;
+        const unsigned char* trailerPtr = endPtr - kTrailerSize;
+        if (memcmp(trailerPtr + 16, kMagicTrailer, 8) == 0)
+        {
+            const unsigned char* p = trailerPtr;
+            uint64_t prevOffset = readUint64(p, endPtr);
+            if (prevOffset < baseSize)
+                baseSize = static_cast<size_t>(prevOffset);
+        }
+    }
+
+    std::string payload = serializePayload(modules, entryIndex, assets, options);
+    std::string outPath = options.outputBinaryPath.empty() ? "a.out" : options.outputBinaryPath;
+
+    if (normalizePath(outPath) == normalizePath(stubPath))
+    {
+        fprintf(stderr, "SingleBinaryCompiler: Output binary path '%s' cannot overwrite the active executable in-place.\n", outPath.c_str());
+        return false;
+    }
+
+    FILE* fp = fopen(outPath.c_str(), "wb");
+    if (!fp)
+    {
+        fprintf(stderr, "SingleBinaryCompiler: Cannot open output binary '%s' for writing\n", outPath.c_str());
+        return false;
+    }
+
+    // 1. Write base executable bytes
+    if (fwrite(baseExeData->data(), 1, baseSize, fp) != baseSize)
+    {
+        fclose(fp);
+        fprintf(stderr, "SingleBinaryCompiler: Failed to write base executable bytes to '%s'\n", outPath.c_str());
+        return false;
+    }
+
+    // 2. Write payload bytes
+    uint64_t payloadOffset = static_cast<uint64_t>(baseSize);
+    uint64_t payloadSize = static_cast<uint64_t>(payload.size());
+
+    if (fwrite(payload.data(), 1, payload.size(), fp) != payload.size())
+    {
+        fclose(fp);
+        fprintf(stderr, "SingleBinaryCompiler: Failed to write bundle payload to '%s'\n", outPath.c_str());
+        return false;
+    }
+
+    // 3. Write trailer
+    std::string trailer;
+    writeUint64(trailer, payloadOffset);
+    writeUint64(trailer, payloadSize);
+    trailer.append(kMagicTrailer, 8);
+
+    if (fwrite(trailer.data(), 1, trailer.size(), fp) != trailer.size())
+    {
+        fclose(fp);
+        fprintf(stderr, "SingleBinaryCompiler: Failed to write bundle trailer to '%s'\n", outPath.c_str());
+        return false;
+    }
+
+    fclose(fp);
+
+#if !defined(_WIN32)
+    chmod(outPath.c_str(), 0755);
+#endif
+
+    if (options.verbose)
+    {
+        printf("SingleBinaryCompiler: Packaged standalone binary '%s' (base: %zu bytes, payload: %zu bytes)\n",
+               outPath.c_str(), baseSize, payload.size());
+    }
+
+    return true;
+}
+
+static bool compileNativeRunner(
+    const SingleBinaryOptions& options,
+    const std::vector<DiscoveredModule>& modules,
+    size_t entryIndex,
+    const std::vector<DiscoveredAsset>& assets
+)
+{
+    std::string runnerCode = generateRunnerCpp(
+        modules,
+        entryIndex,
+        assets,
+        options.codegen,
+        options.optimizationLevel,
+        options.debugLevel,
+        options.windowed
+    );
+
+    std::string tempPath = getTempRunnerPath();
+
+    FILE* fp = fopen(tempPath.c_str(), "w");
+    if (!fp)
+    {
+        fprintf(stderr, "SingleBinaryCompiler: Could not open temporary runner file '%s'\n", tempPath.c_str());
+        return false;
+    }
+    fwrite(runnerCode.data(), 1, runnerCode.size(), fp);
+    fclose(fp);
+
+    std::string rootDir = "/home/klee/Documentos/jaci";
+    if (const char* envRoot = getenv("JACI_ROOT"))
+        rootDir = envRoot;
+
+    std::string buildDir = rootDir + "/build";
+    if (const char* envBuild = getenv("JACI_BUILD"))
+        buildDir = envBuild;
+
+    std::string outPath = options.outputBinaryPath.empty() ? "a.out" : options.outputBinaryPath;
+
+    std::string compiler = "c++";
+    bool isMSVC = false;
+    bool isWindowsTarget = false;
+    bool isAppleTarget = false;
+
+    if (!options.compilerCommand.empty())
+    {
+        compiler = options.compilerCommand;
+    }
+    else if (!options.targetArchitecture.empty())
+    {
+        const std::string& tgt = options.targetArchitecture;
+        if (tgt == "linux-arm64" || tgt == "aarch64-linux" || tgt == "aarch64-linux-gnu" || tgt == "arm64")
+        {
+            compiler = "aarch64-linux-gnu-g++";
+        }
+        else if (tgt == "windows-x64" || tgt == "x86_64-w64-mingw32" || tgt == "win64" || tgt == "windows" || tgt == "x86_64-windows")
+        {
+#if defined(_WIN32)
+            compiler = "cl.exe";
+            isMSVC = true;
+#else
+            compiler = "x86_64-w64-mingw32-g++";
+#endif
+            isWindowsTarget = true;
+        }
+        else if (tgt == "windows-msvc" || tgt == "msvc" || tgt == "cl")
+        {
+            compiler = "cl.exe";
+            isMSVC = true;
+            isWindowsTarget = true;
+        }
+        else if (tgt == "windows-gui" || tgt == "windows-windowed" || tgt == "win64-gui")
+        {
+#if defined(_WIN32)
+            compiler = "cl.exe";
+            isMSVC = true;
+#else
+            compiler = "x86_64-w64-mingw32-g++";
+#endif
+            isWindowsTarget = true;
+        }
+        else if (tgt == "linux-x64" || tgt == "x86_64-linux" || tgt == "x86_64-linux-gnu" || tgt == "x64")
+        {
+            compiler = "x86_64-linux-gnu-g++";
+        }
+        else if (tgt == "macos-arm64" || tgt == "darwin-arm64" || tgt == "macos" || tgt == "darwin")
+        {
+            compiler = "clang++ -target arm64-apple-macos";
+            isAppleTarget = true;
+        }
+        else if (tgt == "macos-x64" || tgt == "darwin-x64")
+        {
+            compiler = "clang++ -target x86_64-apple-macos";
+            isAppleTarget = true;
+        }
+        else
+        {
+            compiler = tgt;
+        }
+    }
+#if defined(_WIN32)
+    else
+    {
+        compiler = "cl.exe";
+        isMSVC = true;
+        isWindowsTarget = true;
+    }
+#endif
+
+    // Detect compiler flavor from compiler binary name
+    std::string compilerBinary = compiler;
+    size_t spacePos = compilerBinary.find(' ');
+    if (spacePos != std::string::npos)
+        compilerBinary = compilerBinary.substr(0, spacePos);
+
+    std::string compLower = compilerBinary;
+    std::transform(compLower.begin(), compLower.end(), compLower.begin(), [](unsigned char c) { return tolower(c); });
+
+    if (compLower == "cl" || compLower == "cl.exe" || compLower.find("clang-cl") != std::string::npos)
+    {
+        isMSVC = true;
+        isWindowsTarget = true;
+    }
+    else if (compLower.find("mingw") != std::string::npos || compLower.find("windows") != std::string::npos)
+    {
+        isWindowsTarget = true;
+    }
+    else if (compLower.find("apple") != std::string::npos || compLower.find("darwin") != std::string::npos)
+    {
+        isAppleTarget = true;
+    }
+
+    // Verify compiler binary availability in PATH
+#if defined(_WIN32)
+    std::string checkCmd = "where " + compilerBinary + " >nul 2>nul";
+#else
+    std::string checkCmd = "command -v " + compilerBinary + " >/dev/null 2>&1";
+#endif
+
+    if (system(checkCmd.c_str()) != 0)
+    {
+        if (options.targetArchitecture == "linux-x64" || options.targetArchitecture == "x64" || options.targetArchitecture.empty())
+        {
+            compiler = "c++";
+            isMSVC = false;
+        }
+        else
+        {
+            fprintf(stderr, "SingleBinaryCompiler: Toolchain compiler '%s' not found in PATH for target '%s'.\n",
+                    compilerBinary.c_str(), options.targetArchitecture.c_str());
+            fprintf(stderr, "Please install the required cross-compilation toolchain or use direct bundling mode (--direct).\n");
+            remove(tempPath.c_str());
+            return false;
+        }
+    }
+
+    std::ostringstream cmd;
+    if (isMSVC)
+    {
+        cmd << compiler << " /nologo /O2 /std:c++17 /EHsc /MD "
+            << "/I\"" << rootDir << "/VM/include\" "
+            << "/I\"" << rootDir << "/Common/include\" "
+            << "/I\"" << rootDir << "/Ast/include\" "
+            << "/I\"" << rootDir << "/Compiler/include\" "
+            << "/I\"" << rootDir << "/CodeGen/include\" "
+            << "/I\"" << rootDir << "/Inliner/include\" "
+            << "/I\"" << rootDir << "/Config/include\" "
+            << "/I\"" << rootDir << "/Require/include\" "
+            << "/I\"" << rootDir << "/CLI/include\" "
+            << "/I\"" << rootDir << "/extern/isocline/include\" "
+            << "\"" << tempPath << "\" "
+            << "/Fe:\"" << outPath << "\" "
+            << "/link "
+            << "/LIBPATH:\"" << buildDir << "\" "
+            << "Luau.CLI.lib.lib Luau.Require.lib Luau.CodeGen.lib Luau.Compiler.lib "
+            << "Luau.Bytecode.lib Luau.Inliner.lib Luau.VM.lib Luau.Config.lib Luau.Analysis.lib Luau.Ast.lib Luau.Common.lib "
+            << "isocline.lib "
+            << "ws2_32.lib bcrypt.lib user32.lib shell32.lib advapi32.lib ";
+        if (options.windowed)
+            cmd << "/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup";
+        else
+            cmd << "/SUBSYSTEM:CONSOLE";
+    }
+    else
+    {
+        cmd << compiler << " -std=c++17 -O2 "
+            << "-I\"" << rootDir << "/VM/include\" "
+            << "-I\"" << rootDir << "/Common/include\" "
+            << "-I\"" << rootDir << "/Ast/include\" "
+            << "-I\"" << rootDir << "/Compiler/include\" "
+            << "-I\"" << rootDir << "/CodeGen/include\" "
+            << "-I\"" << rootDir << "/Inliner/include\" "
+            << "-I\"" << rootDir << "/Config/include\" "
+            << "-I\"" << rootDir << "/Require/include\" "
+            << "-I\"" << rootDir << "/CLI/include\" "
+            << "-I\"" << rootDir << "/extern/isocline/include\" "
+            << "\"" << tempPath << "\" "
+            << "-o \"" << outPath << "\" "
+            << "-L\"" << buildDir << "\" ";
+
+        if (isAppleTarget)
+        {
+            cmd << "-lLuau.CLI.lib -lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
+                << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Analysis -lLuau.Ast -lLuau.Common "
+                << "-lisocline "
+                << "-framework CoreFoundation -lpthread -lm";
+        }
+        else if (isWindowsTarget)
+        {
+            cmd << "-lLuau.CLI.lib -lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
+                << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Analysis -lLuau.Ast -lLuau.Common "
+                << "-lisocline "
+                << "-lws2_32 -lbcrypt -luser32 -lshell32 -ladvapi32 ";
+            if (options.windowed)
+                cmd << "-mwindows ";
+            cmd << "-lpthread -lm";
+        }
+        else
+        {
+            cmd << "-Wl,--start-group "
+                << "-lLuau.CLI.lib -lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
+                << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Analysis -lLuau.Ast -lLuau.Common "
+                << "-lisocline "
+                << "-Wl,--end-group "
+                << "-ldl -lpthread -lm";
+        }
+    }
+
+    if (options.verbose)
+        printf("SingleBinaryCompiler: Executing: %s\n", cmd.str().c_str());
+
+    int ret = system(cmd.str().c_str());
+    remove(tempPath.c_str());
+
+    if (ret != 0)
+    {
+        fprintf(stderr, "SingleBinaryCompiler: Compilation failed with exit code %d\n", ret);
+        return false;
+    }
+
+    if (options.verbose)
+        printf("SingleBinaryCompiler: Successfully generated standalone binary '%s'\n", outPath.c_str());
+
+    return true;
+}
+
+// Runtime Context for in-memory embedded execution
+struct EmbeddedRuntimeContext
+{
+    std::vector<DiscoveredModule> modules;
+    std::vector<DiscoveredAsset> assets;
+    size_t entryIndex = 0;
+    int optimizationLevel = 1;
+    int debugLevel = 1;
+    bool enableCodegen = true;
+    std::string currentPath;
+    const DiscoveredModule* currentModule = nullptr;
+
+    const DiscoveredModule* findModule(const char* name) const
+    {
+        if (!name) return nullptr;
+        std::string_view target(name);
+        if (!target.empty() && target[0] == '@') target.remove_prefix(1);
+        for (const auto& m : modules)
+        {
+            std::string_view chunk = m.chunkName;
+            if (!chunk.empty() && chunk[0] == '@') chunk.remove_prefix(1);
+            if (target == chunk || target == m.loadName || target == m.absolutePath)
+                return &m;
+        }
+        for (const auto& m : modules)
+        {
+            std::string_view absPath(m.absolutePath);
+            if (absPath.size() >= target.size() && absPath.substr(absPath.size() - target.size()) == target)
+                return &m;
+        }
+        return nullptr;
+    }
+
+    const DiscoveredAsset* findAsset(const char* name) const
+    {
+        if (!name || !*name || assets.empty()) return nullptr;
+        std::string_view target(name);
+        if (target.size() >= 2 && target[0] == '.' && (target[1] == '/' || target[1] == '\\'))
+            target.remove_prefix(2);
+        for (const auto& a : assets)
+        {
+            std::string_view p = a.path;
+            if (p.size() >= 2 && p[0] == '.' && (p[1] == '/' || p[1] == '\\')) p.remove_prefix(2);
+            std::string_view rp = a.relativePath;
+            if (rp.size() >= 2 && rp[0] == '.' && (rp[1] == '/' || rp[1] == '\\')) rp.remove_prefix(2);
+            if (target == p || target == rp || target == a.absolutePath)
+                return &a;
+        }
+        for (const auto& a : assets)
+        {
+            std::string_view absPath(a.absolutePath);
+            if (absPath.size() >= target.size() && absPath.substr(absPath.size() - target.size()) == target)
+                return &a;
+        }
+        return nullptr;
+    }
+};
+
+static EmbeddedRuntimeContext* g_ActiveRuntimeContext = nullptr;
+
+static bool rt_is_require_allowed(lua_State* L, void* ctx, const char* requirer_chunkname)
+{
+    return true;
+}
+
+static luarequire_NavigateResult rt_reset(lua_State* L, void* ctx, const char* requirer_chunkname)
+{
+    EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
+    if (!requirer_chunkname) return NAVIGATE_NOT_FOUND;
+    std::string name = requirer_chunkname;
+    if (!name.empty() && name[0] == '@')
+        name = name.substr(1);
+    req->currentPath = name;
+    req->currentModule = req->findModule(name.c_str());
+    return NAVIGATE_SUCCESS;
+}
+
+static luarequire_NavigateResult rt_jump_to_alias(lua_State* L, void* ctx, const char* path)
+{
+    EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
+    if (!path) return NAVIGATE_NOT_FOUND;
+    req->currentPath = path;
+    req->currentModule = req->findModule(path);
+    return NAVIGATE_SUCCESS;
+}
+
+static luarequire_NavigateResult rt_to_parent(lua_State* L, void* ctx)
+{
+    EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
+    req->currentModule = nullptr;
+    size_t slash = req->currentPath.find_last_of('/');
+    if (slash == std::string::npos || slash == 0)
+        return NAVIGATE_NOT_FOUND;
+    req->currentPath = req->currentPath.substr(0, slash);
+    return NAVIGATE_SUCCESS;
+}
+
+static luarequire_NavigateResult rt_to_child(lua_State* L, void* ctx, const char* name)
+{
+    EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
+    req->currentModule = nullptr;
+    if (!name) return NAVIGATE_NOT_FOUND;
+    if (req->currentPath.empty() || req->currentPath.back() == '/')
+        req->currentPath += name;
+    else
+        req->currentPath += std::string("/") + name;
+    return NAVIGATE_SUCCESS;
+}
+
+static bool rt_is_module_present(lua_State* L, void* ctx)
+{
+    EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
+    if (req->currentModule) return true;
+    const std::string& p = req->currentPath;
+    if (req->findModule(p.c_str()) ||
+        req->findModule((p + ".luau").c_str()) ||
+        req->findModule((p + ".lua").c_str()) ||
+        req->findModule((p + "/init.luau").c_str()) ||
+        req->findModule((p + "/init.lua").c_str()) ||
+        req->findModule((p + "/index.luau").c_str()) ||
+        req->findModule((p + "/index.lua").c_str()) ||
+        req->findAsset(p.c_str()))
+    {
+        return true;
+    }
+    return isFile(p);
+}
+
+static luarequire_WriteResult rt_get_chunkname(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out)
+{
+    EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
+    std::string name = "@" + req->currentPath;
+    size_t sz = name.size() + 1;
+    if (buffer_size < sz) { *size_out = sz; return luarequire_WriteResult::WRITE_BUFFER_TOO_SMALL; }
+    *size_out = sz;
+    memcpy(buffer, name.c_str(), sz);
+    return luarequire_WriteResult::WRITE_SUCCESS;
+}
+
+static luarequire_WriteResult rt_get_loadname(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out)
+{
+    EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
+    std::string name = req->currentPath;
+    size_t sz = name.size() + 1;
+    if (buffer_size < sz) { *size_out = sz; return luarequire_WriteResult::WRITE_BUFFER_TOO_SMALL; }
+    *size_out = sz;
+    memcpy(buffer, name.c_str(), sz);
+    return luarequire_WriteResult::WRITE_SUCCESS;
+}
+
+static luarequire_WriteResult rt_get_cache_key(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out)
+{
+    return rt_get_loadname(L, ctx, buffer, buffer_size, size_out);
+}
+
+static luarequire_ConfigStatus rt_get_config_status(lua_State* L, void* ctx)
+{
+    return CONFIG_ABSENT;
+}
+
+static luarequire_WriteResult rt_get_config(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out)
+{
+    return luarequire_WriteResult::WRITE_FAILURE;
+}
+
+static luarequire_NavigateResult rt_alias_fallback(lua_State* L, void* ctx, const char* aliasUnprefixed)
+{
+    EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
+    if (!aliasUnprefixed) return NAVIGATE_NOT_FOUND;
+    static const char* kPkgDirs[] = {"luau_packages", "packages", "node_modules"};
+    for (const char* dir : kPkgDirs)
+    {
+        std::string cand = std::string(dir) + "/" + aliasUnprefixed;
+        if (req->findModule(cand.c_str()) ||
+            req->findModule((cand + ".luau").c_str()) ||
+            req->findModule((cand + "/init.luau").c_str()))
+        {
+            req->currentPath = cand;
+            return NAVIGATE_SUCCESS;
+        }
+    }
+    return NAVIGATE_NOT_FOUND;
+}
+
+static int rt_load(lua_State* L, void* ctx, const char* path, const char* chunkname, const char* loadname)
+{
+    EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
+    lua_State* GL = lua_mainthread(L);
+    lua_State* ML = lua_newthread(GL);
+    lua_xmove(GL, L, 1);
+    luaL_sandboxthread(ML);
+
+    const DiscoveredModule* mod = req->findModule(loadname);
+    if (!mod) mod = req->findModule(chunkname);
+    if (!mod) mod = req->findModule(path);
+    if (!mod && loadname)
+    {
+        std::string s(loadname);
+        mod = req->findModule((s + ".luau").c_str());
+        if (!mod) mod = req->findModule((s + ".lua").c_str());
+        if (!mod) mod = req->findModule((s + "/init.luau").c_str());
+        if (!mod) mod = req->findModule((s + "/init.lua").c_str());
+        if (!mod) mod = req->findModule((s + "/index.luau").c_str());
+        if (!mod) mod = req->findModule((s + "/index.lua").c_str());
+    }
+
+    int status = LUA_OK;
+    if (mod)
+    {
+        status = luau_load(ML, chunkname, reinterpret_cast<const char*>(mod->bytecode.data()), mod->bytecode.size(), 0);
+    }
+    else
+    {
+        const DiscoveredAsset* asset = req->findAsset(loadname);
+        if (!asset) asset = req->findAsset(path);
+        if (asset)
+        {
+            Luau::CompileOptions copts;
+            copts.optimizationLevel = req->optimizationLevel;
+            copts.debugLevel = req->debugLevel;
+            std::string bytecode = Luau::compile(asset->data, copts);
+            status = luau_load(ML, chunkname, bytecode.data(), bytecode.size(), 0);
+        }
+        else
+        {
+            std::optional<std::string> contents = readFile(loadname);
+            if (!contents) luaL_error(L, "could not read module '%s'", loadname);
+            Luau::CompileOptions copts;
+            copts.optimizationLevel = req->optimizationLevel;
+            copts.debugLevel = req->debugLevel;
+            std::string bytecode = Luau::compile(*contents, copts);
+            status = luau_load(ML, chunkname, bytecode.data(), bytecode.size(), 0);
+        }
+    }
+
+    if (status != 0) luaL_error(L, "failed to load module '%s'", loadname);
+
+    if (req->enableCodegen)
+    {
+        Luau::CodeGen::CompilationOptions nativeOptions;
+        Luau::CodeGen::compile(ML, -1, nativeOptions);
+    }
+
+    status = lua_resume(ML, L, 0);
+    if (status == 0)
+    {
+        if (lua_gettop(ML) != 1) luaL_error(L, "module must return a single value");
+    }
+    else if (status == LUA_YIELD)
+    {
+        luaL_error(L, "module can not yield");
+    }
+    else
+    {
+        luaL_error(L, "error running module: %s", lua_isstring(ML, -1) ? lua_tostring(ML, -1) : "unknown");
+    }
+
+    lua_xmove(ML, L, 1);
+    lua_remove(L, -2);
+    return 1;
+}
+
+static void rtRequireConfigInit(luarequire_Configuration* config)
+{
+    config->is_require_allowed = rt_is_require_allowed;
+    config->reset = rt_reset;
+    config->jump_to_alias = rt_jump_to_alias;
+    config->to_parent = rt_to_parent;
+    config->to_child = rt_to_child;
+    config->is_module_present = rt_is_module_present;
+    config->get_config_status = rt_get_config_status;
+    config->get_chunkname = rt_get_chunkname;
+    config->get_loadname = rt_get_loadname;
+    config->get_cache_key = rt_get_cache_key;
+    config->get_config = rt_get_config;
+    config->load = rt_load;
+    config->to_alias_fallback = rt_alias_fallback;
+}
+
+static int rt_fs_readfile(lua_State* L)
+{
+    const char* pathStr = luaL_checkstring(L, 1);
+    if (g_ActiveRuntimeContext)
+    {
+        const DiscoveredAsset* asset = g_ActiveRuntimeContext->findAsset(pathStr);
+        if (asset)
+        {
+            lua_pushlstring(L, asset->data.data(), asset->data.size());
+            return 1;
+        }
+    }
+    std::optional<std::string> fileData = readFile(pathStr);
+    if (!fileData) luaL_error(L, "fs.readfile: cannot open file: %s", pathStr);
+    lua_pushlstring(L, fileData->data(), fileData->size());
+    return 1;
+}
+
+static int rt_fs_exists(lua_State* L)
+{
+    const char* pathStr = luaL_checkstring(L, 1);
+    if (g_ActiveRuntimeContext && g_ActiveRuntimeContext->findAsset(pathStr))
+    {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    lua_pushboolean(L, isFile(pathStr) || isDirectory(pathStr));
+    return 1;
+}
+
+static int rt_fs_isfile(lua_State* L)
+{
+    const char* pathStr = luaL_checkstring(L, 1);
+    if (g_ActiveRuntimeContext && g_ActiveRuntimeContext->findAsset(pathStr))
+    {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    lua_pushboolean(L, isFile(pathStr));
+    return 1;
+}
+
+static int rt_fs_isdir(lua_State* L)
+{
+    const char* pathStr = luaL_checkstring(L, 1);
+    if (g_ActiveRuntimeContext)
+    {
+        std::string prefix(pathStr);
+        if (prefix.size() >= 2 && prefix[0] == '.' && (prefix[1] == '/' || prefix[1] == '\\')) prefix = prefix.substr(2);
+        if (!prefix.empty() && prefix.back() != '/' && prefix.back() != '\\') prefix += '/';
+        for (const auto& a : g_ActiveRuntimeContext->assets)
+        {
+            std::string_view p = a.relativePath;
+            if (p.size() >= 2 && p[0] == '.' && (p[1] == '/' || p[1] == '\\')) p.remove_prefix(2);
+            if (p.rfind(prefix, 0) == 0) { lua_pushboolean(L, 1); return 1; }
+        }
+    }
+    lua_pushboolean(L, isDirectory(pathStr));
+    return 1;
+}
+
+static int rt_fs_stat(lua_State* L)
+{
+    const char* pathStr = luaL_checkstring(L, 1);
+    if (g_ActiveRuntimeContext)
+    {
+        const DiscoveredAsset* asset = g_ActiveRuntimeContext->findAsset(pathStr);
+        if (asset)
+        {
+            lua_createtable(L, 0, 4);
+            lua_pushnumber(L, static_cast<double>(asset->data.size())); lua_setfield(L, -2, "size");
+            lua_pushboolean(L, 1); lua_setfield(L, -2, "is_file");
+            lua_pushboolean(L, 0); lua_setfield(L, -2, "is_dir");
+            lua_pushnumber(L, 0); lua_setfield(L, -2, "modified");
+            return 1;
+        }
+    }
+    lua_getglobal(L, "fs");
+    if (lua_istable(L, -1))
+    {
+        lua_getfield(L, -1, "stat");
+        if (lua_iscfunction(L, -1))
+        {
+            lua_pushvalue(L, 1);
+            lua_call(L, 1, 1);
+            lua_remove(L, -2);
+            return 1;
+        }
+    }
+    luaL_error(L, "fs.stat: cannot stat: %s", pathStr);
+    return 0;
+}
+
 } // namespace
+
+std::optional<int> SingleBinaryCompiler::checkAndRunBundledPayload(int argc, char** argv)
+{
+    std::string exePath = getExecutablePath();
+    if (exePath.empty() && argc > 0 && argv[0])
+        exePath = argv[0];
+
+    if (exePath.empty() || !isFile(exePath))
+        return std::nullopt;
+
+    FILE* fp = fopen(exePath.c_str(), "rb");
+    if (!fp)
+        return std::nullopt;
+
+    fseek(fp, 0, SEEK_END);
+    long fileLength = ftell(fp);
+    if (fileLength < static_cast<long>(kTrailerSize + 32))
+    {
+        fclose(fp);
+        return std::nullopt;
+    }
+
+    fseek(fp, fileLength - kTrailerSize, SEEK_SET);
+    unsigned char trailerBuf[kTrailerSize];
+    if (fread(trailerBuf, 1, kTrailerSize, fp) != kTrailerSize)
+    {
+        fclose(fp);
+        return std::nullopt;
+    }
+
+    if (memcmp(trailerBuf + 16, kMagicTrailer, 8) != 0)
+    {
+        fclose(fp);
+        return std::nullopt;
+    }
+
+    const unsigned char* tp = trailerBuf;
+    const unsigned char* tpEnd = trailerBuf + kTrailerSize;
+    uint64_t payloadOffset = readUint64(tp, tpEnd);
+    uint64_t payloadSize = readUint64(tp, tpEnd);
+
+    if (payloadOffset + payloadSize + kTrailerSize != static_cast<uint64_t>(fileLength))
+    {
+        fclose(fp);
+        return std::nullopt;
+    }
+
+    if (payloadOffset >= static_cast<uint64_t>(fileLength))
+    {
+        fclose(fp);
+        return std::nullopt;
+    }
+
+    fseek(fp, static_cast<long>(payloadOffset), SEEK_SET);
+    std::string payloadData(static_cast<size_t>(payloadSize), '\0');
+    if (fread(&payloadData[0], 1, payloadSize, fp) != payloadSize)
+    {
+        fclose(fp);
+        return std::nullopt;
+    }
+    fclose(fp);
+
+    const unsigned char* ptr = reinterpret_cast<const unsigned char*>(payloadData.data());
+    const unsigned char* end = ptr + payloadData.size();
+
+    if (ptr + 8 > end || memcmp(ptr, kMagicHeader, 8) != 0)
+        return std::nullopt;
+    ptr += 8;
+
+    uint32_t version = readUint32(ptr, end);
+    if (version != 1)
+        return std::nullopt;
+
+    uint32_t flags = readUint32(ptr, end);
+    bool enableCodegen = (flags & 1) != 0;
+    int optLevel = readInt32(ptr, end);
+    int dbgLevel = readInt32(ptr, end);
+    uint32_t entryIndex = readUint32(ptr, end);
+
+    uint32_t numModules = readUint32(ptr, end);
+    std::vector<DiscoveredModule> modules;
+    modules.reserve(numModules);
+    for (uint32_t i = 0; i < numModules; ++i)
+    {
+        DiscoveredModule m;
+        m.chunkName = readString(ptr, end);
+        m.loadName = readString(ptr, end);
+        m.absolutePath = readString(ptr, end);
+        m.bytecode = readString(ptr, end);
+        modules.push_back(std::move(m));
+    }
+
+    uint32_t numAssets = readUint32(ptr, end);
+    std::vector<DiscoveredAsset> assets;
+    assets.reserve(numAssets);
+    for (uint32_t i = 0; i < numAssets; ++i)
+    {
+        DiscoveredAsset a;
+        a.path = readString(ptr, end);
+        a.relativePath = readString(ptr, end);
+        a.absolutePath = readString(ptr, end);
+        a.data = readString(ptr, end);
+        assets.push_back(std::move(a));
+    }
+
+    if (entryIndex >= modules.size())
+    {
+        fprintf(stderr, "Jaci Single Binary: Invalid entry module index\n");
+        return 1;
+    }
+
+    // Initialize Luau state
+    lua_State* L = luaL_newstate();
+    if (!L)
+    {
+        fprintf(stderr, "Jaci Single Binary: Failed to initialize Luau VM\n");
+        return 1;
+    }
+
+    if (enableCodegen && Luau::CodeGen::isSupported())
+        Luau::CodeGen::create(L);
+
+    luaL_openlibs(L);
+
+    // Setup active runtime context
+    EmbeddedRuntimeContext rtCtx;
+    rtCtx.modules = std::move(modules);
+    rtCtx.assets = std::move(assets);
+    rtCtx.entryIndex = entryIndex;
+    rtCtx.enableCodegen = enableCodegen;
+    rtCtx.optimizationLevel = optLevel;
+    rtCtx.debugLevel = dbgLevel;
+    g_ActiveRuntimeContext = &rtCtx;
+
+    // Inject embedded filesystem hooks
+    lua_getglobal(L, "fs");
+    if (lua_istable(L, -1))
+    {
+        lua_pushcfunction(L, rt_fs_readfile, "fs.readfile");
+        lua_setfield(L, -2, "readfile");
+        lua_pushcfunction(L, rt_fs_readfile, "fs.readFile");
+        lua_setfield(L, -2, "readFile");
+        lua_pushcfunction(L, rt_fs_exists, "fs.exists");
+        lua_setfield(L, -2, "exists");
+        lua_pushcfunction(L, rt_fs_isfile, "fs.isfile");
+        lua_setfield(L, -2, "isfile");
+        lua_pushcfunction(L, rt_fs_isfile, "fs.isFile");
+        lua_setfield(L, -2, "isFile");
+        lua_pushcfunction(L, rt_fs_isdir, "fs.isdir");
+        lua_setfield(L, -2, "isdir");
+        lua_pushcfunction(L, rt_fs_isdir, "fs.isDir");
+        lua_setfield(L, -2, "isDir");
+        lua_pushcfunction(L, rt_fs_stat, "fs.stat");
+        lua_setfield(L, -2, "stat");
+    }
+    lua_pop(L, 1);
+
+    luaopen_require(L, rtRequireConfigInit, &rtCtx);
+
+    // Setup arg table
+    lua_createtable(L, argc, 0);
+    for (int i = 0; i < argc; ++i)
+    {
+        lua_pushstring(L, argv[i]);
+        lua_rawseti(L, -2, i);
+    }
+    lua_setglobal(L, "arg");
+
+    // Load entry chunk
+    const DiscoveredModule& entry = rtCtx.modules[rtCtx.entryIndex];
+    int status = luau_load(L, entry.chunkName.c_str(), entry.bytecode.data(), entry.bytecode.size(), 0);
+    if (status != 0)
+    {
+        fprintf(stderr, "Jaci Single Binary: Error loading entry chunk: %s\n", lua_tostring(L, -1));
+        lua_close(L);
+        g_ActiveRuntimeContext = nullptr;
+        return 1;
+    }
+
+    if (enableCodegen && Luau::CodeGen::isSupported())
+    {
+        Luau::CodeGen::CompilationOptions nativeOpts;
+        Luau::CodeGen::compile(L, -1, nativeOpts);
+    }
+
+    for (int i = 1; i < argc; ++i)
+        lua_pushstring(L, argv[i]);
+
+    status = lua_pcall(L, argc > 1 ? argc - 1 : 0, LUA_MULTRET, 0);
+    if (status != 0)
+    {
+        fprintf(stderr, "Jaci Single Binary: Runtime error: %s\n", lua_tostring(L, -1));
+        lua_close(L);
+        g_ActiveRuntimeContext = nullptr;
+        return 1;
+    }
+
+    lua_close(L);
+    g_ActiveRuntimeContext = nullptr;
+    return 0;
+}
 
 bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
 {
@@ -789,135 +1947,37 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
             printf("  [asset]  %s (%zu bytes)\n", a.relativePath.c_str(), a.data.size());
     }
 
-    std::string runnerCode = generateRunnerCpp(
-        modules,
-        entryIndex,
-        assets,
-        options.codegen,
-        options.optimizationLevel,
-        options.debugLevel
-    );
-
-    // Write temp runner source
-    char tempPath[256];
-    snprintf(tempPath, sizeof(tempPath), "/tmp/jaci_single_binary_%d.cpp", static_cast<int>(getpid()));
-
-    FILE* fp = fopen(tempPath, "w");
-    if (!fp)
+    // Determine packaging mode
+    if (options.bundleMode == BundleMode::Direct ||
+        options.targetArchitecture == "direct" ||
+        options.targetArchitecture == "bundle" ||
+        options.targetArchitecture == "stub")
     {
-        fprintf(stderr, "SingleBinaryCompiler: Could not open temporary runner file '%s'\n", tempPath);
-        return false;
+        return compileDirectBundle(options, modules, entryIndex, assets);
     }
-    fwrite(runnerCode.data(), 1, runnerCode.size(), fp);
-    fclose(fp);
-
-    // Locate include paths and build libraries
-    std::string rootDir = "/home/klee/Documentos/jaci";
-    if (const char* envRoot = getenv("JACI_ROOT"))
-        rootDir = envRoot;
-
-    std::string buildDir = rootDir + "/build";
-    if (const char* envBuild = getenv("JACI_BUILD"))
-        buildDir = envBuild;
-
-    std::string outPath = options.outputBinaryPath.empty() ? "a.out" : options.outputBinaryPath;
-
-    std::string compiler = "c++";
-    std::string extraLinkerFlags = "-ldl -lpthread -lm";
-
-    if (!options.targetArchitecture.empty())
+    else if (options.bundleMode == BundleMode::Native)
     {
-        const std::string& tgt = options.targetArchitecture;
-        if (tgt == "linux-arm64" || tgt == "aarch64-linux" || tgt == "aarch64-linux-gnu" || tgt == "arm64")
-        {
-            compiler = "aarch64-linux-gnu-g++";
-        }
-        else if (tgt == "windows-x64" || tgt == "x86_64-w64-mingw32" || tgt == "win64" || tgt == "windows")
-        {
-            compiler = "x86_64-w64-mingw32-g++";
-            extraLinkerFlags = "-lws2_32 -lbcrypt";
-        }
-        else if (tgt == "linux-x64" || tgt == "x86_64-linux" || tgt == "x86_64-linux-gnu" || tgt == "x64")
-        {
-            compiler = "x86_64-linux-gnu-g++";
-        }
-        else if (tgt == "macos-arm64" || tgt == "darwin-arm64")
-        {
-            compiler = "clang++ -target arm64-apple-macos";
-            extraLinkerFlags = "-framework CoreFoundation -lpthread -lm";
-        }
-        else if (tgt == "macos-x64" || tgt == "darwin-x64")
-        {
-            compiler = "clang++ -target x86_64-apple-macos";
-            extraLinkerFlags = "-framework CoreFoundation -lpthread -lm";
-        }
-        else
-        {
-            compiler = tgt;
-        }
+        return compileNativeRunner(options, modules, entryIndex, assets);
     }
-
-    // Verify if compiler binary is available in PATH
-    std::string compilerBinary = compiler;
-    size_t spacePos = compilerBinary.find(' ');
-    if (spacePos != std::string::npos)
-        compilerBinary = compilerBinary.substr(0, spacePos);
-
-    std::string checkCmd = "command -v " + compilerBinary + " >/dev/null 2>&1";
-    if (system(checkCmd.c_str()) != 0)
+    else // BundleMode::Auto
     {
-        if (options.targetArchitecture == "linux-x64" || options.targetArchitecture == "x64" || options.targetArchitecture.empty())
+        // If an explicit compiler command or cross-compilation target is specified, prefer native compilation
+        if (!options.compilerCommand.empty() ||
+            (!options.targetArchitecture.empty() &&
+             options.targetArchitecture != "direct" &&
+             options.targetArchitecture != "bundle" &&
+             options.targetArchitecture != "auto"))
         {
-            compiler = "c++";
+            return compileNativeRunner(options, modules, entryIndex, assets);
         }
-        else
-        {
-            fprintf(stderr, "SingleBinaryCompiler: Toolchain compiler '%s' not found in PATH for target '%s'.\n",
-                    compilerBinary.c_str(), options.targetArchitecture.c_str());
-            fprintf(stderr, "Please install the required cross-compilation toolchain or specify a custom compiler command via --target=<compiler>.\n");
-            unlink(tempPath);
-            return false;
-        }
+
+        // Otherwise, attempt direct self-contained bundling (fast, zero-toolchain)
+        if (compileDirectBundle(options, modules, entryIndex, assets))
+            return true;
+
+        // Fallback to native compiler if direct bundling couldn't find a stub
+        return compileNativeRunner(options, modules, entryIndex, assets);
     }
-
-    std::ostringstream cmd;
-    cmd << compiler << " -std=c++17 -O2 "
-        << "-I" << rootDir << "/VM/include "
-        << "-I" << rootDir << "/Common/include "
-        << "-I" << rootDir << "/Ast/include "
-        << "-I" << rootDir << "/Compiler/include "
-        << "-I" << rootDir << "/CodeGen/include "
-        << "-I" << rootDir << "/Inliner/include "
-        << "-I" << rootDir << "/Config/include "
-        << "-I" << rootDir << "/Require/include "
-        << "-I" << rootDir << "/CLI/include "
-        << "-I" << rootDir << "/extern/isocline/include "
-        << tempPath << " "
-        << "-o " << outPath << " "
-        << "-L" << buildDir << " "
-        << "-Wl,--start-group "
-        << "-lLuau.CLI.lib -lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
-        << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Analysis -lLuau.Ast -lLuau.Common "
-        << "-lisocline "
-        << "-Wl,--end-group "
-        << extraLinkerFlags;
-
-    if (options.verbose)
-        printf("SingleBinaryCompiler: Executing: %s\n", cmd.str().c_str());
-
-    int ret = system(cmd.str().c_str());
-    unlink(tempPath);
-
-    if (ret != 0)
-    {
-        fprintf(stderr, "SingleBinaryCompiler: C++ compilation failed with exit code %d\n", ret);
-        return false;
-    }
-
-    if (options.verbose)
-        printf("SingleBinaryCompiler: Successfully generated standalone binary '%s'\n", outPath.c_str());
-
-    return true;
 }
 
 } // namespace Luau

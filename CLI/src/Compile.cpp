@@ -453,7 +453,12 @@ static void displayHelp(const char* argv0)
     printf("  --only-parse: Only parse the input.\n");
     printf("  --parse-cst: Whether parser should parse CST in addition to AST.\n");
     printf("  --native-binary, --build, --bundle, -b: compile entry file and transitive modules into standalone executable binary.\n");
-    printf("  --target=<target>: compile code or binary for specific architecture (e.g. linux-x64, linux-arm64, windows-x64, macos-arm64, a64, x64).\n");
+    printf("  --direct: package standalone binary directly without requiring any external C++ compiler toolchain.\n");
+    printf("  --bundle-mode=<direct|native|auto>: select standalone binary packaging backend (default: auto).\n");
+    printf("  --windowed, --gui, -W: create Windows GUI / main window application (no console window).\n");
+    printf("  --compiler=<cmd>: specify C++ compiler executable (cl.exe, clang++, g++, zig c++).\n");
+    printf("  --stub=<file>: specify base executable / runner stub for standalone packaging.\n");
+    printf("  --target=<target>: compile code or binary for specific architecture (e.g. windows-x64, linux-x64, macos-arm64, direct, a64, x64).\n");
     printf("  --include-assets=<path>: embed directory or file into single binary virtual filesystem.\n");
     printf("  -o, --output=<file>: specify output binary path for native binary compilation.\n");
     printf("  --fflags=<flags>: comma-separated list of fast flags to enable/disable (--fflags=true,false,LuauFlag1=true,LuauFlag2=false).\n");
@@ -504,6 +509,10 @@ int main(int argc, char** argv)
     bool bytecodeSummary = false;
     bool dumpConstants = false;
     bool nativeBinary = false;
+    bool windowed = false;
+    Luau::BundleMode bundleMode = Luau::BundleMode::Auto;
+    std::string compilerCommand;
+    std::string customStubPath;
     std::string outputFile;
     bool verbose = false;
     std::vector<std::string> inputFiles;
@@ -654,6 +663,40 @@ int main(int argc, char** argv)
         {
             nativeBinary = true;
         }
+        else if (strcmp(argv[i], "--windowed") == 0 || strcmp(argv[i], "--gui") == 0 || strcmp(argv[i], "-W") == 0)
+        {
+            windowed = true;
+        }
+        else if (strcmp(argv[i], "--direct") == 0)
+        {
+            bundleMode = Luau::BundleMode::Direct;
+        }
+        else if (strncmp(argv[i], "--bundle-mode=", 14) == 0)
+        {
+            const char* mode = argv[i] + 14;
+            if (strcmp(mode, "direct") == 0)
+                bundleMode = Luau::BundleMode::Direct;
+            else if (strcmp(mode, "native") == 0)
+                bundleMode = Luau::BundleMode::Native;
+            else if (strcmp(mode, "auto") == 0)
+                bundleMode = Luau::BundleMode::Auto;
+        }
+        else if (strcmp(argv[i], "--compiler") == 0 && i + 1 < argc)
+        {
+            compilerCommand = argv[++i];
+        }
+        else if (strncmp(argv[i], "--compiler=", 11) == 0)
+        {
+            compilerCommand = argv[i] + 11;
+        }
+        else if (strcmp(argv[i], "--stub") == 0 && i + 1 < argc)
+        {
+            customStubPath = argv[++i];
+        }
+        else if (strncmp(argv[i], "--stub=", 7) == 0)
+        {
+            customStubPath = argv[i] + 7;
+        }
         else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
         {
             outputFile = argv[++i];
@@ -702,11 +745,15 @@ int main(int argc, char** argv)
         opts.entryFilePath = inputFiles[0];
         opts.outputBinaryPath = outputFile.empty() ? "a.out" : outputFile;
         opts.targetArchitecture = targetArch;
+        opts.compilerCommand = compilerCommand;
+        opts.customStubPath = customStubPath;
         opts.assetPaths = assetPaths;
+        opts.bundleMode = bundleMode;
         opts.optimizationLevel = globalOptions.optimizationLevel;
         opts.debugLevel = globalOptions.debugLevel;
         opts.codegen = true;
         opts.verbose = verbose;
+        opts.windowed = windowed;
 
         return Luau::SingleBinaryCompiler::compile(opts) ? 0 : 1;
     }
