@@ -636,6 +636,7 @@ if(TARGET Luau.UnitTest)
         tests/TypeInfer.oop.test.cpp
         tests/TypeInfer.operators.test.cpp
         tests/TypeInfer.primitives.test.cpp
+        tests/ExtendedPrimitives.test.cpp
         tests/TypeInfer.provisional.test.cpp
         tests/TypeInfer.refinements.test.cpp
         tests/TypeInfer.singletons.test.cpp

@@ -19,13 +19,17 @@ static bool isGeneric(AstName name, const AstArray<AstGenericType*>& generics)
 
 static LuauBytecodeType getPrimitiveType(AstName name)
 {
-    if (name == "nil")
+    if (name == "nil" || name == "unit" || name == "void")
         return LBC_TYPE_NIL;
     else if (name == "boolean")
         return LBC_TYPE_BOOLEAN;
-    else if (name == "number")
+    else if (name == "number" || name == "float" || name == "double" || name == "float32" || name == "float64" || name == "f32" || name == "f64")
         return LBC_TYPE_NUMBER;
-    else if (name == "integer")
+    else if (name == "integer" || name == "int" || name == "uint" || name == "byte" ||
+             name == "int8" || name == "int16" || name == "int32" || name == "int64" ||
+             name == "uint8" || name == "uint16" || name == "uint32" || name == "uint64" ||
+             name == "i8" || name == "i16" || name == "i32" || name == "i64" ||
+             name == "u8" || name == "u16" || name == "u32" || name == "u64")
         return LBC_TYPE_INTEGER;
     else if (name == "string")
         return LBC_TYPE_STRING;
