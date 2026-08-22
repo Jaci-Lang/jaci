@@ -21,6 +21,9 @@ static const char* registeredCacheTableKey = "_REGISTEREDMODULES";
 // Stores the results of require calls.
 static const char* requiredCacheTableKey = "_MODULES";
 
+// Fast-path resolution cache mapping composite require key (requirerChunkname \0 path) to cacheKey.
+static const char* resolvedPathCacheTableKey = "_RESOLVED_REQUIRES";
+
 // Sentinel address used as a unique registry key for the shared placeholder metatable.
 static char cyclicPlaceholderMetatableSentinel = 0;
 
@@ -82,6 +85,39 @@ static bool isCached(lua_State* L, const std::string& key)
     return cached;
 }
 
+// Checks if the given cache key is present in _MODULES and pushes the cached module to top of stack if so.
+static bool checkCachedModule(lua_State* L, const char* cacheKey)
+{
+    luaL_findtable(L, LUA_REGISTRYINDEX, requiredCacheTableKey, 1);
+    lua_getfield(L, -1, cacheKey);
+    bool cached = !lua_isnil(L, -1);
+
+    if (FFlag::LuauCyclicRequireShortCircuit && cached && lua_istable(L, -1))
+    {
+        if (lua_getmetatable(L, -1) == 1)
+        {
+            lua_rawgetp(L, LUA_REGISTRYINDEX, &cyclicPlaceholderMetatableSentinel);
+            if (lua_rawequal(L, -1, -2) == 1)
+            {
+                luaL_findtable(L, LUA_REGISTRYINDEX, cyclicPlaceholderProvidedKey, 1);
+                lua_pushboolean(L, 1);
+                lua_setfield(L, -2, cacheKey);
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 2);
+        }
+    }
+
+    if (cached)
+    {
+        lua_remove(L, -2);
+        return true;
+    }
+
+    lua_pop(L, 2);
+    return false;
+}
+
 static ResolvedRequire resolveRequire(luarequire_Configuration* lrc, lua_State* L, void* ctx, const char* requirerChunkname, std::string path)
 {
     if (!lrc->is_require_allowed(L, ctx, requirerChunkname))
@@ -111,7 +147,7 @@ static ResolvedRequire resolveRequire(luarequire_Configuration* lrc, lua_State* 
         lua_getfield(L, -1, cacheKey->c_str());
         lua_remove(L, -2);
 
-        return ResolvedRequire{ResolvedRequire::Status::Cached};
+        return ResolvedRequire{ResolvedRequire::Status::Cached, "", "", std::move(*cacheKey), ""};
     }
 
     std::optional<std::string> chunkname = navigationContext.getChunkname();
@@ -132,16 +168,26 @@ static ResolvedRequire resolveRequire(luarequire_Configuration* lrc, lua_State* 
 
 static int checkRegisteredModules(lua_State* L, const char* path)
 {
-    luaL_findtable(L, LUA_REGISTRYINDEX, registeredCacheTableKey, 1);
-
-    std::string pathLower = std::string(path);
-    for (char& c : pathLower)
+    size_t pathLen = strlen(path);
+    char pathLowerBuf[256];
+    char* pathLower = pathLowerBuf;
+    std::string pathLowerHeap;
+    if (pathLen >= sizeof(pathLowerBuf))
     {
-        if (c >= 'A' && c <= 'Z')
-            c -= ('A' - 'a');
+        pathLowerHeap.resize(pathLen);
+        pathLower = &pathLowerHeap[0];
     }
+    for (size_t i = 0; i < pathLen; ++i)
+    {
+        char c = path[i];
+        if (c >= 'A' && c <= 'Z')
+            c += ('a' - 'A');
+        pathLower[i] = c;
+    }
+    pathLower[pathLen] = '\0';
 
-    lua_getfield(L, -1, pathLower.c_str());
+    luaL_findtable(L, LUA_REGISTRYINDEX, registeredCacheTableKey, 1);
+    lua_getfield(L, -1, pathLower);
     if (!lua_isnil(L, -1))
     {
         lua_remove(L, -2);
@@ -150,10 +196,10 @@ static int checkRegisteredModules(lua_State* L, const char* path)
     lua_pop(L, 2);
 
     // Support @std/<library> or bare standard library module imports (e.g. @std/fs, net, task)
-    if (strncmp(pathLower.c_str(), "@std/", 5) == 0)
+    if (pathLen > 5 && memcmp(pathLower, "@std/", 5) == 0)
     {
-        std::string libName = pathLower.substr(5);
-        lua_getglobal(L, libName.c_str());
+        const char* libName = pathLower + 5;
+        lua_getglobal(L, libName);
         if (!lua_isnil(L, -1))
             return 1;
         lua_pop(L, 1);
@@ -167,7 +213,7 @@ static int checkRegisteredModules(lua_State* L, const char* path)
         };
         for (int i = 0; kStdLibs[i]; ++i)
         {
-            if (pathLower == kStdLibs[i])
+            if (strcmp(pathLower, kStdLibs[i]) == 0)
             {
                 lua_getglobal(L, kStdLibs[i]);
                 if (!lua_isnil(L, -1))
@@ -349,6 +395,41 @@ int lua_requireinternal(lua_State* L, const char* requirerChunkname)
     if (checkRegisteredModules(L, path) == 1)
         return 1;
 
+    // Fast-path resolution cache: check if (requirerChunkname, path) was already resolved and cached.
+    size_t chunkLen = requirerChunkname ? strlen(requirerChunkname) : 0;
+    size_t pathLen = strlen(path);
+    char compositeKeyBuf[512];
+    char* compositeKey = compositeKeyBuf;
+    std::string compositeKeyHeap;
+    size_t compositeLen = chunkLen + 1 + pathLen;
+    if (compositeLen >= sizeof(compositeKeyBuf))
+    {
+        compositeKeyHeap.resize(compositeLen);
+        compositeKey = &compositeKeyHeap[0];
+    }
+    if (chunkLen > 0)
+        memcpy(compositeKey, requirerChunkname, chunkLen);
+    compositeKey[chunkLen] = '\0';
+    memcpy(compositeKey + chunkLen + 1, path, pathLen);
+
+    luaL_findtable(L, LUA_REGISTRYINDEX, resolvedPathCacheTableKey, 1);
+    lua_pushlstring(L, compositeKey, compositeLen);
+    lua_rawget(L, -2);
+
+    if (lua_isstring(L, -1))
+    {
+        const char* cachedKey = lua_tostring(L, -1);
+        if (checkCachedModule(L, cachedKey))
+        {
+            // Cached module is on top of stack.
+            // Stack: (1) path, (2) _RESOLVED_REQUIRES, (3) cachedKey, (4) module
+            lua_replace(L, 1);
+            lua_settop(L, 1);
+            return 1;
+        }
+    }
+    lua_pop(L, 2); // pop rawget result and _RESOLVED_REQUIRES table
+
     // ResolvedRequire will be destroyed and any string will be pinned to Luau stack, so that luaL_error doesn't need destructors
     bool resolveError = false;
 
@@ -356,7 +437,16 @@ int lua_requireinternal(lua_State* L, const char* requirerChunkname)
         ResolvedRequire resolvedRequire = resolveRequire(lrc, L, ctx, requirerChunkname, path);
 
         if (resolvedRequire.status == ResolvedRequire::Status::Cached)
+        {
+            // Store mapping into resolved path cache
+            luaL_findtable(L, LUA_REGISTRYINDEX, resolvedPathCacheTableKey, 1);
+            lua_pushlstring(L, compositeKey, compositeLen);
+            lua_pushstring(L, resolvedRequire.cacheKey.c_str());
+            lua_rawset(L, -3);
+            lua_pop(L, 1);
+
             return 1;
+        }
 
         if (resolvedRequire.status == ResolvedRequire::Status::ErrorReported)
         {
@@ -365,6 +455,13 @@ int lua_requireinternal(lua_State* L, const char* requirerChunkname)
         }
         else
         {
+            // Store mapping into resolved path cache
+            luaL_findtable(L, LUA_REGISTRYINDEX, resolvedPathCacheTableKey, 1);
+            lua_pushlstring(L, compositeKey, compositeLen);
+            lua_pushstring(L, resolvedRequire.cacheKey.c_str());
+            lua_rawset(L, -3);
+            lua_pop(L, 1);
+
             // (1) path, ..., cacheKey, chunkname, loadname
             lua_pushstring(L, resolvedRequire.cacheKey.c_str());
             lua_pushstring(L, resolvedRequire.chunkname.c_str());
@@ -424,13 +521,24 @@ int registerModuleImpl(lua_State* L)
         luaL_argerrorL(L, 1, "path must begin with '@'");
 
     // Make path lowercase to ensure case-insensitive matching.
-    std::string pathLower = std::string(path, len);
-    for (char& c : pathLower)
+    char pathLowerBuf[256];
+    char* pathLower = pathLowerBuf;
+    std::string pathLowerHeap;
+    if (len >= sizeof(pathLowerBuf))
     {
-        if (c >= 'A' && c <= 'Z')
-            c -= ('A' - 'a');
+        pathLowerHeap.resize(len);
+        pathLower = &pathLowerHeap[0];
     }
-    lua_pushstring(L, pathLower.c_str());
+    for (size_t i = 0; i < len; ++i)
+    {
+        char c = path[i];
+        if (c >= 'A' && c <= 'Z')
+            c += ('a' - 'A');
+        pathLower[i] = c;
+    }
+    pathLower[len] = '\0';
+
+    lua_pushlstring(L, pathLower, len);
     lua_replace(L, 1);
 
     luaL_findtable(L, LUA_REGISTRYINDEX, registeredCacheTableKey, 1);
@@ -461,6 +569,8 @@ int clearCache(lua_State* L)
 {
     lua_newtable(L);
     lua_setfield(L, LUA_REGISTRYINDEX, requiredCacheTableKey);
+    lua_newtable(L);
+    lua_setfield(L, LUA_REGISTRYINDEX, resolvedPathCacheTableKey);
     return 0;
 }
 

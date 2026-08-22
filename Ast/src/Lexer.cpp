@@ -191,11 +191,23 @@ size_t AstNameTable::EntryHash::operator()(const Entry& e) const
 {
     // FNV1a
     uint32_t hash = 2166136261;
+    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(e.value.value);
+    size_t len = e.length;
 
-    for (size_t i = 0; i < e.length; ++i)
+    while (len >= 4)
     {
-        hash ^= uint8_t(e.value.value[i]);
-        hash *= 16777619;
+        hash = (hash ^ ptr[0]) * 16777619;
+        hash = (hash ^ ptr[1]) * 16777619;
+        hash = (hash ^ ptr[2]) * 16777619;
+        hash = (hash ^ ptr[3]) * 16777619;
+        ptr += 4;
+        len -= 4;
+    }
+
+    while (len > 0)
+    {
+        hash = (hash ^ *ptr++) * 16777619;
+        --len;
     }
 
     return hash;
@@ -266,26 +278,70 @@ AstName AstNameTable::get(const char* name) const
     return getWithType(name, strlen(name)).first;
 }
 
+enum CharFlags : uint8_t
+{
+    Char_Space   = 1 << 0,
+    Char_Alpha   = 1 << 1,
+    Char_Digit   = 1 << 2,
+    Char_Hex     = 1 << 3,
+    Char_Ident   = 1 << 4,
+    Char_Newline = 1 << 5,
+};
+
+static constexpr uint8_t buildCharFlags(unsigned char c)
+{
+    uint8_t flags = 0;
+    if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f')
+        flags |= Char_Space;
+    if (c == '\n')
+        flags |= Char_Newline;
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
+        flags |= Char_Alpha;
+    if (c >= '0' && c <= '9')
+        flags |= Char_Digit;
+    if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))
+        flags |= Char_Hex;
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')
+        flags |= Char_Ident;
+    return flags;
+}
+
+struct CharTable
+{
+    uint8_t flags[256];
+    constexpr CharTable()
+        : flags{}
+    {
+        for (int i = 0; i < 256; ++i)
+            flags[i] = buildCharFlags(static_cast<unsigned char>(i));
+    }
+};
+
+static constexpr CharTable kCharTable{};
+
 inline bool isAlpha(char ch)
 {
-    // use or trick to convert to lower case and unsigned comparison to do range check
-    return unsigned((ch | ' ') - 'a') < 26;
+    return (kCharTable.flags[static_cast<unsigned char>(ch)] & Char_Alpha) != 0;
 }
 
 inline bool isDigit(char ch)
 {
-    return unsigned(ch - '0') < 10;
+    return (kCharTable.flags[static_cast<unsigned char>(ch)] & Char_Digit) != 0;
 }
 
 inline bool isHexDigit(char ch)
 {
-    // use or trick to convert to lower case and unsigned comparison to do range check
-    return unsigned(ch - '0') < 10 || unsigned((ch | ' ') - 'a') < 6;
+    return (kCharTable.flags[static_cast<unsigned char>(ch)] & Char_Hex) != 0;
 }
 
 inline bool isNewline(char ch)
 {
     return ch == '\n';
+}
+
+inline bool isIdentChar(char ch)
+{
+    return (kCharTable.flags[static_cast<unsigned char>(ch)] & Char_Ident) != 0;
 }
 
 static char unescape(char ch)
@@ -376,9 +432,37 @@ const Lexeme& Lexer::next(bool skipComments, bool updatePrevLocation)
     // in skipComments mode we reject valid comments
     do
     {
-        // consume whitespace before the token
-        while (isSpace(peekch()))
-            consumeAny();
+        // fast whitespace scanning
+        while (offset < bufferSize)
+        {
+            char ch = buffer[offset];
+            if (ch == ' ' || ch == '\t')
+            {
+                offset++;
+            }
+            else if (ch == '\n')
+            {
+                offset++;
+                line++;
+                lineOffset = offset;
+            }
+            else if (ch == '\r')
+            {
+                offset++;
+                if (offset < bufferSize && buffer[offset] == '\n')
+                    offset++;
+                line++;
+                lineOffset = offset;
+            }
+            else if (ch == '\v' || ch == '\f')
+            {
+                offset++;
+            }
+            else
+            {
+                break;
+            }
+        }
 
         if (updatePrevLocation)
             prevLocation = lexeme.location;
@@ -683,21 +767,27 @@ Lexeme Lexer::readNumber(const Position& start, unsigned int startOffset)
     // This function does not do the number parsing - it only skips a number-like pattern.
     // It uses the same logic as Lua stock lexer; the resulting string is later converted
     // to a number with proper verification.
+    const char* buf = buffer;
+    size_t size = bufferSize;
+    size_t cur = offset;
+
     do
     {
-        consume();
-    } while (isDigit(peekch()) || peekch() == '.' || peekch() == '_');
+        cur++;
+    } while (cur < size && (isDigit(buf[cur]) || buf[cur] == '.' || buf[cur] == '_'));
 
-    if (peekch() == 'e' || peekch() == 'E')
+    if (cur < size && (buf[cur] == 'e' || buf[cur] == 'E'))
     {
-        consume();
+        cur++;
 
-        if (peekch() == '+' || peekch() == '-')
-            consume();
+        if (cur < size && (buf[cur] == '+' || buf[cur] == '-'))
+            cur++;
     }
 
-    while (isAlpha(peekch()) || isDigit(peekch()) || peekch() == '_')
-        consume();
+    while (cur < size && isIdentChar(buf[cur]))
+        cur++;
+
+    offset = unsigned(cur);
 
     return Lexeme(Location(start, position()), Lexeme::Number, &buffer[startOffset], offset - startOffset);
 }
@@ -708,12 +798,17 @@ std::pair<AstName, Lexeme::Type> Lexer::readName()
 
     unsigned int startOffset = offset;
 
-    do
-        consume();
-    while (isAlpha(peekch()) || isDigit(peekch()) || peekch() == '_');
+    const char* buf = buffer;
+    size_t size = bufferSize;
+    size_t cur = offset + 1; // consume first character
 
-    return readNames ? names.getOrAddWithType(&buffer[startOffset], offset - startOffset)
-                     : names.getWithType(&buffer[startOffset], offset - startOffset);
+    while (cur < size && isIdentChar(buf[cur]))
+        cur++;
+
+    offset = unsigned(cur);
+
+    return readNames ? names.getOrAddWithType(&buf[startOffset], offset - startOffset)
+                     : names.getWithType(&buf[startOffset], offset - startOffset);
 }
 
 Lexeme Lexer::readNext()

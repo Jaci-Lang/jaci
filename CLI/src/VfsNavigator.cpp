@@ -49,13 +49,18 @@ static ResolvedRealPath getRealPath(std::string modulePath)
 
     size_t lastSlash = modulePath.find_last_of('/');
     LUAU_ASSERT(lastSlash != std::string::npos);
-    std::string lastComponent = modulePath.substr(lastSlash + 1);
+    std::string_view lastComponent = std::string_view(modulePath).substr(lastSlash + 1);
+
+    std::string testBuf;
+    testBuf.reserve(modulePath.size() + 32);
 
     if (lastComponent != "init" && lastComponent != "index")
     {
         for (std::string_view potentialSuffix : kSuffixes)
         {
-            if (isFile(modulePath + std::string(potentialSuffix)))
+            testBuf = modulePath;
+            testBuf.append(potentialSuffix.data(), potentialSuffix.size());
+            if (isFile(testBuf))
             {
                 if (found)
                     return {NavigationStatus::Ambiguous};
@@ -68,7 +73,9 @@ static ResolvedRealPath getRealPath(std::string modulePath)
         // Check for native shared library.
         for (std::string_view potentialSuffix : kNativeSuffixes)
         {
-            if (isFile(modulePath + std::string(potentialSuffix)))
+            testBuf = modulePath;
+            testBuf.append(potentialSuffix.data(), potentialSuffix.size());
+            if (isFile(testBuf))
             {
                 if (found)
                     return {NavigationStatus::Ambiguous};
@@ -87,7 +94,9 @@ static ResolvedRealPath getRealPath(std::string modulePath)
         // Try init.luau / init.lua first.
         for (std::string_view potentialSuffix : kInitSuffixes)
         {
-            if (isFile(modulePath + std::string(potentialSuffix)))
+            testBuf = modulePath;
+            testBuf.append(potentialSuffix.data(), potentialSuffix.size());
+            if (isFile(testBuf))
             {
                 if (found)
                     return {NavigationStatus::Ambiguous};
@@ -102,7 +111,9 @@ static ResolvedRealPath getRealPath(std::string modulePath)
         {
             for (std::string_view potentialSuffix : kIndexSuffixes)
             {
-                if (isFile(modulePath + std::string(potentialSuffix)))
+                testBuf = modulePath;
+                testBuf.append(potentialSuffix.data(), potentialSuffix.size());
+                if (isFile(testBuf))
                 {
                     if (found)
                         return {NavigationStatus::Ambiguous};
@@ -314,12 +325,12 @@ NavigationStatus VfsNavigator::toBarePackage(const std::string& pkgName)
     return NavigationStatus::NotFound;
 }
 
-std::string VfsNavigator::getFilePath() const
+const std::string& VfsNavigator::getFilePath() const
 {
     return realPath;
 }
 
-std::string VfsNavigator::getAbsoluteFilePath() const
+const std::string& VfsNavigator::getAbsoluteFilePath() const
 {
     return absoluteRealPath;
 }

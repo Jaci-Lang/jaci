@@ -62,7 +62,8 @@ static std::string toLower(const std::string& s)
 
 void Config::setAlias(std::string alias, std::string value)
 {
-    AliasInfo& info = aliases[toLower(alias)];
+    std::string lowercasedAlias = toLower(alias);
+    AliasInfo& info = aliases[std::move(lowercasedAlias)];
     info.value = std::move(value);
     info.originalCase = std::move(alias);
     info.configLocation = {};
@@ -71,12 +72,14 @@ void Config::setAlias(std::string alias, std::string value)
 void Config::setAlias(std::string alias, std::string value, const std::string& configLocation)
 {
     std::string lowercasedAlias = toLower(alias);
-    setAlias(std::move(alias), std::move(value));
+    AliasInfo& info = aliases[lowercasedAlias];
+    info.value = std::move(value);
+    info.originalCase = std::move(alias);
 
     if (!configLocationCache.contains(configLocation))
         configLocationCache[configLocation] = std::make_unique<std::string>(configLocation);
 
-    aliases[lowercasedAlias].configLocation = *configLocationCache[configLocation];
+    info.configLocation = *configLocationCache[configLocation];
 }
 
 static Error parseBoolean(bool& result, const std::string& value)

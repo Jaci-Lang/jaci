@@ -969,6 +969,8 @@ bool Frontend::parseGraph(
     DenseHashMap2<SourceNode*, Mark> seen;
     std::vector<SourceNode*> stack;
     std::vector<SourceNode*> path;
+    stack.reserve(64);
+    path.reserve(64);
     bool cyclic = false;
 
     {

@@ -14,6 +14,8 @@
 #include "Luau/SingleBinaryCompiler.h"
 
 #include <memory>
+#include <thread>
+#include <atomic>
 
 #ifdef _WIN32
 #include <io.h>
@@ -808,21 +810,56 @@ int main(int argc, char** argv)
     const size_t fileCount = files.size();
     CompileStats stats = {};
 
-    std::vector<CompileStats> fileStats;
-    if (recordStats == RecordStats::File || recordStats == RecordStats::Function)
-        fileStats.reserve(fileCount);
+    std::vector<CompileStats> fileStats(fileCount);
 
     int failed = 0;
     unsigned functionStats = (recordStats == RecordStats::Function ? Luau::CodeGen::FunctionStats_Enable : 0) |
                              (bytecodeSummary ? Luau::CodeGen::FunctionStats_BytecodeSummary : 0);
-    for (const std::string& path : files)
+
+    // Parallelize compilation across hardware threads for multi-file batches
+    if (fileCount > 1 && (compileFormat == CompileFormat::Null || compileFormat == CompileFormat::CodegenNull))
     {
-        CompileStats fileStat = {};
-        fileStat.lowerStats.functionStatsFlags = functionStats;
-        failed += !compileFile(path.c_str(), compileFormat, assemblyTarget, fileStat, dumpConstants);
-        stats += fileStat;
-        if (recordStats == RecordStats::File || recordStats == RecordStats::Function)
-            fileStats.push_back(fileStat);
+        unsigned int hwThreads = std::thread::hardware_concurrency();
+        unsigned int numThreads = std::min(hwThreads > 0 ? hwThreads : 4u, unsigned(fileCount));
+        std::vector<std::thread> workers;
+        std::atomic<size_t> nextIndex{0};
+        std::atomic<int> atomicFailed{0};
+
+        for (unsigned int t = 0; t < numThreads; ++t)
+        {
+            workers.emplace_back(
+                [&]()
+                {
+                    while (true)
+                    {
+                        size_t idx = nextIndex.fetch_add(1, std::memory_order_relaxed);
+                        if (idx >= fileCount)
+                            break;
+
+                        fileStats[idx].lowerStats.functionStatsFlags = functionStats;
+                        bool ok = compileFile(files[idx].c_str(), compileFormat, assemblyTarget, fileStats[idx], dumpConstants);
+                        if (!ok)
+                            atomicFailed.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            );
+        }
+
+        for (auto& w : workers)
+            w.join();
+
+        failed = atomicFailed.load();
+        for (size_t i = 0; i < fileCount; ++i)
+            stats += fileStats[i];
+    }
+    else
+    {
+        for (size_t i = 0; i < fileCount; ++i)
+        {
+            fileStats[i].lowerStats.functionStatsFlags = functionStats;
+            failed += !compileFile(files[i].c_str(), compileFormat, assemblyTarget, fileStats[i], dumpConstants);
+            stats += fileStats[i];
+        }
     }
 
     if (compileFormat == CompileFormat::Null)

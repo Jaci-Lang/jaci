@@ -26,8 +26,8 @@ public:
     // navigator is positioned at the found package root.
     NavigationStatus toBarePackage(const std::string& pkgName);
 
-    std::string getFilePath() const;
-    std::string getAbsoluteFilePath() const;
+    const std::string& getFilePath() const;
+    const std::string& getAbsoluteFilePath() const;
 
     // Returns true if the resolved path is a native shared library (.so/.dylib/.dll).
     bool isNativeLibrary() const;

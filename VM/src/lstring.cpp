@@ -120,7 +120,7 @@ TString* luaS_buffinish(lua_State* L, TString* ts)
     // search if we already have this string in the hash table
     for (TString* el = tb->hash[bucket]; el != NULL; el = el->next)
     {
-        if (el->len == ts->len && memcmp(el->data, ts->data, ts->len) == 0)
+        if (el->hash == h && el->len == ts->len && memcmp(el->data, ts->data, ts->len) == 0)
         {
             // string may be dead
             if (isdead(L->global, obj2gco(el)))
@@ -150,7 +150,7 @@ TString* luaS_newlstr(lua_State* L, const char* str, size_t l)
     unsigned int h = luaS_hash(str, l);
     for (TString* el = L->global->strt.hash[lmod(h, L->global->strt.size)]; el != NULL; el = el->next)
     {
-        if (el->len == l && (memcmp(str, getstr(el), l) == 0))
+        if (el->hash == h && el->len == l && (memcmp(str, getstr(el), l) == 0))
         {
             // string may be dead
             if (isdead(L->global, obj2gco(el)))

@@ -24,12 +24,9 @@
 
 LUAU_FASTFLAG(LuauCyclicRequireShortCircuit)
 
-static luarequire_WriteResult write(std::optional<std::string> contents, char* buffer, size_t bufferSize, size_t* sizeOut)
+static luarequire_WriteResult write(std::string_view contents, char* buffer, size_t bufferSize, size_t* sizeOut)
 {
-    if (!contents)
-        return luarequire_WriteResult::WRITE_FAILURE;
-
-    size_t nullTerminatedSize = contents->size() + 1;
+    size_t nullTerminatedSize = contents.size() + 1;
 
     if (bufferSize < nullTerminatedSize)
     {
@@ -38,8 +35,16 @@ static luarequire_WriteResult write(std::optional<std::string> contents, char* b
     }
 
     *sizeOut = nullTerminatedSize;
-    memcpy(buffer, contents->c_str(), nullTerminatedSize);
+    memcpy(buffer, contents.data(), contents.size());
+    buffer[contents.size()] = '\0';
     return luarequire_WriteResult::WRITE_SUCCESS;
+}
+
+static luarequire_WriteResult write(const std::optional<std::string>& contents, char* buffer, size_t bufferSize, size_t* sizeOut)
+{
+    if (!contents)
+        return luarequire_WriteResult::WRITE_FAILURE;
+    return write(std::string_view(*contents), buffer, bufferSize, sizeOut);
 }
 
 static luarequire_NavigateResult convert(NavigationStatus status)
@@ -74,11 +79,11 @@ static luarequire_NavigateResult reset(lua_State* L, void* ctx, const char* requ
 {
     ReplRequirer* req = static_cast<ReplRequirer*>(ctx);
 
-    std::string chunkname = requirer_chunkname;
+    std::string_view chunkname = requirer_chunkname;
     if (chunkname == "=stdin" || chunkname == "=eval")
         return convert(req->vfs.resetToStdIn());
     else if (!chunkname.empty() && chunkname[0] == '@')
-        return convert(req->vfs.resetToPath(chunkname.substr(1)));
+        return convert(req->vfs.resetToPath(std::string(chunkname.substr(1))));
 
     return NAVIGATE_NOT_FOUND;
 }
@@ -114,19 +119,30 @@ static bool is_module_present(lua_State* L, void* ctx)
 static luarequire_WriteResult get_chunkname(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out)
 {
     ReplRequirer* req = static_cast<ReplRequirer*>(ctx);
-    return write("@" + req->vfs.getFilePath(), buffer, buffer_size, size_out);
+    const std::string& fp = req->vfs.getFilePath();
+    size_t nullTerminatedSize = fp.size() + 2; // '@' + fp + '\0'
+    if (buffer_size < nullTerminatedSize)
+    {
+        *size_out = nullTerminatedSize;
+        return luarequire_WriteResult::WRITE_BUFFER_TOO_SMALL;
+    }
+    *size_out = nullTerminatedSize;
+    buffer[0] = '@';
+    memcpy(buffer + 1, fp.data(), fp.size());
+    buffer[nullTerminatedSize - 1] = '\0';
+    return luarequire_WriteResult::WRITE_SUCCESS;
 }
 
 static luarequire_WriteResult get_loadname(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out)
 {
     ReplRequirer* req = static_cast<ReplRequirer*>(ctx);
-    return write(req->vfs.getAbsoluteFilePath(), buffer, buffer_size, size_out);
+    return write(std::string_view(req->vfs.getAbsoluteFilePath()), buffer, buffer_size, size_out);
 }
 
 static luarequire_WriteResult get_cache_key(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out)
 {
     ReplRequirer* req = static_cast<ReplRequirer*>(ctx);
-    return write(req->vfs.getAbsoluteFilePath(), buffer, buffer_size, size_out);
+    return write(std::string_view(req->vfs.getAbsoluteFilePath()), buffer, buffer_size, size_out);
 }
 
 static luarequire_ConfigStatus get_config_status(lua_State* L, void* ctx)

@@ -93,60 +93,108 @@ std::optional<std::string> getCurrentWorkingDirectory()
 
 std::string normalizePath(std::string_view path)
 {
-    const std::vector<std::string_view> components = splitPath(path);
-    std::vector<std::string_view> normalizedComponents;
-
     const bool isAbsolute = isAbsolutePath(path);
 
-    // 1. Normalize path components
-    const size_t startIndex = isAbsolute ? 1 : 0;
-    for (size_t i = startIndex; i < components.size(); i++)
+    // Use inline array on the stack for up to 64 components to avoid heap vector allocations
+    constexpr size_t kInlineCapacity = 64;
+    std::string_view inlineComponents[kInlineCapacity];
+    std::vector<std::string_view> heapComponents;
+    std::string_view* normalizedComponents = inlineComponents;
+    size_t count = 0;
+    size_t capacity = kInlineCapacity;
+
+    auto pushComponent = [&](std::string_view comp)
     {
-        std::string_view component = components[i];
+        if (count >= capacity)
+        {
+            if (heapComponents.empty())
+            {
+                heapComponents.reserve(capacity * 2);
+                heapComponents.insert(heapComponents.end(), inlineComponents, inlineComponents + count);
+            }
+            heapComponents.push_back(comp);
+            normalizedComponents = heapComponents.data();
+            capacity = heapComponents.capacity();
+            count = heapComponents.size();
+            return;
+        }
+        normalizedComponents[count++] = comp;
+    };
+
+    auto popComponent = [&]()
+    {
+        if (count > 0)
+        {
+            count--;
+            if (!heapComponents.empty())
+                heapComponents.pop_back();
+        }
+    };
+
+    std::string_view firstComponent;
+    size_t pos = 0;
+    bool isFirst = true;
+
+    while (pos <= path.size())
+    {
+        size_t nextPos = path.find_first_of("\\/", pos);
+        if (nextPos == std::string_view::npos)
+            nextPos = path.size();
+
+        std::string_view component = path.substr(pos, nextPos - pos);
+        pos = nextPos + 1;
+
+        if (isFirst)
+        {
+            isFirst = false;
+            firstComponent = component;
+            if (isAbsolute)
+                continue;
+        }
+
         if (component == "..")
         {
-            if (normalizedComponents.empty())
+            if (count == 0)
             {
                 if (!isAbsolute)
-                {
-                    normalizedComponents.emplace_back("..");
-                }
+                    pushComponent("..");
             }
-            else if (normalizedComponents.back() == "..")
+            else if (normalizedComponents[count - 1] == "..")
             {
-                normalizedComponents.emplace_back("..");
+                pushComponent("..");
             }
             else
             {
-                normalizedComponents.pop_back();
+                popComponent();
             }
         }
         else if (!component.empty() && component != ".")
         {
-            normalizedComponents.emplace_back(component);
+            pushComponent(component);
         }
     }
 
     std::string normalizedPath;
+    normalizedPath.reserve(path.size() + 4);
 
     // 2. Add correct prefix to formatted path
     if (isAbsolute)
     {
-        normalizedPath += components[0];
+        normalizedPath += firstComponent;
         normalizedPath += "/";
     }
-    else if (normalizedComponents.empty() || normalizedComponents[0] != "..")
+    else if (count == 0 || normalizedComponents[0] != "..")
     {
         normalizedPath += "./";
     }
 
     // 3. Join path components to form the normalized path
-    for (auto iter = normalizedComponents.begin(); iter != normalizedComponents.end(); ++iter)
+    for (size_t i = 0; i < count; ++i)
     {
-        if (iter != normalizedComponents.begin())
+        if (i > 0)
             normalizedPath += "/";
 
-        normalizedPath += *iter;
+        normalizedPath += normalizedComponents[i];
     }
     if (normalizedPath.size() >= 2 && normalizedPath[normalizedPath.size() - 1] == '.' && normalizedPath[normalizedPath.size() - 2] == '.')
         normalizedPath += "/";
@@ -353,9 +401,10 @@ bool isFile(const std::string& path)
         return false;
     return (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 #else
-    struct stat st = {};
-    lstat(path.c_str(), &st);
-    return (st.st_mode & S_IFMT) == S_IFREG;
+    struct stat st;
+    if (lstat(path.c_str(), &st) == 0)
+        return (st.st_mode & S_IFMT) == S_IFREG;
+    return false;
 #endif
 }
 
@@ -367,9 +416,10 @@ bool isDirectory(const std::string& path)
         return false;
     return (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #else
-    struct stat st = {};
-    lstat(path.c_str(), &st);
-    return (st.st_mode & S_IFMT) == S_IFDIR;
+    struct stat st;
+    if (lstat(path.c_str(), &st) == 0)
+        return (st.st_mode & S_IFMT) == S_IFDIR;
+    return false;
 #endif
 }
 

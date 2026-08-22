@@ -221,11 +221,22 @@ size_t hashRange(const char* data, size_t size)
 {
     // FNV-1a
     uint32_t hash = 2166136261;
+    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(data);
 
-    for (size_t i = 0; i < size; ++i)
+    while (size >= 4)
     {
-        hash ^= uint8_t(data[i]);
-        hash *= 16777619;
+        hash = (hash ^ ptr[0]) * 16777619;
+        hash = (hash ^ ptr[1]) * 16777619;
+        hash = (hash ^ ptr[2]) * 16777619;
+        hash = (hash ^ ptr[3]) * 16777619;
+        ptr += 4;
+        size -= 4;
+    }
+
+    while (size > 0)
+    {
+        hash = (hash ^ *ptr++) * 16777619;
+        --size;
     }
 
     return hash;
