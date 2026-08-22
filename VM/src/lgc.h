@@ -90,37 +90,37 @@
 
 #define luaC_barrier(L, p, v) \
     { \
-        if (iscollectable(v) && isblack(obj2gco(p)) && iswhite(gcvalue(v))) \
+        if (LUAU_UNLIKELY(iscollectable(v) && isblack(obj2gco(p)) && iswhite(gcvalue(v)))) \
             luaC_barrierf(L, obj2gco(p), gcvalue(v)); \
     }
 
 #define luaC_barriert(L, t, v) \
     { \
-        if (iscollectable(v) && isblack(obj2gco(t)) && iswhite(gcvalue(v))) \
+        if (LUAU_UNLIKELY(iscollectable(v) && isblack(obj2gco(t)) && iswhite(gcvalue(v)))) \
             luaC_barriertable(L, t, gcvalue(v)); \
     }
 
 #define luaC_barrierfast(L, t) \
     { \
-        if (isblack(obj2gco(t))) \
+        if (LUAU_UNLIKELY(isblack(obj2gco(t)))) \
             luaC_barrierback(L, obj2gco(t), &t->gclist); \
     }
 
 #define luaC_objbarrier(L, p, o) \
     { \
-        if (isblack(obj2gco(p)) && iswhite(obj2gco(o))) \
+        if (LUAU_UNLIKELY(isblack(obj2gco(p)) && iswhite(obj2gco(o)))) \
             luaC_barrierf(L, obj2gco(p), obj2gco(o)); \
     }
 
 #define luaC_threadbarrier(L) \
     { \
-        if (isblack(obj2gco(L))) \
+        if (LUAU_UNLIKELY(isblack(obj2gco(L)))) \
             luaC_barrierback(L, obj2gco(L), &L->gclist); \
     }
 
 #define luaC_objectbarrier(L) \
     { \
-        if (isblack(obj2gco(L))) \
+        if (LUAU_UNLIKELY(isblack(obj2gco(L)))) \
             luaC_barrierback(L, obj2gco(L), &L->gclist); \
     }
 

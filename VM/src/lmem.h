@@ -35,3 +35,4 @@ LUAI_FUNC lua_Page* luaM_getnextpage(lua_Page* page);
 
 LUAI_FUNC void luaM_visitpage(lua_Page* page, void* context, bool (*visitor)(void* context, lua_Page* page, GCObject* gco));
 LUAI_FUNC void luaM_visitgco(lua_State* L, void* context, bool (*visitor)(void* context, lua_Page* page, GCObject* gco));
+LUAI_FUNC void luaM_freepagepool(lua_State* L);

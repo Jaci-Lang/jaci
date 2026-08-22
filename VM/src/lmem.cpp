@@ -243,9 +243,25 @@ static lua_Page* newpage(lua_State* L, lua_Page** pageset, int pageSize, int blo
 
     LUAU_ASSERT(pageSize - int(offsetof(lua_Page, data)) >= blockSize * blockCount);
 
-    lua_Page* page = (lua_Page*)(*g->frealloc)(g->ud, NULL, 0, pageSize);
-    if (!page)
-        luaD_throw(L, LUA_ERRMEM);
+    lua_Page* page = NULL;
+    if (pageSize == int(kSmallPageSize) && g->pagepool_small)
+    {
+        page = g->pagepool_small;
+        g->pagepool_small = page->next;
+        g->pagepool_size_small--;
+    }
+    else if (pageSize == int(kLargePageSize) && g->pagepool_large)
+    {
+        page = g->pagepool_large;
+        g->pagepool_large = page->next;
+        g->pagepool_size_large--;
+    }
+    else
+    {
+        page = (lua_Page*)(*g->frealloc)(g->ud, NULL, 0, pageSize);
+        if (!page)
+            luaD_throw(L, LUA_ERRMEM);
+    }
 
     ASAN_POISON_MEMORY_REGION(page->data, blockSize * blockCount);
 
@@ -310,6 +326,30 @@ static void freepage(lua_State* L, lua_Page** pageset, lua_Page* page)
             page->listprev->listnext = page->listnext;
         else if (*pageset == page)
             *pageset = page->listnext;
+    }
+
+    const int kMaxPagePoolSmall = 128;
+    const int kMaxPagePoolLarge = 32;
+
+    if (page->pageSize == int(kSmallPageSize) && g->pagepool_size_small < kMaxPagePoolSmall)
+    {
+        page->next = g->pagepool_small;
+        page->prev = NULL;
+        page->listnext = NULL;
+        page->listprev = NULL;
+        g->pagepool_small = page;
+        g->pagepool_size_small++;
+        return;
+    }
+    else if (page->pageSize == int(kLargePageSize) && g->pagepool_size_large < kMaxPagePoolLarge)
+    {
+        page->next = g->pagepool_large;
+        page->prev = NULL;
+        page->listnext = NULL;
+        page->listprev = NULL;
+        g->pagepool_large = page;
+        g->pagepool_size_large++;
+        return;
     }
 
     // so long
@@ -743,4 +783,24 @@ void luaM_visitgco(lua_State* L, void* context, bool (*visitor)(void* context, l
 
         curr = next;
     }
+}
+
+void luaM_freepagepool(lua_State* L)
+{
+    global_State* g = L->global;
+    while (g->pagepool_small)
+    {
+        lua_Page* next = g->pagepool_small->next;
+        (*g->frealloc)(g->ud, g->pagepool_small, g->pagepool_small->pageSize, 0);
+        g->pagepool_small = next;
+    }
+    g->pagepool_size_small = 0;
+
+    while (g->pagepool_large)
+    {
+        lua_Page* next = g->pagepool_large->next;
+        (*g->frealloc)(g->ud, g->pagepool_large, g->pagepool_large->pageSize, 0);
+        g->pagepool_large = next;
+    }
+    g->pagepool_size_large = 0;
 }

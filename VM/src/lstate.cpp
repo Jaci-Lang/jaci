@@ -126,6 +126,8 @@ static void close_state(lua_State* L)
     if (L->global->ecb.close)
         L->global->ecb.close(L);
 
+    luaM_freepagepool(L);
+
     (*g->frealloc)(g->ud, L, sizeof(LG), 0);
 }
 
@@ -240,6 +242,10 @@ lua_State* lua_newstate(lua_Alloc f, void* ud)
     g->allpages = NULL;
     g->allgcopages = NULL;
     g->sweepgcopage = NULL;
+    g->pagepool_small = NULL;
+    g->pagepool_large = NULL;
+    g->pagepool_size_small = 0;
+    g->pagepool_size_large = 0;
 
     for (i = 0; i < LUA_T_COUNT; i++)
         g->mt[i] = NULL;

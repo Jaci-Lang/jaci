@@ -569,6 +569,7 @@ if(TARGET Luau.UnitTest)
         tests/Fixture.h
         tests/FragmentAutocomplete.test.cpp
         tests/Frontend.test.cpp
+        tests/GarbageCollector.test.cpp
         tests/Generalization.test.cpp
         tests/Hir.test.cpp
         tests/HirTable.test.cpp

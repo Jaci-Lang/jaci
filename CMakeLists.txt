@@ -311,7 +311,7 @@ endif()
 if(LUAU_BUILD_TESTS)
     target_compile_options(Luau.UnitTest PRIVATE ${LUAU_OPTIONS})
     target_compile_definitions(Luau.UnitTest PRIVATE DOCTEST_CONFIG_DOUBLE_STRINGIFY DOCTEST_CONFIG_USE_STD_HEADERS)
-    target_include_directories(Luau.UnitTest PRIVATE extern VM/include)
+    target_include_directories(Luau.UnitTest PRIVATE extern VM/include VM/src)
     target_link_libraries(Luau.UnitTest PRIVATE Luau.Analysis Luau.Bytecode Luau.Compiler Luau.CodeGen Luau.VM Luau.CLI.lib Luau.Require)
 
     target_compile_options(Luau.Conformance PRIVATE ${LUAU_OPTIONS})

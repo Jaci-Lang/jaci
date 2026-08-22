@@ -340,7 +340,6 @@ static const char* gettablemode(global_State* g, LuaTable* h)
 
 static int traversetable(global_State* g, LuaTable* h)
 {
-    int i;
     int weakkey = 0;
     int weakvalue = 0;
     if (h->metatable)
@@ -360,26 +359,65 @@ static int traversetable(global_State* g, LuaTable* h)
 
     if (weakkey && weakvalue)
         return 1;
+
     if (!weakvalue)
     {
-        i = h->sizearray;
-        while (i--)
-            markvalue(g, &h->array[i]);
-    }
-    i = sizenode(h);
-    while (i--)
-    {
-        LuaNode* n = gnode(h, i);
-        LUAU_ASSERT(ttype(gkey(n)) != LUA_TDEADKEY || ttisnil(gval(n)));
-        if (ttisnil(gval(n)))
-            removeentry(n); // remove empty entries
-        else
+        const TValue* arr = h->array;
+        int size = h->sizearray;
+        int i = 0;
+        for (; i + 3 < size; i += 4)
         {
-            LUAU_ASSERT(!ttisnil(gkey(n)));
-            if (!weakkey)
-                markvalue(g, gkey(n));
-            if (!weakvalue)
-                markvalue(g, gval(n));
+            #if defined(__GNUC__) || defined(__clang__)
+            if (i + 16 < size)
+                __builtin_prefetch(&arr[i + 16], 0, 1);
+            #endif
+            const TValue* v0 = &arr[i];
+            const TValue* v1 = &arr[i + 1];
+            const TValue* v2 = &arr[i + 2];
+            const TValue* v3 = &arr[i + 3];
+
+            if (iscollectable(v0) && iswhite(gcvalue(v0))) reallymarkobject(g, gcvalue(v0));
+            if (iscollectable(v1) && iswhite(gcvalue(v1))) reallymarkobject(g, gcvalue(v1));
+            if (iscollectable(v2) && iswhite(gcvalue(v2))) reallymarkobject(g, gcvalue(v2));
+            if (iscollectable(v3) && iswhite(gcvalue(v3))) reallymarkobject(g, gcvalue(v3));
+        }
+        for (; i < size; ++i)
+        {
+            const TValue* v = &arr[i];
+            if (iscollectable(v) && iswhite(gcvalue(v)))
+                reallymarkobject(g, gcvalue(v));
+        }
+    }
+
+    if (h->node != &luaH_dummynode)
+    {
+        int size = sizenode(h);
+        for (int idx = 0; idx < size; ++idx)
+        {
+            LuaNode* n = gnode(h, idx);
+            #if defined(__GNUC__) || defined(__clang__)
+            if (idx + 8 < size)
+                __builtin_prefetch(gnode(h, idx + 8), 0, 1);
+            #endif
+            LUAU_ASSERT(ttype(gkey(n)) != LUA_TDEADKEY || ttisnil(gval(n)));
+            if (ttisnil(gval(n)))
+            {
+                removeentry(n); // remove empty entries
+            }
+            else
+            {
+                LUAU_ASSERT(!ttisnil(gkey(n)));
+                if (!weakkey)
+                {
+                    if (iscollectable(gkey(n)) && iswhite(gcvalue(gkey(n))))
+                        reallymarkobject(g, gcvalue(gkey(n)));
+                }
+                if (!weakvalue)
+                {
+                    if (iscollectable(gval(n)) && iswhite(gcvalue(gval(n))))
+                        reallymarkobject(g, gcvalue(gval(n)));
+                }
+            }
         }
     }
     return weakkey || weakvalue;
@@ -1088,14 +1126,19 @@ static int sweepgcopage(lua_State* L, lua_Page* page)
 
     for (char* pos = start; pos != end; pos += blockSize)
     {
+        #if defined(__GNUC__) || defined(__clang__)
+        if (pos + 4 * blockSize < end)
+            __builtin_prefetch(pos + 4 * blockSize, 0, 1);
+        #endif
+
         GCObject* gco = (GCObject*)pos;
 
         // skip memory blocks that are already freed
-        if (gco->gch.tt == LUA_TNIL)
+        if (LUAU_UNLIKELY(gco->gch.tt == LUA_TNIL))
             continue;
 
         // is the object alive?
-        if ((gco->gch.marked ^ WHITEBITS) & deadmask)
+        if (LUAU_LIKELY((gco->gch.marked ^ WHITEBITS) & deadmask))
         {
             LUAU_ASSERT(!isdead(g, gco));
             // make it white (for next cycle)
@@ -1153,6 +1196,17 @@ static size_t gcstep(lua_State* L, size_t limit)
         while (g->gray && cost < limit)
         {
             cost += propagatemark(g);
+        }
+
+        if (!g->gray && g->grayagain && cost < limit)
+        {
+            g->gray = g->grayagain;
+            g->grayagain = NULL;
+
+            while (g->gray && cost < limit)
+            {
+                cost += propagatemark(g);
+            }
         }
 
         if (!g->gray) // no more `gray' objects

@@ -212,6 +212,10 @@ typedef struct global_State
     struct lua_Page* allpages; // page linked list with all pages for all non-collectable object classes (available with LUAU_ASSERTENABLED)
     struct lua_Page* allgcopages; // page linked list with all pages for all collectable object classes
     struct lua_Page* sweepgcopage; // position of the sweep in `allgcopages'
+    struct lua_Page* pagepool_small; // cached empty small pages (16KB)
+    struct lua_Page* pagepool_large; // cached empty large pages (32KB)
+    int pagepool_size_small;
+    int pagepool_size_large;
 
     struct lua_State* mainthread;
     UpVal uvhead; // head of double-linked list of all open upvalues
