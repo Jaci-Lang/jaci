@@ -48,6 +48,14 @@ struct DiscoveredModule
     std::string bytecode;
 };
 
+struct DiscoveredAsset
+{
+    std::string path;
+    std::string relativePath;
+    std::string absolutePath;
+    std::string data;
+};
+
 class RequireVisitor : public AstVisitor
 {
 public:
@@ -111,6 +119,7 @@ std::string escapeCString(const std::string& str)
 std::string generateRunnerCpp(
     const std::vector<DiscoveredModule>& modules,
     size_t entryIndex,
+    const std::vector<DiscoveredAsset>& assets,
     bool enableCodegen,
     int optimizationLevel,
     int debugLevel
@@ -136,7 +145,7 @@ std::string generateRunnerCpp(
     out << "#include <string_view>\n";
     out << "#include <vector>\n\n";
 
-    // Embed bytecode arrays
+    // Embed bytecode arrays for modules
     for (size_t i = 0; i < modules.size(); ++i)
     {
         out << "static const unsigned char kModuleData_" << i << "[] = "
@@ -163,6 +172,54 @@ std::string generateRunnerCpp(
     out << "};\n";
     out << "static const size_t kNumEmbeddedModules = " << modules.size() << ";\n";
     out << "static const size_t kEntryModuleIndex = " << entryIndex << ";\n\n";
+
+    // Embed asset data arrays
+    for (size_t i = 0; i < assets.size(); ++i)
+    {
+        out << "static const unsigned char kAssetData_" << i << "[] = "
+            << formatHexBytes(assets[i].data) << ";\n\n";
+    }
+
+    out << "struct EmbeddedAssetRecord\n{\n";
+    out << "    const char* path;\n";
+    out << "    const char* relativePath;\n";
+    out << "    const char* absolutePath;\n";
+    out << "    const unsigned char* data;\n";
+    out << "    size_t size;\n";
+    out << "};\n\n";
+
+    out << "static const EmbeddedAssetRecord kEmbeddedAssets[] = {\n";
+    for (size_t i = 0; i < assets.size(); ++i)
+    {
+        out << "    { \"" << escapeCString(assets[i].path) << "\", \""
+            << escapeCString(assets[i].relativePath) << "\", \""
+            << escapeCString(assets[i].absolutePath) << "\", "
+            << "kAssetData_" << i << ", "
+            << assets[i].data.size() << " },\n";
+    }
+    out << "};\n";
+    out << "static const size_t kNumEmbeddedAssets = " << assets.size() << ";\n\n";
+
+    out << "static const EmbeddedAssetRecord* findEmbeddedAsset(const char* name)\n{\n";
+    out << "    if (!name || !*name || kNumEmbeddedAssets == 0) return nullptr;\n";
+    out << "    std::string_view target(name);\n";
+    out << "    if (target.size() >= 2 && target[0] == '.' && (target[1] == '/' || target[1] == '\\\\'))\n";
+    out << "        target.remove_prefix(2);\n\n";
+    out << "    for (size_t i = 0; i < kNumEmbeddedAssets; ++i)\n    {\n";
+    out << "        std::string_view p = kEmbeddedAssets[i].path;\n";
+    out << "        if (p.size() >= 2 && p[0] == '.' && (p[1] == '/' || p[1] == '\\\\')) p.remove_prefix(2);\n";
+    out << "        std::string_view rp = kEmbeddedAssets[i].relativePath;\n";
+    out << "        if (rp.size() >= 2 && rp[0] == '.' && (rp[1] == '/' || rp[1] == '\\\\')) rp.remove_prefix(2);\n";
+    out << "        if (target == p || target == rp || target == kEmbeddedAssets[i].absolutePath)\n";
+    out << "            return &kEmbeddedAssets[i];\n";
+    out << "    }\n";
+    out << "    for (size_t i = 0; i < kNumEmbeddedAssets; ++i)\n    {\n";
+    out << "        std::string_view absPath(kEmbeddedAssets[i].absolutePath);\n";
+    out << "        if (absPath.size() >= target.size() && absPath.substr(absPath.size() - target.size()) == target)\n";
+    out << "            return &kEmbeddedAssets[i];\n";
+    out << "    }\n";
+    out << "    return nullptr;\n";
+    out << "}\n\n";
 
     out << "static const EmbeddedModuleRecord* findEmbeddedModule(const char* name)\n{\n";
     out << "    if (!name) return nullptr;\n";
@@ -243,7 +300,8 @@ std::string generateRunnerCpp(
     out << "        findEmbeddedModule((p + \"/init.luau\").c_str()) ||\n";
     out << "        findEmbeddedModule((p + \"/init.lua\").c_str()) ||\n";
     out << "        findEmbeddedModule((p + \"/index.luau\").c_str()) ||\n";
-    out << "        findEmbeddedModule((p + \"/index.lua\").c_str()))\n";
+    out << "        findEmbeddedModule((p + \"/index.lua\").c_str()) ||\n";
+    out << "        findEmbeddedAsset(p.c_str()))\n";
     out << "    {\n";
     out << "        return true;\n";
     out << "    }\n";
@@ -321,13 +379,23 @@ std::string generateRunnerCpp(
     out << "    if (mod)\n    {\n";
     out << "        status = luau_load(ML, chunkname, reinterpret_cast<const char*>(mod->bytecode), mod->bytecodeSize, 0);\n";
     out << "    }\n    else\n    {\n";
-    out << "        std::optional<std::string> contents = readFile(loadname);\n";
-    out << "        if (!contents) luaL_error(L, \"could not read embedded module '%s'\", loadname);\n";
-    out << "        Luau::CompileOptions copts;\n";
-    out << "        copts.optimizationLevel = " << optimizationLevel << ";\n";
-    out << "        copts.debugLevel = " << debugLevel << ";\n";
-    out << "        std::string bytecode = Luau::compile(*contents, copts);\n";
-    out << "        status = luau_load(ML, chunkname, bytecode.data(), bytecode.size(), 0);\n";
+    out << "        const EmbeddedAssetRecord* asset = findEmbeddedAsset(loadname);\n";
+    out << "        if (!asset) asset = findEmbeddedAsset(path);\n";
+    out << "        if (asset)\n        {\n";
+    out << "            Luau::CompileOptions copts;\n";
+    out << "            copts.optimizationLevel = " << optimizationLevel << ";\n";
+    out << "            copts.debugLevel = " << debugLevel << ";\n";
+    out << "            std::string bytecode = Luau::compile(std::string(reinterpret_cast<const char*>(asset->data), asset->size), copts);\n";
+    out << "            status = luau_load(ML, chunkname, bytecode.data(), bytecode.size(), 0);\n";
+    out << "        }\n        else\n        {\n";
+    out << "            std::optional<std::string> contents = readFile(loadname);\n";
+    out << "            if (!contents) luaL_error(L, \"could not read module '%s'\", loadname);\n";
+    out << "            Luau::CompileOptions copts;\n";
+    out << "            copts.optimizationLevel = " << optimizationLevel << ";\n";
+    out << "            copts.debugLevel = " << debugLevel << ";\n";
+    out << "            std::string bytecode = Luau::compile(*contents, copts);\n";
+    out << "            status = luau_load(ML, chunkname, bytecode.data(), bytecode.size(), 0);\n";
+    out << "        }\n";
     out << "    }\n\n";
     out << "    if (status != 0) luaL_error(L, \"failed to load module '%s'\", loadname);\n\n";
     if (enableCodegen)
@@ -364,6 +432,73 @@ std::string generateRunnerCpp(
     out << "    config->to_alias_fallback = embedded_alias_fallback;\n";
     out << "}\n\n";
 
+    // Embedded FS Interception Helpers
+    out << "static int embedded_fs_readfile(lua_State* L)\n{\n";
+    out << "    const char* pathStr = luaL_checkstring(L, 1);\n";
+    out << "    const EmbeddedAssetRecord* asset = findEmbeddedAsset(pathStr);\n";
+    out << "    if (asset)\n    {\n";
+    out << "        lua_pushlstring(L, reinterpret_cast<const char*>(asset->data), asset->size);\n";
+    out << "        return 1;\n";
+    out << "    }\n";
+    out << "    std::optional<std::string> fileData = readFile(pathStr);\n";
+    out << "    if (!fileData) luaL_error(L, \"fs.readfile: cannot open file: %s\", pathStr);\n";
+    out << "    lua_pushlstring(L, fileData->data(), fileData->size());\n";
+    out << "    return 1;\n";
+    out << "}\n\n";
+
+    out << "static int embedded_fs_exists(lua_State* L)\n{\n";
+    out << "    const char* pathStr = luaL_checkstring(L, 1);\n";
+    out << "    if (findEmbeddedAsset(pathStr)) { lua_pushboolean(L, 1); return 1; }\n";
+    out << "    lua_pushboolean(L, isFile(pathStr) || isDirectory(pathStr));\n";
+    out << "    return 1;\n";
+    out << "}\n\n";
+
+    out << "static int embedded_fs_isfile(lua_State* L)\n{\n";
+    out << "    const char* pathStr = luaL_checkstring(L, 1);\n";
+    out << "    if (findEmbeddedAsset(pathStr)) { lua_pushboolean(L, 1); return 1; }\n";
+    out << "    lua_pushboolean(L, isFile(pathStr));\n";
+    out << "    return 1;\n";
+    out << "}\n\n";
+
+    out << "static int embedded_fs_isdir(lua_State* L)\n{\n";
+    out << "    const char* pathStr = luaL_checkstring(L, 1);\n";
+    out << "    std::string prefix(pathStr);\n";
+    out << "    if (prefix.size() >= 2 && prefix[0] == '.' && (prefix[1] == '/' || prefix[1] == '\\\\')) prefix = prefix.substr(2);\n";
+    out << "    if (!prefix.empty() && prefix.back() != '/' && prefix.back() != '\\\\') prefix += '/';\n";
+    out << "    for (size_t i = 0; i < kNumEmbeddedAssets; ++i)\n    {\n";
+    out << "        std::string_view p = kEmbeddedAssets[i].relativePath;\n";
+    out << "        if (p.size() >= 2 && p[0] == '.' && (p[1] == '/' || p[1] == '\\\\')) p.remove_prefix(2);\n";
+    out << "        if (p.rfind(prefix, 0) == 0) { lua_pushboolean(L, 1); return 1; }\n";
+    out << "    }\n";
+    out << "    lua_pushboolean(L, isDirectory(pathStr));\n";
+    out << "    return 1;\n";
+    out << "}\n\n";
+
+    out << "static int embedded_fs_stat(lua_State* L)\n{\n";
+    out << "    const char* pathStr = luaL_checkstring(L, 1);\n";
+    out << "    const EmbeddedAssetRecord* asset = findEmbeddedAsset(pathStr);\n";
+    out << "    if (asset)\n    {\n";
+    out << "        lua_createtable(L, 0, 4);\n";
+    out << "        lua_pushnumber(L, static_cast<double>(asset->size)); lua_setfield(L, -2, \"size\");\n";
+    out << "        lua_pushboolean(L, 1); lua_setfield(L, -2, \"is_file\");\n";
+    out << "        lua_pushboolean(L, 0); lua_setfield(L, -2, \"is_dir\");\n";
+    out << "        lua_pushnumber(L, 0); lua_setfield(L, -2, \"modified\");\n";
+    out << "        return 1;\n";
+    out << "    }\n";
+    out << "    lua_getglobal(L, \"fs\");\n";
+    out << "    if (lua_istable(L, -1))\n    {\n";
+    out << "        lua_getfield(L, -1, \"stat\");\n";
+    out << "        if (lua_iscfunction(L, -1))\n        {\n";
+    out << "            lua_pushvalue(L, 1);\n";
+    out << "            lua_call(L, 1, 1);\n";
+    out << "            lua_remove(L, -2);\n";
+    out << "            return 1;\n";
+    out << "        }\n";
+    out << "    }\n";
+    out << "    luaL_error(L, \"fs.stat: cannot stat: %s\", pathStr);\n";
+    out << "    return 0;\n";
+    out << "}\n\n";
+
     // Main entry point
     out << "int main(int argc, char** argv)\n{\n";
     out << "    lua_State* L = luaL_newstate();\n";
@@ -373,6 +508,28 @@ std::string generateRunnerCpp(
         out << "    if (Luau::CodeGen::isSupported())\n        Luau::CodeGen::create(L);\n\n";
     }
     out << "    luaL_openlibs(L);\n\n";
+
+    out << "    // Inject embedded filesystem hooks\n";
+    out << "    lua_getglobal(L, \"fs\");\n";
+    out << "    if (lua_istable(L, -1))\n    {\n";
+    out << "        lua_pushcfunction(L, embedded_fs_readfile, \"fs.readfile\");\n";
+    out << "        lua_setfield(L, -2, \"readfile\");\n";
+    out << "        lua_pushcfunction(L, embedded_fs_readfile, \"fs.readFile\");\n";
+    out << "        lua_setfield(L, -2, \"readFile\");\n";
+    out << "        lua_pushcfunction(L, embedded_fs_exists, \"fs.exists\");\n";
+    out << "        lua_setfield(L, -2, \"exists\");\n";
+    out << "        lua_pushcfunction(L, embedded_fs_isfile, \"fs.isfile\");\n";
+    out << "        lua_setfield(L, -2, \"isfile\");\n";
+    out << "        lua_pushcfunction(L, embedded_fs_isfile, \"fs.isFile\");\n";
+    out << "        lua_setfield(L, -2, \"isFile\");\n";
+    out << "        lua_pushcfunction(L, embedded_fs_isdir, \"fs.isdir\");\n";
+    out << "        lua_setfield(L, -2, \"isdir\");\n";
+    out << "        lua_pushcfunction(L, embedded_fs_isdir, \"fs.isDir\");\n";
+    out << "        lua_setfield(L, -2, \"isDir\");\n";
+    out << "        lua_pushcfunction(L, embedded_fs_stat, \"fs.stat\");\n";
+    out << "        lua_setfield(L, -2, \"stat\");\n";
+    out << "    }\n";
+    out << "    lua_pop(L, 1);\n\n";
 
     out << "    EmbeddedRequireContext requireCtx;\n";
     out << "    luaopen_require(L, embeddedRequireConfigInit, &requireCtx);\n\n";
@@ -439,7 +596,7 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
         return false;
     }
 
-    // Traverse dependencies
+    // Traverse Luau module dependencies
     std::vector<DiscoveredModule> modules;
     std::set<std::string> visitedAbsPaths;
     std::queue<std::string> toVisit;
@@ -489,61 +646,136 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
             RequireVisitor visitor;
             parseResult.root->visit(&visitor);
 
-            VfsNavigator vfs;
-            vfs.resetToPath(currentPath);
-
             for (const std::string& reqPath : visitor.requirePaths)
             {
-                // Try resolving with VfsNavigator
-                VfsNavigator subVfs;
-                if (subVfs.resetToPath(currentPath) == NavigationStatus::Success)
+                // Skip built-in virtual standard library modules
+                if (reqPath.rfind("@std/", 0) == 0 || reqPath == "@std")
+                    continue;
+
+                // Resolve target path
+                std::string target = reqPath;
+                std::string resolvedTarget;
+
+                if (target.size() >= 2 && target.substr(0, 2) == "./")
                 {
-                    // Split path and resolve
-                    std::string target = reqPath;
-                    std::string resolvedTarget;
+                    if (auto parent = getParentPath(currentPath))
+                        resolvedTarget = normalizePath(*parent + "/" + target.substr(2));
+                }
+                else if (target.size() >= 3 && target.substr(0, 3) == "../")
+                {
+                    if (auto parent = getParentPath(currentPath))
+                        resolvedTarget = normalizePath(*parent + "/" + target);
+                }
+                else if (!target.empty() && target[0] == '@')
+                {
+                    resolvedTarget = target;
+                }
+                else
+                {
+                    if (auto parent = getParentPath(currentPath))
+                        resolvedTarget = normalizePath(*parent + "/" + target);
+                }
 
-                    if (target.size() >= 2 && target.substr(0, 2) == "./")
+                // Check potential extensions
+                static const char* suffixes[] = {"", ".luau", ".lua", "/init.luau", "/init.lua", "/index.luau", "/index.lua"};
+                for (const char* suf : suffixes)
+                {
+                    std::string cand = resolvedTarget + suf;
+                    if (isFile(cand))
                     {
-                        if (auto parent = getParentPath(currentPath))
-                            resolvedTarget = normalizePath(*parent + "/" + target.substr(2));
-                    }
-                    else if (target.size() >= 3 && target.substr(0, 3) == "../")
-                    {
-                        if (auto parent = getParentPath(currentPath))
-                            resolvedTarget = normalizePath(*parent + "/" + target);
-                    }
-
-                    // Check potential extensions
-                    static const char* suffixes[] = {"", ".luau", ".lua", "/init.luau", "/init.lua", "/index.luau", "/index.lua"};
-                    for (const char* suf : suffixes)
-                    {
-                        std::string cand = resolvedTarget + suf;
-                        if (isFile(cand))
+                        if (visitedAbsPaths.find(cand) == visitedAbsPaths.end())
                         {
-                            if (visitedAbsPaths.find(cand) == visitedAbsPaths.end())
-                            {
-                                visitedAbsPaths.insert(cand);
-                                toVisit.push(cand);
-                            }
-                            break;
+                            visitedAbsPaths.insert(cand);
+                            toVisit.push(cand);
                         }
+                        break;
                     }
                 }
             }
         }
     }
 
+    // Traverse and collect asset files & directories
+    std::vector<DiscoveredAsset> assets;
+    std::set<std::string> visitedAssetPaths;
+
+    auto addAssetFile = [&](const std::string& filePath, const std::string& relPath) {
+        std::string absPath = normalizePath(filePath);
+        if (!isAbsolutePath(absPath))
+        {
+            if (auto cwd = getCurrentWorkingDirectory())
+                absPath = normalizePath(*cwd + "/" + absPath);
+        }
+
+        if (visitedAssetPaths.find(absPath) != visitedAssetPaths.end())
+            return;
+        visitedAssetPaths.insert(absPath);
+
+        std::optional<std::string> content = readFile(absPath);
+        if (!content)
+        {
+            fprintf(stderr, "SingleBinaryCompiler: Warning: Could not read asset '%s'\n", filePath.c_str());
+            return;
+        }
+
+        DiscoveredAsset asset;
+        asset.path = filePath;
+        asset.relativePath = relPath;
+        asset.absolutePath = absPath;
+        asset.data = *content;
+        assets.push_back(std::move(asset));
+    };
+
+    for (const std::string& assetSpec : options.assetPaths)
+    {
+        if (assetSpec.empty())
+            continue;
+
+        std::string resolved = assetSpec;
+        if (!isAbsolutePath(resolved))
+        {
+            if (auto cwd = getCurrentWorkingDirectory())
+                resolved = normalizePath(*cwd + "/" + resolved);
+        }
+
+        if (isFile(resolved))
+        {
+            addAssetFile(resolved, assetSpec);
+        }
+        else if (isDirectory(resolved))
+        {
+            traverseDirectory(resolved, [&](const std::string& filePath) {
+                std::string rel = filePath;
+                if (rel.size() >= resolved.size() && rel.substr(0, resolved.size()) == resolved)
+                {
+                    std::string sub = rel.substr(resolved.size());
+                    if (!sub.empty() && (sub[0] == '/' || sub[0] == '\\'))
+                        sub = sub.substr(1);
+                    rel = normalizePath(assetSpec + "/" + sub);
+                }
+                addAssetFile(filePath, rel);
+            });
+        }
+        else
+        {
+            fprintf(stderr, "SingleBinaryCompiler: Warning: Asset path '%s' not found\n", assetSpec.c_str());
+        }
+    }
+
     if (options.verbose)
     {
-        printf("SingleBinaryCompiler: Bundled %zu module(s) for entry '%s'\n",
-               modules.size(), entryAbsPath.c_str());
+        printf("SingleBinaryCompiler: Bundled %zu module(s) and %zu asset(s) for entry '%s'\n",
+               modules.size(), assets.size(), entryAbsPath.c_str());
         for (const auto& m : modules)
-            printf("  - %s (%zu bytes bytecode)\n", m.absolutePath.c_str(), m.bytecode.size());
+            printf("  [module] %s (%zu bytes bytecode)\n", m.absolutePath.c_str(), m.bytecode.size());
+        for (const auto& a : assets)
+            printf("  [asset]  %s (%zu bytes)\n", a.relativePath.c_str(), a.data.size());
     }
 
     std::string runnerCode = generateRunnerCpp(
         modules,
         entryIndex,
+        assets,
         options.codegen,
         options.optimizationLevel,
         options.debugLevel
@@ -605,6 +837,29 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
         else
         {
             compiler = tgt;
+        }
+    }
+
+    // Verify if compiler binary is available in PATH
+    std::string compilerBinary = compiler;
+    size_t spacePos = compilerBinary.find(' ');
+    if (spacePos != std::string::npos)
+        compilerBinary = compilerBinary.substr(0, spacePos);
+
+    std::string checkCmd = "command -v " + compilerBinary + " >/dev/null 2>&1";
+    if (system(checkCmd.c_str()) != 0)
+    {
+        if (options.targetArchitecture == "linux-x64" || options.targetArchitecture == "x64" || options.targetArchitecture.empty())
+        {
+            compiler = "c++";
+        }
+        else
+        {
+            fprintf(stderr, "SingleBinaryCompiler: Toolchain compiler '%s' not found in PATH for target '%s'.\n",
+                    compilerBinary.c_str(), options.targetArchitecture.c_str());
+            fprintf(stderr, "Please install the required cross-compilation toolchain or specify a custom compiler command via --target=<compiler>.\n");
+            unlink(tempPath);
+            return false;
         }
     }
 

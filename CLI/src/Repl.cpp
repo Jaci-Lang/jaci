@@ -696,28 +696,18 @@ static std::string getFilePath(const char* name)
     return "";
 }
 
-// `repl` is used it indicate if a repl should be started after executing the file.
-static bool runFile(const char* name, lua_State* GL, bool repl)
+static bool runCode(const char* code, const char* chunkname, lua_State* GL, bool repl)
 {
-    std::optional<std::string> source = readFile(getFilePath(name));
-    if (!source)
-    {
-        fprintf(stderr, "Error opening %s\n", name);
-        return false;
-    }
-
     // module needs to run in a new thread, isolated from the rest
     lua_State* L = lua_newthread(GL);
 
     // new thread needs to have the globals sandboxed
     luaL_sandboxthread(L);
 
-    std::string chunkname = "@" + normalizePath(name);
-
-    std::string bytecode = Luau::compile(*source, copts());
+    std::string bytecode = Luau::compile(code, copts());
     int status = 0;
 
-    if (luau_load(L, chunkname.c_str(), bytecode.data(), bytecode.size(), 0) == 0)
+    if (luau_load(L, chunkname, bytecode.data(), bytecode.size(), 0) == 0)
     {
         if (codegen)
         {
@@ -778,11 +768,23 @@ static bool runFile(const char* name, lua_State* GL, bool repl)
     }
 
     if (repl)
-    {
         runReplImpl(L);
-    }
-    lua_pop(GL, 1);
+
     return status == 0;
+}
+
+// `repl` is used it indicate if a repl should be started after executing the file.
+static bool runFile(const char* name, lua_State* GL, bool repl)
+{
+    std::optional<std::string> source = readFile(getFilePath(name));
+    if (!source)
+    {
+        fprintf(stderr, "Error opening %s\n", name);
+        return false;
+    }
+
+    std::string chunkname = "@" + normalizePath(name);
+    return runCode(source->c_str(), chunkname.c_str(), GL, repl);
 }
 
 static void displayHelp(const char* argv0)
@@ -796,6 +798,7 @@ static void displayHelp(const char* argv0)
     printf("  --counters: collect native counters data while running the code and output results to callgrind.out\n");
     printf("  -h, --help: Display this usage message.\n");
     printf("  -i, --interactive: Run an interactive REPL after executing the last script specified.\n");
+    printf("  -e, --eval <code>: Execute string code directly in Luau runtime\n");
     printf("  -O<n>: compile with optimization level n (default 1, n should be between 0 and 2).\n");
     printf("  -g<n>: compile with debug level n (default 1, n should be between 0 and 2).\n");
     printf("  --profile[=N]: profile the code using N Hz sampling (default 10000) and output results to profile.out\n");
@@ -807,8 +810,11 @@ static void displayHelp(const char* argv0)
     printf("  --fflags=<flags>: comma-separated list of fast flags to enable/disable (--fflags=true,false,LuauFlag1=true,LuauFlag2=false).\n");
     printf("  --jit-inliner: enable JIT bytecode inliner\n");
     printf("  --lsp: start Language Server Protocol (LSP) mode over stdio\n");
-    printf("  --build, -b: compile entry file and transitive modules into standalone executable binary\n");
-    printf("  -o, --output=<file>: specify output binary path for --build\n");
+    printf("  --build, --bundle, -b: compile entry file and transitive modules into standalone executable binary\n");
+    printf("  --target=<arch>: specify target architecture or toolchain for --build/--bundle (e.g. linux-x64, linux-arm64, windows-x64, macos-arm64)\n");
+    printf("  --include-assets=<path>: embed directory or file into single binary virtual filesystem\n");
+    printf("  -o, --output=<file>: specify output binary path for --build/--bundle\n");
+    printf("  -v, --verbose: enable verbose compiler output\n");
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -832,6 +838,10 @@ int replMain(int argc, char** argv)
     bool counters = false;
     bool buildMode = false;
     std::string outputFile;
+    std::string targetArchitecture;
+    std::vector<std::string> assetPaths;
+    std::string evalCode;
+    bool hasEval = false;
     bool verbose = false;
     std::vector<std::string> inputFiles;
     int program_args = argc;
@@ -918,9 +928,45 @@ int replMain(int argc, char** argv)
             program_args = i + 1;
             break;
         }
-        else if (strcmp(argv[i], "--build") == 0 || strcmp(argv[i], "-b") == 0)
+        else if (strcmp(argv[i], "--build") == 0 || strcmp(argv[i], "--bundle") == 0 || strcmp(argv[i], "-b") == 0)
         {
             buildMode = true;
+        }
+        else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc)
+        {
+            targetArchitecture = argv[++i];
+        }
+        else if (strncmp(argv[i], "--target=", 9) == 0)
+        {
+            targetArchitecture = argv[i] + 9;
+        }
+        else if (strcmp(argv[i], "--include-assets") == 0 && i + 1 < argc)
+        {
+            assetPaths.push_back(argv[++i]);
+        }
+        else if (strncmp(argv[i], "--include-assets=", 17) == 0)
+        {
+            assetPaths.push_back(argv[i] + 17);
+        }
+        else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc)
+        {
+            evalCode = argv[++i];
+            hasEval = true;
+        }
+        else if (strncmp(argv[i], "-e", 2) == 0 && argv[i][2] != '\0')
+        {
+            evalCode = argv[i] + 2;
+            hasEval = true;
+        }
+        else if (strcmp(argv[i], "--eval") == 0 && i + 1 < argc)
+        {
+            evalCode = argv[++i];
+            hasEval = true;
+        }
+        else if (strncmp(argv[i], "--eval=", 7) == 0)
+        {
+            evalCode = argv[i] + 7;
+            hasEval = true;
         }
         else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
         {
@@ -929,6 +975,10 @@ int replMain(int argc, char** argv)
         else if (strncmp(argv[i], "-o", 2) == 0 && argv[i][2] != '\0')
         {
             outputFile = argv[i] + 2;
+        }
+        else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc)
+        {
+            outputFile = argv[++i];
         }
         else if (strncmp(argv[i], "--output=", 9) == 0)
         {
@@ -954,13 +1004,15 @@ int replMain(int argc, char** argv)
     {
         if (inputFiles.empty())
         {
-            fprintf(stderr, "Error: No entry file specified for --build.\n");
+            fprintf(stderr, "Error: No entry file specified for --build/--bundle.\n");
             return 1;
         }
 
         Luau::SingleBinaryOptions opts;
         opts.entryFilePath = inputFiles[0];
         opts.outputBinaryPath = outputFile.empty() ? "a.out" : outputFile;
+        opts.targetArchitecture = targetArchitecture;
+        opts.assetPaths = assetPaths;
         opts.optimizationLevel = globalOptions.optimizationLevel;
         opts.debugLevel = globalOptions.debugLevel;
         opts.codegen = codegen;
@@ -1005,12 +1057,35 @@ int replMain(int argc, char** argv)
 #endif
     }
 
-    if (codegen && !Luau::CodeGen::isSupported())
-        fprintf(stderr, "Warning: Native code generation is not supported in current configuration\n");
+    std::vector<std::string> files;
+    for (const std::string& input : inputFiles)
+    {
+        if (input == "-")
+        {
+            files.push_back("-");
+        }
+        else
+        {
+            std::string normalized = normalizePath(input);
+            if (isDirectory(normalized))
+            {
+                traverseDirectory(
+                    normalized,
+                    [&](const std::string& name)
+                    {
+                        if (hasFileExtension(name, {".lua", ".luau"}))
+                            files.push_back(name);
+                    }
+                );
+            }
+            else
+            {
+                files.push_back(normalized);
+            }
+        }
+    }
 
-    const std::vector<std::string> files = getSourceFiles(argc, argv);
-
-    if (files.empty())
+    if (files.empty() && !hasEval)
     {
         runRepl();
         return 0;
@@ -1032,6 +1107,11 @@ int replMain(int argc, char** argv)
             countersInit(L);
 
         int failed = 0;
+
+        if (hasEval)
+        {
+            failed += !runCode(evalCode.c_str(), "=eval", L, interactive && files.empty());
+        }
 
         for (size_t i = 0; i < files.size(); ++i)
         {

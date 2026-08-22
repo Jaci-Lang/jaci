@@ -452,7 +452,9 @@ static void displayHelp(const char* argv0)
     printf("  --vector-type=<name>: name of the vector type.\n");
     printf("  --only-parse: Only parse the input.\n");
     printf("  --parse-cst: Whether parser should parse CST in addition to AST.\n");
-    printf("  --native-binary, --build, -b: compile entry file and transitive modules into standalone executable binary.\n");
+    printf("  --native-binary, --build, --bundle, -b: compile entry file and transitive modules into standalone executable binary.\n");
+    printf("  --target=<target>: compile code or binary for specific architecture (e.g. linux-x64, linux-arm64, windows-x64, macos-arm64, a64, x64).\n");
+    printf("  --include-assets=<path>: embed directory or file into single binary virtual filesystem.\n");
     printf("  -o, --output=<file>: specify output binary path for native binary compilation.\n");
     printf("  --fflags=<flags>: comma-separated list of fast flags to enable/disable (--fflags=true,false,LuauFlag1=true,LuauFlag2=false).\n");
 }
@@ -496,6 +498,7 @@ int main(int argc, char** argv)
     CompileFormat compileFormat = CompileFormat::Text;
     Luau::CodeGen::AssemblyOptions::Target assemblyTarget = Luau::CodeGen::AssemblyOptions::Host;
     std::string targetArch;
+    std::vector<std::string> assetPaths;
     RecordStats recordStats = RecordStats::None;
     std::string statsFile("stats.json");
     bool bytecodeSummary = false;
@@ -542,6 +545,20 @@ int main(int argc, char** argv)
             }
             globalOptions.typeInfoLevel = level;
         }
+        else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc)
+        {
+            const char* value = argv[++i];
+            if (strcmp(value, "a64") == 0)
+                assemblyTarget = Luau::CodeGen::AssemblyOptions::A64;
+            else if (strcmp(value, "a64_nf") == 0)
+                assemblyTarget = Luau::CodeGen::AssemblyOptions::A64_NoFeatures;
+            else if (strcmp(value, "x64") == 0)
+                assemblyTarget = Luau::CodeGen::AssemblyOptions::X64_SystemV;
+            else if (strcmp(value, "x64_ms") == 0)
+                assemblyTarget = Luau::CodeGen::AssemblyOptions::X64_Windows;
+            else
+                targetArch = value;
+        }
         else if (strncmp(argv[i], "--target=", 9) == 0)
         {
             const char* value = argv[i] + 9;
@@ -558,6 +575,14 @@ int main(int argc, char** argv)
             {
                 targetArch = value;
             }
+        }
+        else if (strcmp(argv[i], "--include-assets") == 0 && i + 1 < argc)
+        {
+            assetPaths.push_back(argv[++i]);
+        }
+        else if (strncmp(argv[i], "--include-assets=", 17) == 0)
+        {
+            assetPaths.push_back(argv[i] + 17);
         }
         else if (strcmp(argv[i], "--timetrace") == 0)
         {
@@ -625,7 +650,7 @@ int main(int argc, char** argv)
         {
             globalOptions.onlyParse = true;
         }
-        else if (strcmp(argv[i], "--native-binary") == 0 || strcmp(argv[i], "--build") == 0 || strcmp(argv[i], "-b") == 0)
+        else if (strcmp(argv[i], "--native-binary") == 0 || strcmp(argv[i], "--build") == 0 || strcmp(argv[i], "--bundle") == 0 || strcmp(argv[i], "-b") == 0)
         {
             nativeBinary = true;
         }
@@ -636,6 +661,10 @@ int main(int argc, char** argv)
         else if (strncmp(argv[i], "-o", 2) == 0 && argv[i][2] != '\0')
         {
             outputFile = argv[i] + 2;
+        }
+        else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc)
+        {
+            outputFile = argv[++i];
         }
         else if (strncmp(argv[i], "--output=", 9) == 0)
         {
@@ -673,6 +702,7 @@ int main(int argc, char** argv)
         opts.entryFilePath = inputFiles[0];
         opts.outputBinaryPath = outputFile.empty() ? "a.out" : outputFile;
         opts.targetArchitecture = targetArch;
+        opts.assetPaths = assetPaths;
         opts.optimizationLevel = globalOptions.optimizationLevel;
         opts.debugLevel = globalOptions.debugLevel;
         opts.codegen = true;
@@ -695,7 +725,33 @@ int main(int argc, char** argv)
     }
 #endif
 
-    const std::vector<std::string> files = getSourceFiles(argc, argv);
+    std::vector<std::string> files;
+    for (const std::string& input : inputFiles)
+    {
+        if (input == "-")
+        {
+            files.push_back("-");
+        }
+        else
+        {
+            std::string normalized = normalizePath(input);
+            if (isDirectory(normalized))
+            {
+                traverseDirectory(
+                    normalized,
+                    [&](const std::string& name)
+                    {
+                        if (hasFileExtension(name, {".lua", ".luau"}))
+                            files.push_back(name);
+                    }
+                );
+            }
+            else
+            {
+                files.push_back(normalized);
+            }
+        }
+    }
 
 #ifdef _WIN32
     if (compileFormat == CompileFormat::Binary)

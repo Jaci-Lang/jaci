@@ -142,14 +142,24 @@ static int checkRegisteredModules(lua_State* L, const char* path)
     }
 
     lua_getfield(L, -1, pathLower.c_str());
-    if (lua_isnil(L, -1))
+    if (!lua_isnil(L, -1))
     {
-        lua_pop(L, 2);
-        return 0;
+        lua_remove(L, -2);
+        return 1;
+    }
+    lua_pop(L, 2);
+
+    // Support @std/<library> standard library module imports (e.g. @std/fs, @std/net, @std/task)
+    if (strncmp(pathLower.c_str(), "@std/", 5) == 0)
+    {
+        std::string libName = pathLower.substr(5);
+        lua_getglobal(L, libName.c_str());
+        if (!lua_isnil(L, -1))
+            return 1;
+        lua_pop(L, 1);
     }
 
-    lua_remove(L, -2);
-    return 1;
+    return 0;
 }
 
 static int CyclicDependencyIndexError(lua_State* L)
