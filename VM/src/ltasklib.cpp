@@ -661,12 +661,19 @@ static int channel_tostring(lua_State* L)
 static const luaL_Reg channel_methods[] = {
     {"send", channel_send},
     {"recv", channel_recv},
+    {"receive", channel_recv},
     {"try_send", channel_try_send},
+    {"trySend", channel_try_send},
     {"try_recv", channel_try_recv},
+    {"try_receive", channel_try_recv},
+    {"tryReceive", channel_try_recv},
     {"close", channel_close},
     {"len", channel_len},
     {"cap", channel_cap},
+    {"capacity", channel_cap},
     {"closed", channel_closed},
+    {"is_closed", channel_closed},
+    {"isClosed", channel_closed},
     {"await", channel_recv},
     {NULL, NULL}
 };
@@ -1443,6 +1450,109 @@ static int task_poll_write(lua_State* L)
 // Registration
 // ============================================================================
 
+static int task_status(lua_State* L)
+{
+    if (lua_isthread(L, 1))
+    {
+        lua_State* co = lua_tothread(L, 1);
+        if (L == co)
+        {
+            lua_pushliteral(L, "running");
+        }
+        else
+        {
+            switch (lua_status(co))
+            {
+            case LUA_YIELD:
+                lua_pushliteral(L, "suspended");
+                break;
+            case 0:
+            {
+                lua_Debug ar;
+                if (lua_getinfo(co, 0, "f", &ar))
+                {
+                    lua_pop(co, 1);
+                    lua_pushliteral(L, "normal");
+                }
+                else if (lua_gettop(co) == 0)
+                {
+                    lua_pushliteral(L, "dead");
+                }
+                else
+                {
+                    lua_pushliteral(L, "suspended");
+                }
+                break;
+            }
+            default:
+                lua_pushliteral(L, "dead");
+                break;
+            }
+        }
+        return 1;
+    }
+    else if (lua_isuserdata(L, 1))
+    {
+        if (lua_getmetatable(L, 1))
+        {
+            luaL_getmetatable(L, PROMISE_MT);
+            bool is_promise = lua_rawequal(L, -1, -2);
+            lua_pop(L, 2);
+            if (is_promise)
+            {
+                return promise_status(L);
+            }
+        }
+    }
+    luaL_typeerror(L, 1, "thread or Promise");
+    return 0;
+}
+
+static int task_desynchronize(lua_State* L)
+{
+    return 0;
+}
+
+static int task_synchronize(lua_State* L)
+{
+    return 0;
+}
+
+static int task_every(lua_State* L)
+{
+    double interval_sec = luaL_checknumber(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+
+    lua_pushvalue(L, 2);
+    int func_ref = lua_ref(L, -1);
+    lua_pop(L, 1);
+
+    int nargs = lua_gettop(L) - 2;
+    int args_ref = LUA_NOREF;
+    if (nargs > 0)
+    {
+        lua_createtable(L, nargs, 0);
+        for (int i = 1; i <= nargs; i++)
+        {
+            lua_pushvalue(L, i + 2);
+            lua_rawseti(L, -2, i);
+        }
+        args_ref = lua_ref(L, -1);
+        lua_pop(L, 1);
+    }
+
+    int64_t interval_ns = static_cast<int64_t>(interval_sec * 1e9);
+    Reactor* r = Reactor::get(L);
+    uint64_t timer_id = r->schedule_timer(interval_ns, LUA_NOREF, func_ref, args_ref, true, interval_ns, true);
+
+    TimerHandleData* t = static_cast<TimerHandleData*>(lua_newuserdata(L, sizeof(TimerHandleData)));
+    t->timer_id = timer_id;
+    t->active = true;
+    luaL_getmetatable(L, TIMER_MT);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
 static const luaL_Reg tasklib[] = {
     {"spawn", task_spawn},
     {"defer", task_defer},
@@ -1457,6 +1567,10 @@ static const luaL_Reg tasklib[] = {
     {"step", task_poll},
     {"run", task_run},
     {"stop", task_stop},
+    {"status", task_status},
+    {"every", task_every},
+    {"desynchronize", task_desynchronize},
+    {"synchronize", task_synchronize},
     {"is_running", task_is_running},
     {"isrunning", task_is_running},
 

@@ -118,6 +118,113 @@ static int db_info(lua_State* L)
     return results;
 }
 
+static int db_getlocal(lua_State* L)
+{
+    int arg;
+    lua_State* L1 = getthread(L, &arg);
+    int level = luaL_checkinteger(L, arg + 1);
+    int n = luaL_checkinteger(L, arg + 2);
+    luaL_argcheck(L, level >= 0, arg + 1, "level can't be negative");
+    luaL_argcheck(L, n > 0, arg + 2, "index must be positive");
+
+    const char* name = lua_getlocal(L1, level, n);
+    if (name)
+    {
+        if (L != L1)
+            lua_xmove(L1, L, 1);
+        lua_pushstring(L, name);
+        lua_insert(L, -2);
+        return 2;
+    }
+    return 0;
+}
+
+static int db_getlocals(lua_State* L)
+{
+    int arg;
+    lua_State* L1 = getthread(L, &arg);
+    int level = luaL_checkinteger(L, arg + 1);
+    luaL_argcheck(L, level >= 0, arg + 1, "level can't be negative");
+
+    lua_newtable(L);
+    int n = 1;
+    while (const char* name = lua_getlocal(L1, level, n))
+    {
+        if (L != L1)
+            lua_xmove(L1, L, 1);
+        lua_setfield(L, -2, name);
+        n++;
+    }
+    return 1;
+}
+
+static int db_getupvalue(lua_State* L)
+{
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    int n = luaL_checkinteger(L, 2);
+    luaL_argcheck(L, n > 0, 2, "index must be positive");
+
+    const char* name = lua_getupvalue(L, 1, n);
+    if (name)
+    {
+        lua_pushstring(L, name);
+        lua_insert(L, -2);
+        return 2;
+    }
+    return 0;
+}
+
+static int db_getupvalues(lua_State* L)
+{
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_newtable(L);
+    int n = 1;
+    while (const char* name = lua_getupvalue(L, 1, n))
+    {
+        lua_setfield(L, -2, name);
+        n++;
+    }
+    return 1;
+}
+
+static int db_dumpstack(lua_State* L)
+{
+    int arg;
+    lua_State* L1 = getthread(L, &arg);
+    int startLevel = luaL_optinteger(L, arg + 1, (L == L1) ? 1 : 0);
+
+    lua_newtable(L);
+    int count = 1;
+    lua_Debug ar;
+
+    for (int level = startLevel; lua_getinfo(L1, level, "slna", &ar); ++level)
+    {
+        lua_createtable(L, 0, 6);
+
+        lua_pushinteger(L, level);
+        lua_setfield(L, -2, "level");
+
+        lua_pushstring(L, ar.short_src);
+        lua_setfield(L, -2, "source");
+
+        lua_pushinteger(L, ar.currentline);
+        lua_setfield(L, -2, "line");
+
+        lua_pushstring(L, ar.name ? ar.name : "");
+        lua_setfield(L, -2, "name");
+
+        lua_pushinteger(L, ar.nparams);
+        lua_setfield(L, -2, "nparams");
+
+        lua_pushboolean(L, ar.isvararg);
+        lua_setfield(L, -2, "isvararg");
+
+        lua_rawseti(L, -2, count++);
+    }
+
+    return 1;
+}
+
 static int db_traceback(lua_State* L)
 {
     int arg;
@@ -133,7 +240,13 @@ static int db_traceback(lua_State* L)
 
 static const luaL_Reg dblib[] = {
     {"info", db_info},
+    {"getinfo", db_info},
     {"traceback", db_traceback},
+    {"getlocal", db_getlocal},
+    {"getlocals", db_getlocals},
+    {"getupvalue", db_getupvalue},
+    {"getupvalues", db_getupvalues},
+    {"dumpstack", db_dumpstack},
     {NULL, NULL},
 };
 

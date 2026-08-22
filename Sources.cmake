@@ -497,6 +497,7 @@ target_sources(Luau.CLI.lib PRIVATE
     CLI/include/Luau/JsonRpc.h
     CLI/include/Luau/LspProtocol.h
     CLI/include/Luau/LspServer.h
+    CLI/include/Luau/SingleBinaryCompiler.h
     CLI/include/Luau/VfsCompress.h
     CLI/include/Luau/VfsNavigator.h
 
@@ -505,6 +506,7 @@ target_sources(Luau.CLI.lib PRIVATE
     CLI/src/Flags.cpp
     CLI/src/JsonRpc.cpp
     CLI/src/LspServer.cpp
+    CLI/src/SingleBinaryCompiler.cpp
     CLI/src/VfsCompress.cpp
     CLI/src/VfsNavigator.cpp
 )
@@ -651,7 +653,6 @@ if(TARGET Luau.UnitTest)
         tests/Variant.test.cpp
         tests/VecDeque.test.cpp
         tests/VisitType.test.cpp
-        tests/Task.test.cpp
         tests/main.cpp)
 endif()
 
@@ -669,8 +670,6 @@ if(TARGET Luau.Conformance)
         tests/Json.test.cpp
         tests/Hash.test.cpp
         tests/Process.test.cpp
-        tests/Net.test.cpp
-        tests/Task.test.cpp
         tests/IrLowering.test.cpp
         tests/SharedCodeAllocator.test.cpp
         tests/main.cpp)
@@ -690,10 +689,17 @@ if(TARGET Luau.CLI.Test)
         CLI/src/Repl.cpp
         CLI/src/ReplRequirer.cpp
 
+        tests/Crypto.test.cpp
+        tests/EnhancedDebug.test.cpp
+        tests/Net.test.cpp
         tests/RegisterCallbacks.h
         tests/RegisterCallbacks.cpp
         tests/Repl.test.cpp
         tests/RequireByString.test.cpp
+        tests/SecureFfi.test.cpp
+        tests/SingleBinaryCompiler.test.cpp
+        tests/Task.test.cpp
+        tests/UniversalRequire.test.cpp
         tests/main.cpp)
 endif()
 

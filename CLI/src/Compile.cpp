@@ -11,6 +11,7 @@
 
 #include "Luau/FileUtils.h"
 #include "Luau/Flags.h"
+#include "Luau/SingleBinaryCompiler.h"
 
 #include <memory>
 
@@ -451,6 +452,8 @@ static void displayHelp(const char* argv0)
     printf("  --vector-type=<name>: name of the vector type.\n");
     printf("  --only-parse: Only parse the input.\n");
     printf("  --parse-cst: Whether parser should parse CST in addition to AST.\n");
+    printf("  --native-binary, --build, -b: compile entry file and transitive modules into standalone executable binary.\n");
+    printf("  -o, --output=<file>: specify output binary path for native binary compilation.\n");
     printf("  --fflags=<flags>: comma-separated list of fast flags to enable/disable (--fflags=true,false,LuauFlag1=true,LuauFlag2=false).\n");
 }
 
@@ -492,10 +495,15 @@ int main(int argc, char** argv)
 
     CompileFormat compileFormat = CompileFormat::Text;
     Luau::CodeGen::AssemblyOptions::Target assemblyTarget = Luau::CodeGen::AssemblyOptions::Host;
+    std::string targetArch;
     RecordStats recordStats = RecordStats::None;
     std::string statsFile("stats.json");
     bool bytecodeSummary = false;
     bool dumpConstants = false;
+    bool nativeBinary = false;
+    std::string outputFile;
+    bool verbose = false;
+    std::vector<std::string> inputFiles;
 
     for (int i = 1; i < argc; i++)
     {
@@ -548,8 +556,7 @@ int main(int argc, char** argv)
                 assemblyTarget = Luau::CodeGen::AssemblyOptions::X64_Windows;
             else
             {
-                fprintf(stderr, "Error: unknown target\n");
-                return 1;
+                targetArch = value;
             }
         }
         else if (strcmp(argv[i], "--timetrace") == 0)
@@ -618,6 +625,26 @@ int main(int argc, char** argv)
         {
             globalOptions.onlyParse = true;
         }
+        else if (strcmp(argv[i], "--native-binary") == 0 || strcmp(argv[i], "--build") == 0 || strcmp(argv[i], "-b") == 0)
+        {
+            nativeBinary = true;
+        }
+        else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
+        {
+            outputFile = argv[++i];
+        }
+        else if (strncmp(argv[i], "-o", 2) == 0 && argv[i][2] != '\0')
+        {
+            outputFile = argv[i] + 2;
+        }
+        else if (strncmp(argv[i], "--output=", 9) == 0)
+        {
+            outputFile = argv[i] + 9;
+        }
+        else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
+        {
+            verbose = true;
+        }
         else if (argv[i][0] == '-' && argv[i][1] == '-' && getCompileFormat(argv[i] + 2))
         {
             compileFormat = *getCompileFormat(argv[i] + 2);
@@ -628,6 +655,30 @@ int main(int argc, char** argv)
             displayHelp(argv[0]);
             return 1;
         }
+        else
+        {
+            inputFiles.push_back(argv[i]);
+        }
+    }
+
+    if (nativeBinary)
+    {
+        if (inputFiles.empty())
+        {
+            fprintf(stderr, "Error: No input entry file specified for native binary compilation.\n");
+            return 1;
+        }
+
+        Luau::SingleBinaryOptions opts;
+        opts.entryFilePath = inputFiles[0];
+        opts.outputBinaryPath = outputFile.empty() ? "a.out" : outputFile;
+        opts.targetArchitecture = targetArch;
+        opts.optimizationLevel = globalOptions.optimizationLevel;
+        opts.debugLevel = globalOptions.debugLevel;
+        opts.codegen = true;
+        opts.verbose = verbose;
+
+        return Luau::SingleBinaryCompiler::compile(opts) ? 0 : 1;
     }
 
     if (bytecodeSummary && (recordStats != RecordStats::Function))

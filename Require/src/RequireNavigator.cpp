@@ -61,6 +61,31 @@ Error Navigator::navigateImpl(std::string_view path)
     if (pathType == PathType::Unsupported)
         return "require path must start with a valid prefix: ./, ../, or @";
 
+    if (pathType == PathType::BarePackage)
+    {
+        // Bare package name: search luau_packages/, packages/, node_modules/
+        // starting from the requirer's directory and walking up to root.
+        if (Error error = resetToRequirer())
+            return error;
+
+        std::string bare{path};
+        size_t slashPos = bare.find('/');
+        std::string pkgName = (slashPos != std::string::npos) ? bare.substr(0, slashPos) : bare;
+        std::string subPath = (slashPos != std::string::npos) ? bare.substr(slashPos + 1) : "";
+
+        if (navigationContext.toAliasFallback(pkgName) == NavigationContext::NavigateResult::Success)
+        {
+            if (!subPath.empty())
+            {
+                if (Error error = navigateThroughPath(subPath))
+                    return error;
+            }
+            return std::nullopt;
+        }
+
+        return "require path must start with a valid prefix: ./, ../, or @";
+    }
+
     if (pathType == PathType::Aliased)
     {
         std::string alias = extractAlias(path);

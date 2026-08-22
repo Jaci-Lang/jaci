@@ -169,6 +169,9 @@ LUALIB_API int luaopen_json(lua_State* L);
 #define LUA_HASHLIBNAME "hash"
 LUALIB_API int luaopen_hash(lua_State* L);
 
+#define LUA_CRYPTOLIBNAME "crypto"
+LUALIB_API int luaopen_crypto(lua_State* L);
+
 #define LUA_PROCLIBNAME "process"
 LUALIB_API int luaopen_process(lua_State* L);
 

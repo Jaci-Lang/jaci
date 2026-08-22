@@ -12,6 +12,7 @@ enum class PathType
     RelativeToCurrent,
     RelativeToParent,
     Aliased,
+    BarePackage, // bare name: no prefix, resolved against package directories
     Unsupported
 };
 

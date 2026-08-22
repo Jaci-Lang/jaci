@@ -19,12 +19,49 @@
 #include "Luau/Profiler.h"
 #include "Luau/ReplRequirer.h"
 #include "Luau/Require.h"
+#include "Luau/SingleBinaryCompiler.h"
 
 #include "isocline.h"
 
 #include <memory>
 #include <string>
 #include <string_view>
+
+#if !defined(_WIN32)
+#include <signal.h>
+#include <unistd.h>
+#endif
+
+namespace Color
+{
+static bool enabled()
+{
+    static int isColor = -1;
+    if (isColor == -1)
+    {
+        const char* noColor = getenv("NO_COLOR");
+        if (noColor && *noColor)
+            isColor = 0;
+        else
+        {
+#if !defined(_WIN32)
+            isColor = isatty(fileno(stderr)) ? 1 : 0;
+#else
+            isColor = 1;
+#endif
+        }
+    }
+    return isColor == 1;
+}
+
+static const char* red() { return enabled() ? "\033[1;31m" : ""; }
+static const char* green() { return enabled() ? "\033[1;32m" : ""; }
+static const char* yellow() { return enabled() ? "\033[1;33m" : ""; }
+static const char* cyan() { return enabled() ? "\033[1;36m" : ""; }
+static const char* bold() { return enabled() ? "\033[1m" : ""; }
+static const char* dim() { return enabled() ? "\033[2m" : ""; }
+static const char* reset() { return enabled() ? "\033[0m" : ""; }
+} // namespace Color
 
 #ifdef _WIN32
 #include <io.h>
@@ -611,7 +648,10 @@ static void runReplImpl(lua_State* L)
 
         if (error.length())
         {
-            fprintf(stdout, "%s\n", error.c_str());
+            if (Color::enabled())
+                fprintf(stdout, "%s%s%s\n", Color::red(), error.c_str(), Color::reset());
+            else
+                fprintf(stdout, "%s\n", error.c_str());
         }
 
         ic_history_add(buffer.c_str());
@@ -731,7 +771,10 @@ static bool runFile(const char* name, lua_State* GL, bool repl)
         error += "\nstacktrace:\n";
         error += lua_debugtrace(L);
 
-        fprintf(stderr, "%s", error.c_str());
+        if (Color::enabled())
+            fprintf(stderr, "%s%s%s", Color::red(), error.c_str(), Color::reset());
+        else
+            fprintf(stderr, "%s", error.c_str());
     }
 
     if (repl)
@@ -764,6 +807,8 @@ static void displayHelp(const char* argv0)
     printf("  --fflags=<flags>: comma-separated list of fast flags to enable/disable (--fflags=true,false,LuauFlag1=true,LuauFlag2=false).\n");
     printf("  --jit-inliner: enable JIT bytecode inliner\n");
     printf("  --lsp: start Language Server Protocol (LSP) mode over stdio\n");
+    printf("  --build, -b: compile entry file and transitive modules into standalone executable binary\n");
+    printf("  -o, --output=<file>: specify output binary path for --build\n");
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -785,6 +830,10 @@ int replMain(int argc, char** argv)
     bool interactive = false;
     bool codegenPerf = false;
     bool counters = false;
+    bool buildMode = false;
+    std::string outputFile;
+    bool verbose = false;
+    std::vector<std::string> inputFiles;
     int program_args = argc;
 
     for (int i = 1; i < argc; i++)
@@ -869,12 +918,55 @@ int replMain(int argc, char** argv)
             program_args = i + 1;
             break;
         }
+        else if (strcmp(argv[i], "--build") == 0 || strcmp(argv[i], "-b") == 0)
+        {
+            buildMode = true;
+        }
+        else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
+        {
+            outputFile = argv[++i];
+        }
+        else if (strncmp(argv[i], "-o", 2) == 0 && argv[i][2] != '\0')
+        {
+            outputFile = argv[i] + 2;
+        }
+        else if (strncmp(argv[i], "--output=", 9) == 0)
+        {
+            outputFile = argv[i] + 9;
+        }
+        else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
+        {
+            verbose = true;
+        }
         else if (argv[i][0] == '-')
         {
             fprintf(stderr, "Error: Unrecognized option '%s'.\n\n", argv[i]);
             displayHelp(argv[0]);
             return 1;
         }
+        else
+        {
+            inputFiles.push_back(argv[i]);
+        }
+    }
+
+    if (buildMode)
+    {
+        if (inputFiles.empty())
+        {
+            fprintf(stderr, "Error: No entry file specified for --build.\n");
+            return 1;
+        }
+
+        Luau::SingleBinaryOptions opts;
+        opts.entryFilePath = inputFiles[0];
+        opts.outputBinaryPath = outputFile.empty() ? "a.out" : outputFile;
+        opts.optimizationLevel = globalOptions.optimizationLevel;
+        opts.debugLevel = globalOptions.debugLevel;
+        opts.codegen = codegen;
+        opts.verbose = verbose;
+
+        return Luau::SingleBinaryCompiler::compile(opts) ? 0 : 1;
     }
 
     program_argc = argc - program_args;

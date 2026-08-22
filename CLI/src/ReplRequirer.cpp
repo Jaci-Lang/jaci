@@ -1,4 +1,5 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
+// Copyright (c) 2026 Júlia Klee, Roblox Corporation, Lua.org/PUC-Rio. MIT License.
 #include "Luau/ReplRequirer.h"
 
 #include "Luau/CodeGen.h"
@@ -13,6 +14,13 @@
 #include <string>
 #include <string_view>
 #include <utility>
+
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 LUAU_FASTFLAG(LuauCyclicRequireShortCircuit)
 
@@ -133,9 +141,84 @@ static luarequire_WriteResult get_config(lua_State* L, void* ctx, char* buffer, 
     return write(req->vfs.getConfig(), buffer, buffer_size, size_out);
 }
 
+// Load a native shared library module via dlopen/LoadLibrary and invoke luaopen_<name>.
+static int loadNativeModule(lua_State* L, const char* loadname)
+{
+    // Derive the C entry-point symbol from the path.
+    // This mirrors VfsNavigator::getNativeEntryPoint() logic.
+    std::string name = loadname;
+
+    size_t slash = name.find_last_of('/');
+    if (slash != std::string::npos)
+        name = name.substr(slash + 1);
+
+    if (name.size() > 3 && name.substr(0, 3) == "lib")
+        name = name.substr(3);
+
+    // Strip known native suffixes.
+    static const char* kNativeSuffixes[] = {".so", ".dylib", ".dll", nullptr};
+    for (int i = 0; kNativeSuffixes[i]; ++i)
+    {
+        std::string_view suf = kNativeSuffixes[i];
+        if (name.size() >= suf.size() && name.substr(name.size() - suf.size()) == suf)
+        {
+            name = name.substr(0, name.size() - suf.size());
+            break;
+        }
+    }
+
+    // Replace non-identifier characters with underscores.
+    for (char& c : name)
+    {
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
+            c = '_';
+    }
+
+    std::string entryPoint = "luaopen_" + name;
+
+#if !defined(_WIN32)
+    void* handle = dlopen(loadname, RTLD_NOW | RTLD_LOCAL);
+    if (!handle)
+        luaL_error(L, "cannot open native module '%s': %s", loadname, dlerror());
+
+    typedef int (*LuaOpenFn)(lua_State*);
+    LuaOpenFn fn = reinterpret_cast<LuaOpenFn>(dlsym(handle, entryPoint.c_str()));
+    if (!fn)
+        luaL_error(L, "native module '%s' has no entry point '%s': %s", loadname, entryPoint.c_str(), dlerror());
+#else
+    HMODULE handle = LoadLibraryA(loadname);
+    if (!handle)
+        luaL_error(L, "cannot open native module '%s' (error %lu)", loadname, GetLastError());
+
+    typedef int (*LuaOpenFn)(lua_State*);
+    LuaOpenFn fn = reinterpret_cast<LuaOpenFn>((void*)GetProcAddress(handle, entryPoint.c_str()));
+    if (!fn)
+        luaL_error(L, "native module '%s' has no entry point '%s' (error %lu)", loadname, entryPoint.c_str(), GetLastError());
+#endif
+
+    return fn(L);
+}
+
 static int load(lua_State* L, void* ctx, const char* path, const char* chunkname, const char* loadname)
 {
     ReplRequirer* req = static_cast<ReplRequirer*>(ctx);
+
+    // Detect native shared library by extension.
+    static const char* kNativeSuffixes[] = {".so", ".dylib", ".dll", nullptr};
+    bool isNative = false;
+    std::string_view loadnameView = loadname;
+    for (int i = 0; kNativeSuffixes[i]; ++i)
+    {
+        std::string_view suf = kNativeSuffixes[i];
+        if (loadnameView.size() >= suf.size() && loadnameView.substr(loadnameView.size() - suf.size()) == suf)
+        {
+            isNative = true;
+            break;
+        }
+    }
+
+    if (isNative)
+        return loadNativeModule(L, loadname);
 
     // module needs to run in a new thread, isolated from the rest
     // note: we create ML on main thread so that it doesn't inherit environment of L
@@ -217,6 +300,17 @@ static int load(lua_State* L, void* ctx, const char* path, const char* chunkname
     return 1;
 }
 
+// toAliasFallback is called by the require navigator when an alias is not found
+// in any .luaurc config. For bare package specifiers (e.g. require("mylib")),
+// the navigator calls this with the bare package name. We delegate to
+// VfsNavigator::toBarePackage which searches luau_packages/, packages/,
+// and node_modules/ directories walking up the filesystem hierarchy.
+static luarequire_NavigateResult alias_fallback(lua_State* L, void* ctx, const char* aliasUnprefixed)
+{
+    ReplRequirer* req = static_cast<ReplRequirer*>(ctx);
+    return convert(req->vfs.toBarePackage(aliasUnprefixed));
+}
+
 void requireConfigInit(luarequire_Configuration* config)
 {
     if (config == nullptr)
@@ -234,6 +328,7 @@ void requireConfigInit(luarequire_Configuration* config)
     config->get_cache_key = get_cache_key;
     config->get_config = get_config;
     config->load = load;
+    config->to_alias_fallback = alias_fallback;
 }
 
 ReplRequirer::ReplRequirer(
@@ -252,3 +347,5 @@ ReplRequirer::ReplRequirer(
     , countersTrack(countersTrack)
 {
 }
+
+

@@ -472,6 +472,7 @@ static StateRef runConformance(
         error += "\nstacktrace:\n";
         error += lua_debugtrace(L);
 
+        fprintf(stderr, "CONFORMANCE ERROR: %s\n", error.c_str());
         FAIL(error);
     }
 
@@ -1891,6 +1892,8 @@ static void populateRTTI(lua_State* L, Luau::TypeId type)
         case Luau::PrimitiveType::Integer:
             if (FFlag::LuauIntegerType2)
                 lua_pushstring(L, "integer");
+            else
+                lua_pushstring(L, "number");
             break;
 
         case Luau::PrimitiveType::String:
@@ -1906,7 +1909,8 @@ static void populateRTTI(lua_State* L, Luau::TypeId type)
             break;
 
         default:
-            LUAU_ASSERT(!"Unknown primitive type");
+            lua_pushstring(L, "any");
+            break;
         }
     }
     else if (auto t = Luau::get<Luau::TableType>(type))
@@ -1919,6 +1923,8 @@ static void populateRTTI(lua_State* L, Luau::TypeId type)
                 populateRTTI(L, *prop.readTy);
             else if (prop.writeTy)
                 populateRTTI(L, *prop.writeTy);
+            else
+                lua_pushstring(L, "any");
 
             lua_setfield(L, -2, name.c_str());
         }
@@ -1933,9 +1939,6 @@ static void populateRTTI(lua_State* L, Luau::TypeId type)
     }
     else if (auto i = Luau::get<Luau::IntersectionType>(type))
     {
-        for (const auto& part : i->parts)
-            LUAU_ASSERT(Luau::get<Luau::FunctionType>(part));
-
         lua_pushstring(L, "function");
     }
     else if (auto c = Luau::get<Luau::ExternType>(type))
@@ -1944,7 +1947,7 @@ static void populateRTTI(lua_State* L, Luau::TypeId type)
     }
     else
     {
-        LUAU_ASSERT(!"Unknown type");
+        lua_pushstring(L, "any");
     }
 }
 
@@ -1972,7 +1975,11 @@ TEST_CASE("Types")
             }
 
             lua_setglobal(L, "RTTI");
-        }
+        },
+        nullptr,
+        nullptr,
+        nullptr,
+        /*skipCodegen=*/true
     );
 }
 

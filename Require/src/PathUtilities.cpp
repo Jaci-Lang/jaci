@@ -16,6 +16,12 @@ PathType getPathType(std::string_view path)
     if (path.size() >= 1 && path[0] == '@')
         return PathType::Aliased;
 
+    // A bare name (no prefix, no path separator as first char, non-empty)
+    // is treated as a package specifier. The VFS navigator resolves it
+    // against luau_packages/, packages/, and node_modules/ directories.
+    if (!path.empty() && path[0] != '/' && path[0] != '\\')
+        return PathType::BarePackage;
+
     return PathType::Unsupported;
 }
 

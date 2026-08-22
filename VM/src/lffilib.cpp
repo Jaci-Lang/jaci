@@ -650,6 +650,46 @@ static void* resolveNativeSymbol(void* handle, const char* name)
 #endif
 }
 
+enum FFI_SecurityMode
+{
+    FFI_SEC_PERMISSIVE = 0,
+    FFI_SEC_STRICT,
+    FFI_SEC_DISABLED
+};
+
+static FFI_SecurityMode g_ffiSecurityMode = FFI_SEC_PERMISSIVE;
+static std::vector<std::string> g_allowedLibraries;
+static std::vector<std::string> g_deniedLibraries;
+
+static bool isLibraryAllowed(const char* path)
+{
+    if (g_ffiSecurityMode == FFI_SEC_DISABLED)
+        return false;
+    if (!path) return true; // Default / libc
+    std::string s(path);
+    for (const auto& d : g_deniedLibraries)
+    {
+        if (s.find(d) != std::string::npos)
+            return false;
+    }
+    if (g_ffiSecurityMode == FFI_SEC_STRICT && !g_allowedLibraries.empty())
+    {
+        for (const auto& a : g_allowedLibraries)
+        {
+            if (s.find(a) != std::string::npos)
+                return true;
+        }
+        return false;
+    }
+    return true;
+}
+
+static bool isPointerSafe(const void* ptr)
+{
+    uintptr_t addr = (uintptr_t)ptr;
+    return addr >= 0x10000;
+}
+
 static int ffi_open(lua_State* L)
 {
     const char* path = nullptr;
@@ -662,6 +702,11 @@ static int ffi_open(lua_State* L)
     else
     {
         path = luaL_checkstring(L, 1);
+    }
+
+    if (!isLibraryAllowed(path))
+    {
+        luaL_error(L, "FFI security policy denied loading library '%s'", path ? path : "default");
     }
 
     void* handle = nullptr;
@@ -1532,6 +1577,72 @@ static int ffi_struct(lua_State* L)
     return 1;
 }
 
+static int ffi_mode(lua_State* L)
+{
+    if (lua_isnoneornil(L, 1))
+    {
+        switch (g_ffiSecurityMode)
+        {
+        case FFI_SEC_STRICT: lua_pushstring(L, "strict"); break;
+        case FFI_SEC_DISABLED: lua_pushstring(L, "disabled"); break;
+        default: lua_pushstring(L, "permissive"); break;
+        }
+        return 1;
+    }
+    const char* m = luaL_checkstring(L, 1);
+    if (strcmp(m, "strict") == 0) g_ffiSecurityMode = FFI_SEC_STRICT;
+    else if (strcmp(m, "disabled") == 0) g_ffiSecurityMode = FFI_SEC_DISABLED;
+    else if (strcmp(m, "permissive") == 0) g_ffiSecurityMode = FFI_SEC_PERMISSIVE;
+    else luaL_error(L, "invalid FFI mode '%s' (expected 'permissive', 'strict', or 'disabled')", m);
+    return 0;
+}
+
+static int ffi_allow_library(lua_State* L)
+{
+    const char* path = luaL_checkstring(L, 1);
+    g_allowedLibraries.push_back(path);
+    return 0;
+}
+
+static int ffi_deny_library(lua_State* L)
+{
+    const char* path = luaL_checkstring(L, 1);
+    g_deniedLibraries.push_back(path);
+    return 0;
+}
+
+static int ffi_is_safe(lua_State* L)
+{
+    if (!lua_islightuserdata(L, 1) && !lua_isbuffer(L, 1))
+    {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    const void* ptr = lua_islightuserdata(L, 1) ? lua_touserdata(L, 1) : lua_tobuffer(L, 1, nullptr);
+    lua_pushboolean(L, isPointerSafe(ptr));
+    return 1;
+}
+
+static int ffi_istype(lua_State* L)
+{
+    const char* typeName = luaL_checkstring(L, 1);
+    FFI_TypeKind kind = resolveTypeKind(nullptr, typeName);
+    bool match = false;
+    switch (kind)
+    {
+    case FFI_BOOL: match = lua_isboolean(L, 2); break;
+    case FFI_I8: case FFI_U8: case FFI_I16: case FFI_U16:
+    case FFI_I32: case FFI_U32: case FFI_I64: case FFI_U64:
+    case FFI_F32: case FFI_F64: match = lua_isnumber(L, 2); break;
+    case FFI_STR: match = lua_isstring(L, 2); break;
+    case FFI_BUF: match = lua_isbuffer(L, 2); break;
+    case FFI_PTR: match = lua_islightuserdata(L, 2) || lua_isnil(L, 2); break;
+    default: match = false; break;
+    }
+    lua_pushboolean(L, match ? 1 : 0);
+    return 1;
+}
+
 static const luaL_Reg ffilib[] = {
     {"open", ffi_open},
     {"cdef", ffi_cdef},
@@ -1548,6 +1659,14 @@ static const luaL_Reg ffilib[] = {
     {"errno", ffi_errno},
     {"new", ffi_new},
     {"struct", ffi_struct},
+    {"mode", ffi_mode},
+    {"allow_library", ffi_allow_library},
+    {"allowLibrary", ffi_allow_library},
+    {"deny_library", ffi_deny_library},
+    {"denyLibrary", ffi_deny_library},
+    {"is_safe", ffi_is_safe},
+    {"isSafe", ffi_is_safe},
+    {"istype", ffi_istype},
     {nullptr, nullptr}
 };
 

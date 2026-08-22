@@ -94,7 +94,7 @@ target_include_directories(Luau.Common PUBLIC Common/include)
 
 target_compile_features(Luau.CLI.lib PUBLIC cxx_std_17)
 target_include_directories(Luau.CLI.lib PUBLIC CLI/include)
-target_link_libraries(Luau.CLI.lib PUBLIC Luau.Analysis PRIVATE Luau.Common Luau.Config Luau.Compiler Luau.VM Luau.Require)
+target_link_libraries(Luau.CLI.lib PUBLIC Luau.Analysis PRIVATE Luau.Common Luau.Config Luau.Compiler Luau.VM Luau.Require Luau.CodeGen)
 
 target_compile_features(Luau.Ast PUBLIC cxx_std_17)
 target_include_directories(Luau.Ast PUBLIC Ast/include)
