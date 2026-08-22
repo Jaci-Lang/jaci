@@ -454,6 +454,7 @@ target_sources(Luau.VM PRIVATE
     VM/src/lnetlib.cpp
     VM/src/lreactor.cpp
     VM/src/ltasklib.cpp
+    VM/src/ljnilib.cpp
     VM/src/lvmexecute.cpp
     VM/src/lclass.cpp
     VM/src/lclasslib.cpp
@@ -471,6 +472,7 @@ target_sources(Luau.VM PRIVATE
     VM/src/ldo.h
     VM/src/lfunc.h
     VM/src/lgc.h
+    VM/src/ljni.h
     VM/src/lmem.h
     VM/src/lnumutils.h
     VM/src/lobject.h
@@ -589,6 +591,7 @@ if(TARGET Luau.UnitTest)
         tests/LlvmJitProof.test.cpp
         tests/LlvmFfi.test.cpp
         tests/JsonEmitter.test.cpp
+        tests/Jni.test.cpp
         tests/Lexer.test.cpp
         tests/Linter.test.cpp
         tests/Lsp.test.cpp
@@ -670,6 +673,7 @@ if(TARGET Luau.Conformance)
         tests/Filesystem.test.cpp
         tests/Ffi.test.cpp
         tests/Json.test.cpp
+        tests/Jni.test.cpp
         tests/Hash.test.cpp
         tests/Process.test.cpp
         tests/IrLowering.test.cpp

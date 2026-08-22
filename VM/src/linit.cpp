@@ -30,6 +30,7 @@ static const luaL_Reg lualibs[] = {
     {LUA_PROCLIBNAME, luaopen_process},
     {LUA_NETLIBNAME, luaopen_net},
     {LUA_TASKLIBNAME, luaopen_task},
+    {LUA_JNILIBNAME, luaopen_jni},
     {NULL, NULL},
 };
 
@@ -54,6 +55,7 @@ static const luaL_Reg lualibs_NOINTEGER[] = {
     {LUA_PROCLIBNAME, luaopen_process},
     {LUA_NETLIBNAME, luaopen_net},
     {LUA_TASKLIBNAME, luaopen_task},
+    {LUA_JNILIBNAME, luaopen_jni},
     {NULL, NULL},
 };
 

@@ -512,6 +512,56 @@ declare class: {
 }
 )CLASS_SRC";
 
+static constexpr const char* kBuiltinDefinitionJniSrc = R"BUILTIN_SRC(
+declare jni: {
+    init: @checked (config: { classpath: (string | {string})?, options: {string}?, jvm_path: string?, ignore_unrecognized: boolean? }?) -> boolean,
+    is_initialized: @checked () -> boolean,
+    isInitialized: @checked () -> boolean,
+    destroy: @checked () -> boolean,
+    get_version: @checked () -> string,
+    getVersion: @checked () -> string,
+    find_jvm_path: @checked () -> string,
+    findJvmPath: @checked () -> string,
+    attach_current_thread: @checked () -> boolean,
+    attachCurrentThread: @checked () -> boolean,
+    detach_current_thread: @checked () -> boolean,
+    detachCurrentThread: @checked () -> boolean,
+    with_local_frame: @checked (capacityOrFn: number | (() -> ()), fn: (() -> ())?) -> ...any,
+    withLocalFrame: @checked (capacityOrFn: number | (() -> ()), fn: (() -> ())?) -> ...any,
+    local_frame: @checked (capacityOrFn: number | (() -> ()), fn: (() -> ())?) -> ...any,
+    localFrame: @checked (capacityOrFn: number | (() -> ()), fn: (() -> ())?) -> ...any,
+    find_class: @checked (className: string) -> any,
+    findClass: @checked (className: string) -> any,
+    class: @checked (className: string) -> any,
+    import: @checked (className: string) -> any,
+    new: @checked (classNameOrClass: any, ...any) -> any,
+    array: @checked (typeName: string, sizeOrTable: number | {any}) -> any,
+    wrap_buffer: @checked (buf: buffer) -> any,
+    wrapBuffer: @checked (buf: buffer) -> any,
+    to_java: @checked (val: any) -> any,
+    toJava: @checked (val: any) -> any,
+    to_luau: @checked (obj: any) -> any,
+    toLuau: @checked (obj: any) -> any,
+    instanceof: @checked (obj: any, classNameOrClass: any) -> boolean,
+    instanceOf: @checked (obj: any, classNameOrClass: any) -> boolean,
+    cast: @checked (obj: any, classNameOrClass: any) -> any,
+    call_method: @checked (obj: any, methodName: string, ...any) -> any,
+    callMethod: @checked (obj: any, methodName: string, ...any) -> any,
+    call_static: @checked (classOrName: any, methodName: string, ...any) -> any,
+    callStatic: @checked (classOrName: any, methodName: string, ...any) -> any,
+    jboolean: @checked (val: boolean) -> any,
+    jbyte: @checked (val: number) -> any,
+    jchar: @checked (val: string | number) -> any,
+    jshort: @checked (val: number) -> any,
+    jint: @checked (val: number) -> any,
+    jlong: @checked (val: number) -> any,
+    jfloat: @checked (val: number) -> any,
+    jdouble: @checked (val: number) -> any,
+    jstring: @checked (val: string) -> any,
+    null: any,
+}
+)BUILTIN_SRC";
+
 std::string getBuiltinDefinitionSource()
 {
     std::string result = kBuiltinDefinitionBaseSrc;
@@ -542,6 +592,8 @@ std::string getBuiltinDefinitionSource()
     {
         result += kBuiltinDefinitionClassSrc;
     }
+
+    result += kBuiltinDefinitionJniSrc;
 
     return result;
 }
