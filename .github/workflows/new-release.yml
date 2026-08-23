@@ -65,15 +65,18 @@ jobs:
         run: |
           V="${{ github.event.inputs.version }}"
           V="${V#v}"
+          # No raw CMAKE_CXX_FLAGS: flags there are applied to CMake's own
+          # compiler-detection try-compiles and break MSVC version detection.
+          # LTO (/GL + /LTCG) comes from LUAU_ENABLE_LTO (IPO), /MP is added
+          # by the CMakeLists for MSVC. /O2 goes in the Release config flags.
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS_RELEASE="/O2" \
             -DJACI_VERSION="$V" \
             -DLUAU_STRIP_BINARIES=ON \
             -DLUAU_ENABLE_LTO=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_FLAGS="/MP /Gy /Gw /O2 /GL" \
-            -DCMAKE_EXE_LINKER_FLAGS="/LTCG /OPT:REF /OPT:ICF"
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build Targets
         run: cmake --build build --target Luau.Repl.CLI Luau.Analyze.CLI Luau.Compile.CLI Luau.Ast.CLI -j 4
