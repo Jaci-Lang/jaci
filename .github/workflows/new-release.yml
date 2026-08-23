@@ -65,14 +65,14 @@ jobs:
         run: |
           V="${{ github.event.inputs.version }}"
           V="${V#v}"
-          cmake -B build -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DJACI_VERSION="$V" `
-            -DLUAU_STRIP_BINARIES=ON `
-            -DLUAU_ENABLE_LTO=ON `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_FLAGS="/MP /Gy /Gw /O2 /GL" `
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DJACI_VERSION="$V" \
+            -DLUAU_STRIP_BINARIES=ON \
+            -DLUAU_ENABLE_LTO=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_FLAGS="/MP /Gy /Gw /O2 /GL" \
             -DCMAKE_EXE_LINKER_FLAGS="/LTCG /OPT:REF /OPT:ICF"
 
       - name: Build Targets
