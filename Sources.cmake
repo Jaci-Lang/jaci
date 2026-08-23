@@ -501,6 +501,7 @@ target_sources(Luau.CLI.lib PRIVATE
     CLI/include/Luau/LspServer.h
     CLI/include/Luau/SingleBinaryCompiler.h
     CLI/include/Luau/VfsCompress.h
+    CLI/include/Luau/VfsLayer.h
     CLI/include/Luau/VfsNavigator.h
 
     CLI/src/AnalyzeRequirer.cpp
@@ -510,6 +511,7 @@ target_sources(Luau.CLI.lib PRIVATE
     CLI/src/LspServer.cpp
     CLI/src/SingleBinaryCompiler.cpp
     CLI/src/VfsCompress.cpp
+    CLI/src/VfsLayer.cpp
     CLI/src/VfsNavigator.cpp
 )
 

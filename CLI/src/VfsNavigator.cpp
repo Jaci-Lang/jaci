@@ -8,8 +8,10 @@
 #include "Luau/LuauConfig.h"
 
 #include <array>
+#include <cstdlib>
 #include <string>
 #include <string_view>
+#include <vector>
 
 const std::array<std::string_view, 4> kSuffixes = {".luau", ".lua", ".d.luau", ".d.lua"};
 const std::array<std::string_view, 4> kInitSuffixes = {"/init.luau", "/init.lua", "/init.d.luau", "/init.d.lua"};
@@ -324,25 +326,17 @@ NavigationStatus VfsNavigator::toBarePackage(const std::string& pkgName)
 {
     dirModuleReset = false;
 
-    // Walk from the current directory up to the filesystem root, searching
-    // for kPackageDirs/<pkgName> at each level.
-    std::string searchDir = absoluteModulePath;
-
-    // Start from the parent directory of the current module.
-    size_t lastSlash = searchDir.find_last_of('/');
-    if (lastSlash != std::string::npos && lastSlash > 0)
-        searchDir = searchDir.substr(0, lastSlash);
-
-    while (true)
+    // Try a single package root: <root>/<pkgDir>/<name> and the scoped
+    // layout <root>/<pkgDir>/@<name>. On success the navigator is positioned
+    // at the package (its subpath is navigated by the caller).
+    auto tryRoot = [&](const std::string& root) -> bool
     {
         for (std::string_view pkgDir : kPackageDirs)
         {
-            std::string candidateMods[2] = {
-                searchDir + "/" + std::string(pkgDir) + "/" + pkgName,
-                searchDir + "/" + std::string(pkgDir) + "/@" + pkgName
-            };
+            std::string plain = root + "/" + std::string(pkgDir) + "/" + pkgName;
+            std::string scoped = root + "/" + std::string(pkgDir) + "/@" + pkgName;
 
-            for (const auto& candidateMod : candidateMods)
+            for (const std::string& candidateMod : {plain, scoped})
             {
                 std::string candidateAbs = absolutePathPrefix + candidateMod;
 
@@ -356,16 +350,41 @@ NavigationStatus VfsNavigator::toBarePackage(const std::string& pkgName)
 
                     NavigationStatus status = updateRealPaths();
                     if (status == NavigationStatus::Success)
-                        return NavigationStatus::Success;
+                        return true;
                 }
             }
         }
+        return false;
+    };
 
-        // Go up one level.
+    // 1. Project-local packages: walk from the requirer's directory up to the
+    // filesystem root, nearest package directory wins.
+    std::string searchDir = absoluteModulePath;
+
+    // Start from the parent directory of the current module.
+    size_t lastSlash = searchDir.find_last_of('/');
+    if (lastSlash != std::string::npos && lastSlash > 0)
+        searchDir = searchDir.substr(0, lastSlash);
+
+    while (true)
+    {
+        if (tryRoot(searchDir))
+            return NavigationStatus::Success;
+
         size_t slash = searchDir.find_last_of('/');
         if (slash == std::string::npos || slash == 0)
             break;
         searchDir = searchDir.substr(0, slash);
+    }
+
+    // 2. Toolchain packages: package directories next to the engine binary.
+    // Installed once by the toolchain installer and shared by every program
+    // in the toolchain (luau, luau-analyze, LSP), so no project-local copy is
+    // needed. Absolute by construction: no relative paths involved.
+    if (std::optional<std::string> exeDir = getExecutableDirectory())
+    {
+        if (tryRoot(*exeDir))
+            return NavigationStatus::Success;
     }
 
     return NavigationStatus::NotFound;

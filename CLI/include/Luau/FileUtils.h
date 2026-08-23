@@ -31,4 +31,11 @@ std::vector<std::string_view> splitPath(std::string_view path);
 std::string joinPaths(std::string_view lhs, std::string_view rhs);
 std::optional<std::string> getParentPath(std::string_view path);
 
+// Absolute path of the running executable, or std::nullopt when unknown.
+std::optional<std::string> getExecutablePath();
+
+// Directory containing the running executable (canonicalized), or
+// std::nullopt when the executable path is unknown.
+std::optional<std::string> getExecutableDirectory();
+
 std::vector<std::string> getSourceFiles(int argc, char** argv);

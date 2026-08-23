@@ -15,6 +15,8 @@ struct FileNavigationContext : Luau::Require::NavigationContext
     NavigateResult resetToRequirer() override;
     NavigateResult jumpToAlias(const std::string& path) override;
 
+    NavigateResult toAliasFallback(const std::string& aliasUnprefixed) override;
+
     NavigateResult toParent() override;
     NavigateResult toChild(const std::string& component) override;
 

@@ -24,6 +24,7 @@ struct SingleBinaryOptions
     std::string compilerCommand;    // optional explicit compiler command override (e.g. "cl.exe", "clang++", "zig c++", "g++")
     std::string customStubPath;     // optional custom base executable / runner stub path
     std::vector<std::string> assetPaths; // files/directories to embed into the binary VFS
+    std::vector<std::string> embedPaths; // module files/directories to embed beyond the static require graph
     BundleMode bundleMode = BundleMode::Auto;
     int optimizationLevel = 1;
     int debugLevel = 1;

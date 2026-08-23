@@ -2,6 +2,7 @@
 #include "Luau/FileUtils.h"
 
 #include "Luau/Common.h"
+#include "Luau/VfsLayer.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -23,6 +24,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 #include <string.h>
@@ -227,39 +231,48 @@ bool hasFileExtension(std::string_view name, const std::vector<std::string>& ext
     return false;
 }
 
+static std::optional<std::string> readFileDisk(const std::string& name)
+ {
+ #ifdef _WIN32
+     FILE* file = _wfopen(fromUtf8(name).c_str(), L"rb");
+ #else
+     FILE* file = fopen(name.c_str(), "rb");
+ #endif
+
+     if (!file)
+         return std::nullopt;
+
+     fseek(file, 0, SEEK_END);
+     long length = ftell(file);
+     if (length < 0)
+     {
+         fclose(file);
+         return std::nullopt;
+     }
+     fseek(file, 0, SEEK_SET);
+
+     std::string result(length, 0);
+
+     size_t read = fread(result.data(), 1, length, file);
+     fclose(file);
+
+     if (read != size_t(length))
+         return std::nullopt;
+
+     // Skip first line if it's a shebang
+     if (length > 2 && result[0] == '#' && result[1] == '!')
+         result.erase(0, result.find('\n'));
+
+     return result;
+ }
+
 std::optional<std::string> readFile(const std::string& name)
 {
-#ifdef _WIN32
-    FILE* file = _wfopen(fromUtf8(name).c_str(), L"rb");
-#else
-    FILE* file = fopen(name.c_str(), "rb");
-#endif
-
-    if (!file)
-        return std::nullopt;
-
-    fseek(file, 0, SEEK_END);
-    long length = ftell(file);
-    if (length < 0)
-    {
-        fclose(file);
-        return std::nullopt;
-    }
-    fseek(file, 0, SEEK_SET);
-
-    std::string result(length, 0);
-
-    size_t read = fread(result.data(), 1, length, file);
-    fclose(file);
-
-    if (read != size_t(length))
-        return std::nullopt;
-
-    // Skip first line if it's a shebang
-    if (length > 2 && result[0] == '#' && result[1] == '!')
-        result.erase(0, result.find('\n'));
-
-    return result;
+    // The VFS layer holds a single binary's embedded files; consult it before
+    // the real disk so the navigator (and everything else) sees them.
+    if (std::optional<std::string> embedded = Luau::VfsLayer::readEmbeddedFile(name))
+        return embedded;
+    return readFileDisk(name);
 }
 
 std::optional<std::string> readStdin()
@@ -401,6 +414,9 @@ bool traverseDirectory(const std::string& path, const std::function<void(const s
 
 bool isFile(const std::string& path)
 {
+    // Embedded files (single binary) before the real disk.
+    if (Luau::VfsLayer::isEmbeddedFile(path))
+        return true;
 #ifdef _WIN32
     DWORD fileAttributes = GetFileAttributesW(fromUtf8(path).c_str());
     if (fileAttributes == INVALID_FILE_ATTRIBUTES)
@@ -416,6 +432,9 @@ bool isFile(const std::string& path)
 
 bool isDirectory(const std::string& path)
 {
+    // Embedded directories (single binary) before the real disk.
+    if (Luau::VfsLayer::isEmbeddedDirectory(path))
+        return true;
 #ifdef _WIN32
     DWORD fileAttributes = GetFileAttributesW(fromUtf8(path).c_str());
     if (fileAttributes == INVALID_FILE_ATTRIBUTES)
@@ -427,6 +446,53 @@ bool isDirectory(const std::string& path)
         return (st.st_mode & S_IFMT) == S_IFDIR;
     return false;
 #endif
+}
+
+std::optional<std::string> getExecutablePath()
+{
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH * 4] = {};
+    DWORD len = GetModuleFileNameW(nullptr, buffer, sizeof(buffer) / sizeof(buffer[0]));
+    if (len == 0 || len >= sizeof(buffer) / sizeof(buffer[0]))
+        return std::nullopt;
+    int sz = WideCharToMultiByte(CP_UTF8, 0, buffer, len, nullptr, 0, nullptr, nullptr);
+    if (sz <= 0)
+        return std::nullopt;
+    std::string result(sz, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, buffer, len, &result[0], sz, nullptr, nullptr);
+    return normalizePath(result);
+#elif defined(__linux__)
+    char buffer[4096] = {};
+    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (len <= 0)
+        return std::nullopt;
+    return normalizePath(std::string(buffer, len));
+#elif defined(__APPLE__)
+    char buffer[4096] = {};
+    uint32_t size = sizeof(buffer);
+    if (_NSGetExecutablePath(buffer, &size) != 0)
+        return std::nullopt;
+    return normalizePath(std::string(buffer));
+#else
+    return std::nullopt;
+#endif
+}
+
+std::optional<std::string> getExecutableDirectory()
+{
+    std::optional<std::string> exePath = getExecutablePath();
+    if (!exePath)
+        return std::nullopt;
+
+    std::optional<std::string> dir = getParentPath(*exePath);
+    if (!dir)
+        return std::nullopt;
+
+    // Canonicalize so that toolchain layouts found through symlinks
+    // (e.g. ~/.jaciup/bin/luau) compare correctly against real paths.
+    if (std::optional<std::string> resolved = resolveSymlink(*dir))
+        return *resolved;
+    return *dir;
 }
 
 std::optional<std::string> resolveSymlink(const std::string& path)

@@ -853,6 +853,7 @@ static void displayHelp(const char* argv0)
     printf("  --stub=<file>: specify base executable / runner stub for standalone packaging\n");
     printf("  --target=<arch>: specify target architecture or toolchain for --build/--bundle (e.g. windows-x64, linux-x64, macos-arm64, direct)\n");
     printf("  --include-assets=<path>: embed directory or file into single binary virtual filesystem\n");
+    printf("  --embed=<path>: embed module file or directory into the binary beyond the static require graph\n");
     printf("  -o, --output=<file>: specify output binary path for --build/--bundle\n");
     printf("  -v, --verbose: enable verbose compiler output\n");
 }
@@ -890,6 +891,7 @@ int replMain(int argc, char** argv)
     std::string outputFile;
     std::string targetArchitecture;
     std::vector<std::string> assetPaths;
+    std::vector<std::string> embedPaths;
     std::string evalCode;
     bool hasEval = false;
     bool verbose = false;
@@ -1052,6 +1054,14 @@ int replMain(int argc, char** argv)
         {
             assetPaths.push_back(argv[i] + 17);
         }
+        else if (strcmp(argv[i], "--embed") == 0 && i + 1 < argc)
+        {
+            embedPaths.push_back(argv[++i]);
+        }
+        else if (strncmp(argv[i], "--embed=", 8) == 0)
+        {
+            embedPaths.push_back(argv[i] + 8);
+        }
         else if (strcmp(argv[i], "-e") == 0 && i + 1 < argc)
         {
             evalCode = argv[++i];
@@ -1119,6 +1129,7 @@ int replMain(int argc, char** argv)
         opts.compilerCommand = compilerCommand;
         opts.customStubPath = customStubPath;
         opts.assetPaths = assetPaths;
+        opts.embedPaths = embedPaths;
         opts.bundleMode = bundleMode;
         opts.optimizationLevel = globalOptions.optimizationLevel;
         opts.debugLevel = globalOptions.debugLevel;

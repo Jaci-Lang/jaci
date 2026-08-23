@@ -60,6 +60,14 @@ Luau::Require::NavigationContext::NavigateResult FileNavigationContext::toChild(
     return convert(vfs.toChild(component));
 }
 
+// Aliases not defined in any .luaurc fall back to neutral package resolution,
+// exactly like the runtime requirer. This lets the LSP / luau-analyze resolve
+// the same package layout (project-local + toolchain) without a runtime.
+Luau::Require::NavigationContext::NavigateResult FileNavigationContext::toAliasFallback(const std::string& aliasUnprefixed)
+{
+    return convert(vfs.toBarePackage(aliasUnprefixed));
+}
+
 bool FileNavigationContext::isModulePresent() const
 {
     return isFile(vfs.getAbsoluteFilePath());
