@@ -63,6 +63,7 @@ struct DiscoveredModule
     std::string absolutePath;
     std::string source;
     std::string bytecode;
+    std::string canonicalKey; // project-root-relative normalized name; reconciles the absolute, relative and "./"-prefixed forms
 };
 
 struct DiscoveredAsset
@@ -76,6 +77,43 @@ struct DiscoveredAsset
 static const char kMagicHeader[8] = {'J', 'A', 'C', 'I', 'P', 'K', 'G', '\0'};
 static const char kMagicTrailer[8] = {'J', 'A', 'C', 'I', 'P', 'K', 'G', '\0'};
 static const size_t kTrailerSize = 24; // uint64_t offset + uint64_t size + 8 bytes magic
+
+// Canonicalize a module path to a single, stable key so that the absolute
+// (e.g. "/home/.../src/pm/store.luau"), relative ("klur_modules/@klur/pm/store.luau")
+// and "./"-prefixed ("./klur_modules/@klur/core/version.luau") forms of the same
+// logical module reconcile. The canonical key is the path with a leading "./"
+// stripped and (when absolute) the leading project-root prefix removed, leaving a
+// project-root-relative form such as "src/pm/store.luau" or "klur_modules/@klur/...".
+static std::string canonicalModuleName(const std::string& path, const std::string& projectRoot)
+{
+    std::string s = normalizePath(path);
+    if (s.size() >= 2 && s[0] == '.' && (s[1] == '/' || s[1] == '\\'))
+        s = s.substr(2);
+    if (!s.empty() && s[0] == '@')
+        s = s.substr(1);
+    if (isAbsolutePath(s) && !projectRoot.empty())
+    {
+        std::string root = normalizePath(projectRoot);
+        if (root.size() >= 2 && root[0] == '.' && (root[1] == '/' || root[1] == '\\'))
+            root = root.substr(2);
+        if (s.size() > root.size() && s.substr(0, root.size()) == root &&
+            (s[root.size()] == '/' || s[root.size()] == '\\'))
+        {
+            s = s.substr(root.size());
+            if (!s.empty() && (s[0] == '/' || s[0] == '\\'))
+                s = s.substr(1);
+        }
+    }
+    return s;
+}
+
+// Normalize a runtime lookup name the same way as canonicalModuleName so that
+// findModule / alias fallback can reconcile the embedded forms regardless of the
+// prefix the require navigator produced (leading "@", "./", or an absolute path).
+static std::string normalizeLookupName(const std::string& name, const std::string& projectRoot)
+{
+    return canonicalModuleName(name, projectRoot);
+}
 
 static void writeUint32(std::string& buf, uint32_t val)
 {
@@ -327,6 +365,7 @@ std::string generateRunnerCpp(
     out << "    const char* chunkName;\n";
     out << "    const char* loadName;\n";
     out << "    const char* absolutePath;\n";
+    out << "    const char* canonicalKey;\n";
     out << "    const unsigned char* bytecode;\n";
     out << "    size_t bytecodeSize;\n";
     out << "    size_t originalSize;\n";
@@ -339,7 +378,8 @@ std::string generateRunnerCpp(
         size_t origSize = options.compress ? modules[i].bytecode.size() : 0;
         out << "    { \"" << escapeCString(modules[i].chunkName) << "\", \""
             << escapeCString(modules[i].loadName) << "\", \""
-            << escapeCString(modules[i].absolutePath) << "\", "
+            << escapeCString(modules[i].absolutePath) << "\", \""
+            << escapeCString(modules[i].canonicalKey) << "\", "
             << "kModuleData_" << i << ", "
             << payload.size() << ", "
             << origSize << " },\n";
@@ -405,11 +445,14 @@ std::string generateRunnerCpp(
     out << "    if (!name) return nullptr;\n";
     out << "    std::string_view target(name);\n";
     out << "    if (!target.empty() && target[0] == '@')\n";
-    out << "        target.remove_prefix(1);\n\n";
+    out << "        target.remove_prefix(1);\n";
+    out << "    if (target.size() >= 2 && target[0] == '.' && (target[1] == '/' || target[1] == '\\\\'))\n";
+    out << "        target.remove_prefix(2);\n\n";
     out << "    for (size_t i = 0; i < kNumEmbeddedModules; ++i)\n    {\n";
     out << "        std::string_view chunk = kEmbeddedModules[i].chunkName;\n";
     out << "        if (!chunk.empty() && chunk[0] == '@') chunk.remove_prefix(1);\n";
-    out << "        if (target == chunk || target == kEmbeddedModules[i].loadName || target == kEmbeddedModules[i].absolutePath)\n";
+    out << "        std::string_view ck = kEmbeddedModules[i].canonicalKey;\n";
+    out << "        if (target == chunk || target == kEmbeddedModules[i].loadName || target == kEmbeddedModules[i].absolutePath || target == ck)\n";
     out << "            return &kEmbeddedModules[i];\n";
     out << "    }\n";
     out << "    for (size_t i = 0; i < kNumEmbeddedModules; ++i)\n    {\n";
@@ -523,6 +566,8 @@ std::string generateRunnerCpp(
     out << "static luarequire_NavigateResult embedded_alias_fallback(lua_State* L, void* ctx, const char* aliasUnprefixed)\n{\n";
     out << "    EmbeddedRequireContext* req = static_cast<EmbeddedRequireContext*>(ctx);\n";
     out << "    if (!aliasUnprefixed) return NAVIGATE_NOT_FOUND;\n";
+    out << "    if (getenv(\"KLEDBG_REQUIRE\"))\n";
+    out << "        fprintf(stderr, \"[emb_alias_fallback] alias='%s' moduleCount=%zu\\n\", aliasUnprefixed, kNumEmbeddedModules);\n";
     out << "    static const char* kPkgDirs[] = {\"klur_modules\", \"luau_packages\", \"packages\", \"node_modules\"};\n";
     out << "    for (const char* dir : kPkgDirs)\n    {\n";
     out << "        std::string cand1 = std::string(dir) + \"/@\" + aliasUnprefixed;\n";
@@ -541,6 +586,20 @@ std::string generateRunnerCpp(
     out << "                if (m.loadName.rfind(cand + \"/\", 0) == 0 ||\n";
     out << "                    m.chunkName.rfind(cand + \"/\", 0) == 0 ||\n";
     out << "                    m.absolutePath.rfind(cand + \"/\", 0) == 0)\n";
+    out << "                {\n";
+    out << "                    req->currentPath = cand;\n";
+    out << "                    return NAVIGATE_SUCCESS;\n";
+    out << "                }\n";
+    out << "            }\n";
+    out << "            // Canonical-key prefix match: the stored absolute/relative\n";
+    out << "            // load names do not start with the relative cand, but the\n";
+    out << "            // project-root-relative canonicalKey does. Reconcile via it.\n";
+    out << "            for (const auto& m : kEmbeddedModules)\n";
+    out << "            {\n";
+    out << "                std::string_view ck(m.canonicalKey);\n";
+    out << "                if (ck.size() > cand.size() &&\n";
+    out << "                    ck.substr(0, cand.size()) == cand &&\n";
+    out << "                    (ck[cand.size()] == '/' || ck[cand.size()] == '\\\\'))\n";
     out << "                {\n";
     out << "                    req->currentPath = cand;\n";
     out << "                    return NAVIGATE_SUCCESS;\n";
@@ -823,6 +882,7 @@ static std::string serializePayload(
         writeString(body, mod.chunkName);
         writeString(body, mod.loadName);
         writeString(body, mod.absolutePath);
+        writeString(body, mod.canonicalKey);
         writeString(body, mod.bytecode);
     }
 
@@ -1281,12 +1341,15 @@ struct EmbeddedRuntimeContext
     bool enableCodegen = false; // Hand-written x86 CodeGen is crash-prone; disable by default.
     std::string currentPath;
     const DiscoveredModule* currentModule = nullptr;
+    std::string projectRoot; // absolute project root; used to canonicalize lookup names
 
     const DiscoveredModule* findModule(const char* name) const
     {
         if (!name) return nullptr;
         std::string_view target(name);
         if (!target.empty() && target[0] == '@') target.remove_prefix(1);
+        // Match by the exact stored names first (fast path, preserves the
+        // existing behavior for the absolute, relative and "./"-prefixed forms).
         for (const auto& m : modules)
         {
             std::string_view chunk = m.chunkName;
@@ -1294,6 +1357,15 @@ struct EmbeddedRuntimeContext
             if (target == chunk || target == m.loadName || target == m.absolutePath)
                 return &m;
         }
+        // Reconcile the multiple name forms of the same logical module by
+        // canonicalizing both the lookup name and each module's canonical key.
+        std::string targetCanon = normalizeLookupName(std::string(target), projectRoot);
+        for (const auto& m : modules)
+        {
+            if (!m.canonicalKey.empty() && m.canonicalKey == targetCanon)
+                return &m;
+        }
+        // Last resort: suffix match against the absolute path (unchanged).
         for (const auto& m : modules)
         {
             std::string_view absPath(m.absolutePath);
@@ -1461,6 +1533,9 @@ static luarequire_NavigateResult rt_alias_fallback(lua_State* L, void* ctx, cons
 {
     EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
     if (!aliasUnprefixed) return NAVIGATE_NOT_FOUND;
+    if (const char* dbg = getenv("KLEDBG_REQUIRE"))
+        fprintf(stderr, "[alias_fallback] alias='%s' projectRoot='%s' moduleCount=%zu\n",
+                aliasUnprefixed, req->projectRoot.c_str(), req->modules.size());
     static const char* kPkgDirs[] = {"klur_modules", "luau_packages", "packages", "node_modules"};
     for (const char* dir : kPkgDirs)
     {
@@ -1468,24 +1543,54 @@ static luarequire_NavigateResult rt_alias_fallback(lua_State* L, void* ctx, cons
         std::string cand2 = std::string(dir) + "/" + aliasUnprefixed;
         for (const std::string& cand : {cand1, cand2})
         {
+            // Exact match against the embedded module (canonical-aware).
             if (req->findModule(cand.c_str()) ||
                 req->findModule((cand + ".luau").c_str()) ||
                 req->findModule((cand + "/init.luau").c_str()))
             {
+                if (const char* dbg = getenv("KLEDBG_REQUIRE"))
+                    fprintf(stderr, "[alias_fallback] EXACT match for '%s' -> '%s'\n", cand.c_str(), aliasUnprefixed);
                 req->currentPath = cand;
                 return NAVIGATE_SUCCESS;
             }
+            // Prefix match: the alias root is a directory whose children are
+            // embedded. Match against the raw load names (absolute, relative and
+            // "./"-prefixed forms all appear) as before...
             for (const auto& m : req->modules)
             {
                 if (m.loadName.rfind(cand + "/", 0) == 0 ||
                     m.chunkName.rfind(cand + "/", 0) == 0 ||
                     m.absolutePath.rfind(cand + "/", 0) == 0)
                 {
+                    if (const char* dbg = getenv("KLEDBG_REQUIRE"))
+                        fprintf(stderr, "[alias_fallback] RAW-PREFIX match for '%s' via loadName '%s'\n", cand.c_str(), m.loadName.c_str());
+                    req->currentPath = cand;
+                    return NAVIGATE_SUCCESS;
+                }
+            }
+            // ...and additionally via the canonical keys so absolute and
+            // "./"-prefixed load names reconcile against the relative cand.
+            std::string candCanon = normalizeLookupName(cand, req->projectRoot);
+            for (const auto& m : req->modules)
+            {
+                if (m.canonicalKey.size() > candCanon.size() &&
+                    m.canonicalKey.substr(0, candCanon.size()) == candCanon &&
+                    m.canonicalKey[candCanon.size()] == '/')
+                {
+                    if (const char* dbg = getenv("KLEDBG_REQUIRE"))
+                        fprintf(stderr, "[alias_fallback] CANON-PREFIX match for '%s' (candCanon='%s') via canonicalKey '%s'\n", cand.c_str(), candCanon.c_str(), m.canonicalKey.c_str());
                     req->currentPath = cand;
                     return NAVIGATE_SUCCESS;
                 }
             }
         }
+    }
+    if (const char* dbg = getenv("KLEDBG_REQUIRE"))
+    {
+        fprintf(stderr, "[alias_fallback] NO match for '%s'. sample canonicalKeys:\n", aliasUnprefixed);
+        for (size_t i = 0; i < req->modules.size() && i < 8; ++i)
+            fprintf(stderr, "  [%zu] loadName='%s' chunkName='%s' canonicalKey='%s'\n",
+                i, req->modules[i].loadName.c_str(), req->modules[i].chunkName.c_str(), req->modules[i].canonicalKey.c_str());
     }
     return NAVIGATE_NOT_FOUND;
 }
@@ -1808,6 +1913,7 @@ std::optional<int> SingleBinaryCompiler::checkAndRunBundledPayload(int argc, cha
         m.chunkName = readString(ptr, end);
         m.loadName = readString(ptr, end);
         m.absolutePath = readString(ptr, end);
+        m.canonicalKey = readString(ptr, end);
         m.bytecode = readString(ptr, end);
         modules.push_back(std::move(m));
     }
@@ -1859,6 +1965,24 @@ std::optional<int> SingleBinaryCompiler::checkAndRunBundledPayload(int argc, cha
     rtCtx.enableCodegen = enableCodegen;
     rtCtx.optimizationLevel = optLevel;
     rtCtx.debugLevel = dbgLevel;
+    // Project root used to canonicalize module lookup names so the absolute,
+    // relative and "./"-prefixed forms of the same logical module reconcile.
+    // Derive it from the entry module's absolute path (embedded in the payload)
+    // rather than the runtime cwd, so the canonical keys match those computed at
+    // build time regardless of where the binary is later executed from.
+    if (rtCtx.entryIndex < rtCtx.modules.size() && !rtCtx.modules[rtCtx.entryIndex].absolutePath.empty())
+    {
+        std::string entryAbs = normalizePath(rtCtx.modules[rtCtx.entryIndex].absolutePath);
+        // project root = parent of the entry's directory (e.g. .../src/init.luau -> ...)
+        if (auto entryDir = getParentPath(entryAbs))
+            if (auto root = getParentPath(*entryDir))
+                rtCtx.projectRoot = normalizePath(*root);
+    }
+    if (rtCtx.projectRoot.empty())
+    {
+        if (auto cwd = getCurrentWorkingDirectory())
+            rtCtx.projectRoot = *cwd;
+    }
     g_ActiveRuntimeContext = &rtCtx;
 
     // Inject embedded filesystem hooks
@@ -1956,6 +2080,17 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
         if (auto cwd = getCurrentWorkingDirectory())
             entryAbsPath = normalizePath(*cwd + "/" + entryAbsPath);
     }
+    // Project root = parent of the entry's directory, so the canonical keys are
+    // stable regardless of the runtime cwd. (e.g. .../src/init.luau -> ...)
+    std::string projectRoot;
+    if (auto entryDir = getParentPath(entryAbsPath))
+        if (auto root = getParentPath(*entryDir))
+            projectRoot = normalizePath(*root);
+    if (projectRoot.empty())
+    {
+        if (auto cwd = getCurrentWorkingDirectory())
+            projectRoot = *cwd;
+    }
 
     std::optional<std::string> entrySource = readFile(entryAbsPath);
     if (!entrySource)
@@ -1971,6 +2106,41 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
 
     toVisit.push(entryAbsPath);
     visitedAbsPaths.insert(entryAbsPath);
+
+    // Force-seed the package directories (klur_modules/, luau_packages/, ...).
+    // A single binary carries no filesystem, so modules that are only reached
+    // through dynamically-loaded chunks (e.g. test files loaded via loadstring
+    // by the test runner) cannot be discovered through the static require graph.
+    // Embed every package module up-front so their @-alias requires resolve at
+    // runtime regardless of the static graph. The require navigator resolves
+    // @klur/x to "<pkgdir>/@klur/x"; the canonical keys reconcile the forms.
+    static const char* kPkgDirs[] = {"klur_modules", "luau_packages", "packages", "node_modules"};
+    for (const char* pdir : kPkgDirs)
+    {
+        std::string pkgDir = projectRoot + "/" + pdir;
+        if (!isDirectory(pkgDir))
+        {
+            pkgDir = std::string(pdir);
+            if (!isDirectory(pkgDir))
+                continue;
+        }
+
+        traverseDirectory(
+            pkgDir,
+            [&](const std::string& filePath)
+            {
+                size_t dot = filePath.find_last_of('.');
+                std::string suffix = (dot != std::string::npos) ? filePath.substr(dot) : "";
+                if (suffix != ".luau" && suffix != ".lua")
+                    return;
+                std::string absPath = normalizePath(filePath);
+                if (visitedAbsPaths.find(absPath) == visitedAbsPaths.end())
+                {
+                    visitedAbsPaths.insert(absPath);
+                    toVisit.push(absPath);
+                }
+            });
+    }
 
     Luau::CompileOptions copts;
     copts.optimizationLevel = options.optimizationLevel;
@@ -1996,6 +2166,7 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
         mod.absolutePath = currentPath;
         mod.loadName = currentPath;
         mod.chunkName = "@" + currentPath;
+        mod.canonicalKey = canonicalModuleName(currentPath, projectRoot);
         mod.source = *source;
         mod.bytecode = bytecode;
 
