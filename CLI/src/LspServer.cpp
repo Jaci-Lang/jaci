@@ -388,6 +388,20 @@ void LspServer::publishDiagnostics(const std::string& uri, std::ostream& out)
 
     std::vector<Lsp::Diagnostic> lspDiagnostics;
 
+    if (const SourceModule* sm = frontend.getSourceModule(doc->path))
+    {
+        for (const ParseError& err : sm->parseErrors)
+        {
+            Lsp::Diagnostic d;
+            d.range = Lsp::Range::fromLuau(err.getLocation());
+            d.severity = Lsp::DiagnosticSeverity::Error;
+            d.code = "SyntaxError";
+            d.source = "luau-syntax";
+            d.message = err.getMessage();
+            lspDiagnostics.push_back(std::move(d));
+        }
+    }
+
     for (const TypeError& err : cr.errors)
     {
         Lsp::Diagnostic d;

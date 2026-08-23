@@ -292,7 +292,7 @@ ScopePtr findScopeAtPosition(const Module& module, Position pos)
     ScopePtr scope = module.scopes.front().second;
     for (const auto& s : module.scopes)
     {
-        if (s.first.contains(pos))
+        if (s.first.containsClosed(pos))
         {
             if (!scope || scopeLocation.encloses(s.first))
             {

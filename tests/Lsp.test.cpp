@@ -161,6 +161,13 @@ TEST_CASE("LspDiagnostics")
     CHECK(outStr2.find("TypeError") != std::string::npos);
     CHECK(outStr2.find("number") != std::string::npos);
     CHECK(outStr2.find("string") != std::string::npos);
+
+    // Syntax error: incomplete function header
+    server.changeDocument(uri, "function brokenSyntax(\n", 3);
+    std::ostringstream out3;
+    server.publishDiagnostics(uri, out3);
+    std::string outStr3 = out3.str();
+    CHECK(outStr3.find("SyntaxError") != std::string::npos);
 }
 
 TEST_CASE("LspHover")
@@ -835,6 +842,52 @@ TEST_CASE("LspAutocompleteRequirePathsAndAliases")
         }
     }
     CHECK(foundPkg);
+}
+
+TEST_CASE("LspAutocompleteInsideFunctionsAndArguments")
+{
+    LspServer server;
+    std::string uri = "file:///func_scope_test.luau";
+    server.openDocument(uri, "local function helper(itemCount: number, itemName: string)\n    local localBuffer = 100\n    \nend\n");
+
+    // Request autocomplete on line 2, inside the helper function body
+    Json::Object params;
+    Json::Object textDoc;
+    textDoc.emplace_back("uri", Json::Value(uri));
+    params.emplace_back("textDocument", Json::Value(std::move(textDoc)));
+    params.emplace_back("position", Lsp::Position{2, 4}.toJson());
+
+    JsonRpc::Request req;
+    req.id = JsonRpc::Id(300);
+    req.method = "textDocument/completion";
+    req.params = Json::Value(std::move(params));
+
+    JsonRpc::Response resp = server.handleRequest(req);
+    CHECK(!resp.error.has_value());
+    CHECK(resp.result.has_value());
+
+    const auto* items = resp.result->get("items");
+    REQUIRE(items != nullptr);
+    REQUIRE(items->isArray());
+
+    bool foundItemCount = false;
+    bool foundItemName = false;
+    bool foundLocalBuffer = false;
+    for (const auto& item : items->getArray())
+    {
+        if (const auto* label = item.get("label"))
+        {
+            if (label->getString() == "itemCount")
+                foundItemCount = true;
+            if (label->getString() == "itemName")
+                foundItemName = true;
+            if (label->getString() == "localBuffer")
+                foundLocalBuffer = true;
+        }
+    }
+    CHECK(foundItemCount);
+    CHECK(foundItemName);
+    CHECK(foundLocalBuffer);
 }
 
 TEST_SUITE_END();
