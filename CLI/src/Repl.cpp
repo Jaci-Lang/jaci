@@ -813,6 +813,9 @@ static void displayHelp(const char* argv0)
     printf("  --build, --bundle, -b: compile entry file and transitive modules into standalone executable binary\n");
     printf("  --direct: package standalone binary directly without requiring any external C++ compiler toolchain\n");
     printf("  --bundle-mode=<direct|native|auto>: select standalone binary packaging backend (default: auto)\n");
+    printf("  --strip, --no-strip: enable or disable stripping debug symbols from standalone binary (default: enabled)\n");
+    printf("  --compress, --no-compress: enable or disable LZ payload compression (default: enabled)\n");
+    printf("  --opt-size, -Os: optimize standalone binary code generation for minimal size\n");
     printf("  --windowed, --gui, -W: create Windows GUI / main window application (no console window)\n");
     printf("  --compiler=<cmd>: specify C++ compiler executable (cl.exe, clang++, g++, zig c++)\n");
     printf("  --stub=<file>: specify base executable / runner stub for standalone packaging\n");
@@ -846,6 +849,9 @@ int replMain(int argc, char** argv)
     bool counters = false;
     bool buildMode = false;
     bool windowed = false;
+    bool strip = true;
+    bool compress = true;
+    bool optimizeForSize = false;
     Luau::BundleMode bundleMode = Luau::BundleMode::Auto;
     std::string compilerCommand;
     std::string customStubPath;
@@ -962,6 +968,26 @@ int replMain(int argc, char** argv)
             else if (strcmp(mode, "auto") == 0)
                 bundleMode = Luau::BundleMode::Auto;
         }
+        else if (strcmp(argv[i], "--strip") == 0)
+        {
+            strip = true;
+        }
+        else if (strcmp(argv[i], "--no-strip") == 0)
+        {
+            strip = false;
+        }
+        else if (strcmp(argv[i], "--compress") == 0)
+        {
+            compress = true;
+        }
+        else if (strcmp(argv[i], "--no-compress") == 0)
+        {
+            compress = false;
+        }
+        else if (strcmp(argv[i], "--opt-size") == 0 || strcmp(argv[i], "-Os") == 0)
+        {
+            optimizeForSize = true;
+        }
         else if (strcmp(argv[i], "--compiler") == 0 && i + 1 < argc)
         {
             compilerCommand = argv[++i];
@@ -1067,6 +1093,9 @@ int replMain(int argc, char** argv)
         opts.codegen = codegen;
         opts.verbose = verbose;
         opts.windowed = windowed;
+        opts.strip = strip;
+        opts.compress = compress;
+        opts.optimizeForSize = optimizeForSize;
 
         return Luau::SingleBinaryCompiler::compile(opts) ? 0 : 1;
     }

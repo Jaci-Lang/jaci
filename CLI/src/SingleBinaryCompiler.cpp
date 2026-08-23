@@ -797,6 +797,29 @@ static std::string serializePayload(
     const SingleBinaryOptions& options
 )
 {
+    std::string body;
+    writeInt32(body, options.optimizationLevel);
+    writeInt32(body, options.debugLevel);
+    writeUint32(body, static_cast<uint32_t>(entryIndex));
+
+    writeUint32(body, static_cast<uint32_t>(modules.size()));
+    for (const auto& mod : modules)
+    {
+        writeString(body, mod.chunkName);
+        writeString(body, mod.loadName);
+        writeString(body, mod.absolutePath);
+        writeString(body, mod.bytecode);
+    }
+
+    writeUint32(body, static_cast<uint32_t>(assets.size()));
+    for (const auto& asset : assets)
+    {
+        writeString(body, asset.path);
+        writeString(body, asset.relativePath);
+        writeString(body, asset.absolutePath);
+        writeString(body, asset.data);
+    }
+
     std::string payload;
     payload.append(kMagicHeader, 8);
     writeUint32(payload, 1); // format version 1
@@ -808,28 +831,19 @@ static std::string serializePayload(
         flags |= 2;
     if (options.verbose)
         flags |= 4;
-    writeUint32(payload, flags);
 
-    writeInt32(payload, options.optimizationLevel);
-    writeInt32(payload, options.debugLevel);
-    writeUint32(payload, static_cast<uint32_t>(entryIndex));
-
-    writeUint32(payload, static_cast<uint32_t>(modules.size()));
-    for (const auto& mod : modules)
+    if (options.compress)
     {
-        writeString(payload, mod.chunkName);
-        writeString(payload, mod.loadName);
-        writeString(payload, mod.absolutePath);
-        writeString(payload, mod.bytecode);
+        flags |= 8;
+        writeUint32(payload, flags);
+        writeUint64(payload, static_cast<uint64_t>(body.size())); // uncompressed size
+        std::string compressedBody = Luau::Vfs::compress(body);
+        payload.append(compressedBody);
     }
-
-    writeUint32(payload, static_cast<uint32_t>(assets.size()));
-    for (const auto& asset : assets)
+    else
     {
-        writeString(payload, asset.path);
-        writeString(payload, asset.relativePath);
-        writeString(payload, asset.absolutePath);
-        writeString(payload, asset.data);
+        writeUint32(payload, flags);
+        payload.append(body);
     }
 
     return payload;
@@ -901,6 +915,35 @@ static bool compileDirectBundle(
         }
     }
 
+    std::string finalBaseData = baseExeData->substr(0, baseSize);
+    if (options.strip)
+    {
+        std::string tempStubPath = getTempRunnerPath() + ".stub";
+        FILE* sfp = fopen(tempStubPath.c_str(), "wb");
+        if (sfp)
+        {
+            fwrite(finalBaseData.data(), 1, finalBaseData.size(), sfp);
+            fclose(sfp);
+#if defined(_WIN32)
+            std::string stripCmd = "strip -s \"" + tempStubPath + "\" >nul 2>nul";
+#else
+            std::string stripCmd = "strip -s \"" + tempStubPath + "\" >/dev/null 2>&1";
+#endif
+            if (system(stripCmd.c_str()) == 0)
+            {
+                if (auto stripped = readFile(tempStubPath))
+                {
+                    if (!stripped->empty())
+                    {
+                        finalBaseData = std::move(*stripped);
+                        baseSize = finalBaseData.size();
+                    }
+                }
+            }
+            remove(tempStubPath.c_str());
+        }
+    }
+
     std::string payload = serializePayload(modules, entryIndex, assets, options);
     std::string outPath = options.outputBinaryPath.empty() ? "a.out" : options.outputBinaryPath;
 
@@ -918,7 +961,7 @@ static bool compileDirectBundle(
     }
 
     // 1. Write base executable bytes
-    if (fwrite(baseExeData->data(), 1, baseSize, fp) != baseSize)
+    if (fwrite(finalBaseData.data(), 1, baseSize, fp) != baseSize)
     {
         fclose(fp);
         fprintf(stderr, "SingleBinaryCompiler: Failed to write base executable bytes to '%s'\n", outPath.c_str());
@@ -975,10 +1018,7 @@ static bool compileNativeRunner(
         modules,
         entryIndex,
         assets,
-        options.codegen,
-        options.optimizationLevel,
-        options.debugLevel,
-        options.windowed
+        options
     );
 
     std::string tempPath = getTempRunnerPath();
@@ -1122,7 +1162,8 @@ static bool compileNativeRunner(
     std::ostringstream cmd;
     if (isMSVC)
     {
-        cmd << compiler << " /nologo /O2 /std:c++17 /EHsc /MD "
+        std::string optFlag = options.optimizeForSize ? "/O1 /Os" : "/O2";
+        cmd << compiler << " /nologo " << optFlag << " /std:c++17 /EHsc /MD /Gy /GR- "
             << "/I\"" << rootDir << "/VM/include\" "
             << "/I\"" << rootDir << "/Common/include\" "
             << "/I\"" << rootDir << "/Ast/include\" "
@@ -1132,14 +1173,16 @@ static bool compileNativeRunner(
             << "/I\"" << rootDir << "/Config/include\" "
             << "/I\"" << rootDir << "/Require/include\" "
             << "/I\"" << rootDir << "/CLI/include\" "
-            << "/I\"" << rootDir << "/extern/isocline/include\" "
             << "\"" << tempPath << "\" "
+            << "\"" << rootDir << "/CLI/src/FileUtils.cpp\" "
             << "/Fe:\"" << outPath << "\" "
             << "/link "
             << "/LIBPATH:\"" << buildDir << "\" "
-            << "Luau.CLI.lib.lib Luau.Require.lib Luau.CodeGen.lib Luau.Compiler.lib "
-            << "Luau.Bytecode.lib Luau.Inliner.lib Luau.VM.lib Luau.Config.lib Luau.Analysis.lib Luau.Ast.lib Luau.Common.lib "
-            << "isocline.lib "
+            << "/OPT:REF /OPT:ICF ";
+        if (options.strip)
+            cmd << "/INCREMENTAL:NO ";
+        cmd << "Luau.Require.lib Luau.CodeGen.lib Luau.Compiler.lib "
+            << "Luau.Bytecode.lib Luau.Inliner.lib Luau.VM.lib Luau.Config.lib Luau.Ast.lib Luau.Common.lib "
             << "ws2_32.lib bcrypt.lib user32.lib shell32.lib advapi32.lib ";
         if (options.windowed)
             cmd << "/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup";
@@ -1148,7 +1191,8 @@ static bool compileNativeRunner(
     }
     else
     {
-        cmd << compiler << " -std=c++17 -O2 "
+        std::string optFlag = options.optimizeForSize ? "-Os" : "-O2";
+        cmd << compiler << " -std=c++17 " << optFlag << " -ffunction-sections -fdata-sections -fno-rtti -fvisibility=hidden "
             << "-I\"" << rootDir << "/VM/include\" "
             << "-I\"" << rootDir << "/Common/include\" "
             << "-I\"" << rootDir << "/Ast/include\" "
@@ -1158,23 +1202,26 @@ static bool compileNativeRunner(
             << "-I\"" << rootDir << "/Config/include\" "
             << "-I\"" << rootDir << "/Require/include\" "
             << "-I\"" << rootDir << "/CLI/include\" "
-            << "-I\"" << rootDir << "/extern/isocline/include\" "
             << "\"" << tempPath << "\" "
+            << "\"" << rootDir << "/CLI/src/FileUtils.cpp\" "
             << "-o \"" << outPath << "\" "
             << "-L\"" << buildDir << "\" ";
 
+        if (options.strip)
+            cmd << "-s ";
+
         if (isAppleTarget)
         {
-            cmd << "-lLuau.CLI.lib -lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
-                << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Analysis -lLuau.Ast -lLuau.Common "
-                << "-lisocline "
+            cmd << "-Wl,-dead_strip "
+                << "-lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
+                << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Ast -lLuau.Common "
                 << "-framework CoreFoundation -lpthread -lm";
         }
         else if (isWindowsTarget)
         {
-            cmd << "-lLuau.CLI.lib -lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
-                << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Analysis -lLuau.Ast -lLuau.Common "
-                << "-lisocline "
+            cmd << "-Wl,--gc-sections "
+                << "-lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
+                << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Ast -lLuau.Common "
                 << "-lws2_32 -lbcrypt -luser32 -lshell32 -ladvapi32 ";
             if (options.windowed)
                 cmd << "-mwindows ";
@@ -1182,10 +1229,9 @@ static bool compileNativeRunner(
         }
         else
         {
-            cmd << "-Wl,--start-group "
-                << "-lLuau.CLI.lib -lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
-                << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Analysis -lLuau.Ast -lLuau.Common "
-                << "-lisocline "
+            cmd << "-Wl,--gc-sections -Wl,--start-group "
+                << "-lLuau.Require -lLuau.CodeGen -lLuau.Compiler "
+                << "-lLuau.Bytecode -lLuau.Inliner -lLuau.VM -lLuau.Config -lLuau.Ast -lLuau.Common "
                 << "-Wl,--end-group "
                 << "-ldl -lpthread -lm";
         }
@@ -1657,6 +1703,19 @@ std::optional<int> SingleBinaryCompiler::checkAndRunBundledPayload(int argc, cha
 
     uint32_t flags = readUint32(ptr, end);
     bool enableCodegen = (flags & 1) != 0;
+    bool isCompressed = (flags & 8) != 0;
+
+    std::string decompressedData;
+    if (isCompressed)
+    {
+        uint64_t uncompressedSize = readUint64(ptr, end);
+        size_t remainingCompressedSize = static_cast<size_t>(end - ptr);
+        std::string_view compressedView(reinterpret_cast<const char*>(ptr), remainingCompressedSize);
+        decompressedData = Luau::Vfs::decompress(compressedView, static_cast<size_t>(uncompressedSize));
+        ptr = reinterpret_cast<const unsigned char*>(decompressedData.data());
+        end = ptr + decompressedData.size();
+    }
+
     int optLevel = readInt32(ptr, end);
     int dbgLevel = readInt32(ptr, end);
     uint32_t entryIndex = readUint32(ptr, end);

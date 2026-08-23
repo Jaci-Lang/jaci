@@ -261,5 +261,59 @@ TEST_CASE("SingleBinaryCliDirectBuildFlag")
     system(("rm -rf " + testDir).c_str());
 }
 
+TEST_CASE("SingleBinaryCompressedPayloadDirectAndNative")
+{
+    std::string testDir = "/tmp/jaci_single_bin_compressed_test";
+    system(("mkdir -p " + testDir).c_str());
+
+    std::ofstream helper(testDir + "/mod.luau");
+    helper << "local M = {}\n";
+    helper << "function M.data(): string\n";
+    helper << "    return string.rep('COMPRESSION_TEST_PAYLOAD_', 100)\n";
+    helper << "end\n";
+    helper << "return M\n";
+    helper.close();
+
+    std::ofstream mainFile(testDir + "/main.luau");
+    mainFile << "local M = require('./mod')\n";
+    mainFile << "assert(#M.data() == 2500)\n";
+    mainFile.close();
+
+    // 1. Direct bundle with compression enabled (default)
+    std::string directBinary = testDir + "/compressed_direct_app";
+    Luau::SingleBinaryOptions directOpts;
+    directOpts.entryFilePath = testDir + "/main.luau";
+    directOpts.outputBinaryPath = directBinary;
+    directOpts.bundleMode = Luau::BundleMode::Direct;
+    directOpts.compress = true;
+    directOpts.strip = true;
+
+    bool okDirect = Luau::SingleBinaryCompiler::compile(directOpts);
+    CHECK(okDirect);
+    CHECK(isFile(directBinary));
+
+    int retDirect = system((directBinary + " > /dev/null 2>&1").c_str());
+    CHECK(retDirect == 0);
+
+    // 2. Native compilation with compression enabled and opt-size
+    std::string nativeBinary = testDir + "/compressed_native_app";
+    Luau::SingleBinaryOptions nativeOpts;
+    nativeOpts.entryFilePath = testDir + "/main.luau";
+    nativeOpts.outputBinaryPath = nativeBinary;
+    nativeOpts.bundleMode = Luau::BundleMode::Native;
+    nativeOpts.compress = true;
+    nativeOpts.strip = true;
+    nativeOpts.optimizeForSize = true;
+
+    bool okNative = Luau::SingleBinaryCompiler::compile(nativeOpts);
+    CHECK(okNative);
+    CHECK(isFile(nativeBinary));
+
+    int retNative = system((nativeBinary + " > /dev/null 2>&1").c_str());
+    CHECK(retNative == 0);
+
+    system(("rm -rf " + testDir).c_str());
+}
+
 TEST_SUITE_END();
 

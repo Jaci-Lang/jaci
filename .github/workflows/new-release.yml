@@ -51,6 +51,8 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DLUAU_STRIP_BINARIES=ON \
+            -DLUAU_ENABLE_LTO=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -59,23 +61,31 @@ jobs:
         run: |
           cmake -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
+            -DLUAU_STRIP_BINARIES=ON `
+            -DLUAU_ENABLE_LTO=ON `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_FLAGS="/MP /Gy /Gw /O2"
+            -DCMAKE_CXX_FLAGS="/MP /Gy /Gw /O2 /GL" `
+            -DCMAKE_EXE_LINKER_FLAGS="/LTCG /OPT:REF /OPT:ICF"
 
       - name: Build Targets
         run: cmake --build build --target Luau.Repl.CLI Luau.Analyze.CLI Luau.Compile.CLI Luau.Ast.CLI -j 4
 
-      - name: Pack Release (Unix)
+      - name: Strip & Pack Release (Unix)
         if: matrix.os.name != 'windows'
         run: |
           cd build
-          zip -j ../luau-${{ matrix.os.name }}.zip luau luau-analyze luau-compile luau-ast
+          if [ "${{ matrix.os.name }}" = "macos" ]; then
+            strip -u -r luau luau-analyze luau-compile luau-ast || true
+          else
+            strip -s luau luau-analyze luau-compile luau-ast || true
+          fi
+          zip -j -9 ../luau-${{ matrix.os.name }}.zip luau luau-analyze luau-compile luau-ast
 
       - name: Pack Release (Windows)
         if: matrix.os.name == 'windows'
         run: |
-          7z a luau-${{ matrix.os.name }}.zip .\build\luau.exe .\build\luau-analyze.exe .\build\luau-compile.exe .\build\luau-ast.exe
+          7z a -mx=9 luau-${{ matrix.os.name }}.zip .\build\luau.exe .\build\luau-analyze.exe .\build\luau-compile.exe .\build\luau-ast.exe
 
       - uses: actions/upload-artifact@v4
         with:
@@ -107,7 +117,7 @@ jobs:
       - name: Build Web Target
         run: |
           source emsdk/emsdk_env.sh
-          emcmake cmake -B build -G Ninja -DLUAU_BUILD_WEB=ON -DCMAKE_BUILD_TYPE=Release
+          emcmake cmake -B build -G Ninja -DLUAU_BUILD_WEB=ON -DCMAKE_BUILD_TYPE=Release -DLUAU_STRIP_BINARIES=ON -DLUAU_ENABLE_LTO=ON
           cmake --build build --target Luau.Web -j 4
 
       - uses: actions/upload-artifact@v4

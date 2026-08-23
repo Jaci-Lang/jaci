@@ -121,7 +121,8 @@ endif
 
 # configuration-specific flags
 ifeq ($(config),release)
-	CXXFLAGS+=-O2 -DNDEBUG -fno-math-errno
+	CXXFLAGS+=-O2 -DNDEBUG -fno-math-errno -ffunction-sections -fdata-sections -fno-rtti -fvisibility=hidden -fvisibility-inlines-hidden
+	LDFLAGS+=-Wl,--gc-sections -s
 endif
 
 ifeq ($(config),coverage)
