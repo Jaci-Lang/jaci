@@ -268,8 +268,14 @@ static int lua_loadfile(lua_State* L)
 
     lua_setsafeenv(L, LUA_ENVIRONINDEX, false);
 
+    std::string formattedChunkname;
+    if (chunkname && chunkname[0] != '@' && chunkname[0] != '=')
+        formattedChunkname = "@" + normalizePath(chunkname);
+    else
+        formattedChunkname = chunkname ? chunkname : ("@" + normalizePath(filename));
+
     std::string bytecode = Luau::compile(*source, copts());
-    if (luau_load(L, chunkname, bytecode.data(), bytecode.size(), 0) == 0)
+    if (luau_load(L, formattedChunkname.c_str(), bytecode.data(), bytecode.size(), 0) == 0)
         return 1;
 
     lua_pushnil(L);
@@ -352,6 +358,22 @@ void setupArguments(lua_State* L, int argc, char** argv)
 {
     for (int i = 0; i < argc; ++i)
         lua_pushstring(L, argv[i]);
+
+    lua_getglobal(L, "process");
+    if (lua_istable(L, -1))
+    {
+        lua_getfield(L, -1, "args");
+        if (lua_istable(L, -1))
+        {
+            for (int i = 0; i < argc; ++i)
+            {
+                lua_pushstring(L, argv[i]);
+                lua_rawseti(L, -2, i + 1);
+            }
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
 }
 
 std::string runCode(lua_State* L, const std::string& source)

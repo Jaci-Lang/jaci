@@ -605,6 +605,45 @@ declare jni: {
 }
 )BUILTIN_SRC";
 
+static constexpr const char* kBuiltinDefinitionProcessSrc = R"BUILTIN_SRC(
+
+declare process: {
+    cwd: () -> string,
+    chdir: @checked (dir: string) -> boolean?,
+    pid: number,
+    getpid: () -> number,
+    exit: @checked (code: number?) -> (),
+    env: { [string]: string },
+    args: { string },
+    os: string,
+    arch: string,
+    spawn: @checked (cmd: string, args: { string }?) -> { exitcode: number, stdout: string, stderr: string }?,
+    exec: @checked (cmd: string, args: { string }?) -> { exitcode: number, stdout: string, stderr: string }?,
+}
+
+)BUILTIN_SRC";
+
+static constexpr const char* kBuiltinDefinitionNetSrc = R"BUILTIN_SRC(
+
+declare net: {
+    request: @checked (opts: { url: string, method: string?, headers: { [string]: string }?, body: (string | any)? }) -> { status: number, statusCode: number?, headers: { [string]: string }, body: string },
+    get: @checked (url: string, headers: { [string]: string }?) -> { status: number, headers: { [string]: string }, body: string },
+    post: @checked (url: string, body: (string | any)?, headers: { [string]: string }?) -> { status: number, headers: { [string]: string }, body: string },
+    serve: @checked (port: number, handler: (req: any) -> any) -> { stop: () -> () },
+}
+
+)BUILTIN_SRC";
+
+static constexpr const char* kBuiltinDefinitionJsonSrc = R"BUILTIN_SRC(
+
+declare json: {
+    encode: @checked (val: any) -> string,
+    decode: @checked (str: string) -> any,
+    pretty: @checked (val: any) -> string,
+}
+
+)BUILTIN_SRC";
+
 std::string getBuiltinDefinitionSource()
 {
     std::string result = kBuiltinDefinitionBaseSrc;
@@ -619,6 +658,9 @@ std::string getBuiltinDefinitionSource()
     result += kBuiltinDefinitionTableSrc;
     result += kBuiltinDefinitionDebugSrc;
     result += kBuiltinDefinitionUtf8Src;
+    result += kBuiltinDefinitionProcessSrc;
+    result += kBuiltinDefinitionNetSrc;
+    result += kBuiltinDefinitionJsonSrc;
     if (FFlag::LuauIntegerType2 && FFlag::LuauIntegerLibrary)
         result += kBuiltinDefinitionBufferSrc;
     else

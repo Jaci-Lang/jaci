@@ -19,7 +19,7 @@ const std::array<std::string_view, 4> kIndexSuffixes = {"/index.luau", "/index.l
 const std::array<std::string_view, 3> kNativeSuffixes = {".so", ".dylib", ".dll"};
 
 // Package directory names to search for bare module specifiers, in priority order.
-const std::array<std::string_view, 3> kPackageDirs = {"luau_packages", "packages", "node_modules"};
+const std::array<std::string_view, 4> kPackageDirs = {"klur_modules", "luau_packages", "packages", "node_modules"};
 
 struct ResolvedRealPath
 {
@@ -298,20 +298,27 @@ NavigationStatus VfsNavigator::toBarePackage(const std::string& pkgName)
     {
         for (std::string_view pkgDir : kPackageDirs)
         {
-            std::string candidateMod = searchDir + "/" + std::string(pkgDir) + "/" + pkgName;
-            std::string candidateAbs = absolutePathPrefix + candidateMod;
+            std::string candidateMods[2] = {
+                searchDir + "/" + std::string(pkgDir) + "/" + pkgName,
+                searchDir + "/" + std::string(pkgDir) + "/@" + pkgName
+            };
 
-            bool exists = isDirectory(candidateAbs) || isFile(candidateAbs + ".luau") || isFile(candidateAbs + ".lua") ||
-                          isFile(candidateAbs + ".so") || isFile(candidateAbs + ".dylib") || isFile(candidateAbs + ".dll");
-
-            if (exists)
+            for (const auto& candidateMod : candidateMods)
             {
-                absoluteModulePath = candidateMod;
-                modulePath = candidateMod;
+                std::string candidateAbs = absolutePathPrefix + candidateMod;
 
-                NavigationStatus status = updateRealPaths();
-                if (status == NavigationStatus::Success)
-                    return NavigationStatus::Success;
+                bool exists = isDirectory(candidateAbs) || isFile(candidateAbs + ".luau") || isFile(candidateAbs + ".lua") ||
+                              isFile(candidateAbs + ".so") || isFile(candidateAbs + ".dylib") || isFile(candidateAbs + ".dll");
+
+                if (exists)
+                {
+                    absoluteModulePath = candidateMod;
+                    modulePath = candidateMod;
+
+                    NavigationStatus status = updateRealPaths();
+                    if (status == NavigationStatus::Success)
+                        return NavigationStatus::Success;
+                }
             }
         }
 

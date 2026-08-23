@@ -523,7 +523,7 @@ std::string generateRunnerCpp(
     out << "static luarequire_NavigateResult embedded_alias_fallback(lua_State* L, void* ctx, const char* aliasUnprefixed)\n{\n";
     out << "    EmbeddedRequireContext* req = static_cast<EmbeddedRequireContext*>(ctx);\n";
     out << "    if (!aliasUnprefixed) return NAVIGATE_NOT_FOUND;\n";
-    out << "    static const char* kPkgDirs[] = {\"luau_packages\", \"packages\", \"node_modules\"};\n";
+    out << "    static const char* kPkgDirs[] = {\"klur_modules\", \"luau_packages\", \"packages\", \"node_modules\"};\n";
     out << "    for (const char* dir : kPkgDirs)\n    {\n";
     out << "        std::string cand = std::string(dir) + \"/\" + aliasUnprefixed;\n";
     out << "        if (findEmbeddedModule(cand.c_str()) ||\n";
@@ -1397,7 +1397,11 @@ static luarequire_WriteResult rt_get_chunkname(lua_State* L, void* ctx, char* bu
 static luarequire_WriteResult rt_get_loadname(lua_State* L, void* ctx, char* buffer, size_t buffer_size, size_t* size_out)
 {
     EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
-    std::string name = req->currentPath;
+    const DiscoveredModule* mod = req->findModule(req->currentPath.c_str());
+    if (!mod) mod = req->findModule((req->currentPath + ".luau").c_str());
+    if (!mod) mod = req->findModule((req->currentPath + "/init.luau").c_str());
+
+    std::string name = mod ? mod->loadName : req->currentPath;
     size_t sz = name.size() + 1;
     if (buffer_size < sz) { *size_out = sz; return luarequire_WriteResult::WRITE_BUFFER_TOO_SMALL; }
     *size_out = sz;
@@ -1424,16 +1428,30 @@ static luarequire_NavigateResult rt_alias_fallback(lua_State* L, void* ctx, cons
 {
     EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
     if (!aliasUnprefixed) return NAVIGATE_NOT_FOUND;
-    static const char* kPkgDirs[] = {"luau_packages", "packages", "node_modules"};
+    static const char* kPkgDirs[] = {"klur_modules", "luau_packages", "packages", "node_modules"};
     for (const char* dir : kPkgDirs)
     {
-        std::string cand = std::string(dir) + "/" + aliasUnprefixed;
-        if (req->findModule(cand.c_str()) ||
-            req->findModule((cand + ".luau").c_str()) ||
-            req->findModule((cand + "/init.luau").c_str()))
+        std::string cand1 = std::string(dir) + "/@" + aliasUnprefixed;
+        std::string cand2 = std::string(dir) + "/" + aliasUnprefixed;
+        for (const std::string& cand : {cand1, cand2})
         {
-            req->currentPath = cand;
-            return NAVIGATE_SUCCESS;
+            if (req->findModule(cand.c_str()) ||
+                req->findModule((cand + ".luau").c_str()) ||
+                req->findModule((cand + "/init.luau").c_str()))
+            {
+                req->currentPath = cand;
+                return NAVIGATE_SUCCESS;
+            }
+            for (const auto& m : req->modules)
+            {
+                if (m.loadName.rfind(cand + "/", 0) == 0 ||
+                    m.chunkName.rfind(cand + "/", 0) == 0 ||
+                    m.absolutePath.rfind(cand + "/", 0) == 0)
+                {
+                    req->currentPath = cand;
+                    return NAVIGATE_SUCCESS;
+                }
+            }
         }
     }
     return NAVIGATE_NOT_FOUND;
@@ -1605,26 +1623,32 @@ static int rt_fs_stat(lua_State* L)
         {
             lua_createtable(L, 0, 4);
             lua_pushnumber(L, static_cast<double>(asset->data.size())); lua_setfield(L, -2, "size");
-            lua_pushboolean(L, 1); lua_setfield(L, -2, "is_file");
-            lua_pushboolean(L, 0); lua_setfield(L, -2, "is_dir");
-            lua_pushnumber(L, 0); lua_setfield(L, -2, "modified");
+            lua_pushboolean(L, 1); lua_setfield(L, -2, "isFile");
+            lua_pushboolean(L, 0); lua_setfield(L, -2, "isDirectory");
+            lua_pushboolean(L, 1); lua_setfield(L, -2, "exists");
             return 1;
         }
     }
-    lua_getglobal(L, "fs");
-    if (lua_istable(L, -1))
+    if (isFile(pathStr))
     {
-        lua_getfield(L, -1, "stat");
-        if (lua_iscfunction(L, -1))
-        {
-            lua_pushvalue(L, 1);
-            lua_call(L, 1, 1);
-            lua_remove(L, -2);
-            return 1;
-        }
+        lua_createtable(L, 0, 4);
+        lua_pushnumber(L, 0); lua_setfield(L, -2, "size");
+        lua_pushboolean(L, 1); lua_setfield(L, -2, "isFile");
+        lua_pushboolean(L, 0); lua_setfield(L, -2, "isDirectory");
+        lua_pushboolean(L, 1); lua_setfield(L, -2, "exists");
+        return 1;
     }
-    luaL_error(L, "fs.stat: cannot stat: %s", pathStr);
-    return 0;
+    if (isDirectory(pathStr))
+    {
+        lua_createtable(L, 0, 4);
+        lua_pushnumber(L, 0); lua_setfield(L, -2, "size");
+        lua_pushboolean(L, 0); lua_setfield(L, -2, "isFile");
+        lua_pushboolean(L, 1); lua_setfield(L, -2, "isDirectory");
+        lua_pushboolean(L, 1); lua_setfield(L, -2, "exists");
+        return 1;
+    }
+    lua_pushnil(L);
+    return 1;
 }
 
 } // namespace
@@ -1809,6 +1833,19 @@ std::optional<int> SingleBinaryCompiler::checkAndRunBundledPayload(int argc, cha
     }
     lua_setglobal(L, "arg");
 
+    lua_getglobal(L, "process");
+    if (lua_istable(L, -1))
+    {
+        lua_createtable(L, argc, 0);
+        for (int i = 0; i < argc; ++i)
+        {
+            lua_pushstring(L, argv[i]);
+            lua_rawseti(L, -2, i + 1);
+        }
+        lua_setfield(L, -2, "args");
+    }
+    lua_pop(L, 1);
+
     // Load entry chunk
     const DiscoveredModule& entry = rtCtx.modules[rtCtx.entryIndex];
     int status = luau_load(L, entry.chunkName.c_str(), entry.bytecode.data(), entry.bytecode.size(), 0);
@@ -1942,7 +1979,17 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
                 std::string target = reqPath;
                 std::string resolvedTarget;
 
-                if (target.size() >= 2 && target.substr(0, 2) == "./")
+                if (target.size() >= 6 && target.substr(0, 6) == "@self/")
+                {
+                    if (auto parent = getParentPath(currentPath))
+                        resolvedTarget = normalizePath(*parent + "/" + target.substr(6));
+                }
+                else if (target == "@self")
+                {
+                    if (auto parent = getParentPath(currentPath))
+                        resolvedTarget = *parent;
+                }
+                else if (target.size() >= 2 && target.substr(0, 2) == "./")
                 {
                     if (auto parent = getParentPath(currentPath))
                         resolvedTarget = normalizePath(*parent + "/" + target.substr(2));
@@ -1954,7 +2001,25 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
                 }
                 else if (!target.empty() && target[0] == '@')
                 {
-                    resolvedTarget = target;
+                    std::string unprefixed = target.substr(1);
+                    static const char* kPkgDirs[] = {"klur_modules", "luau_packages", "packages", "node_modules"};
+                    for (const char* pdir : kPkgDirs)
+                    {
+                        std::string cand1 = std::string(pdir) + "/@" + unprefixed;
+                        std::string cand2 = std::string(pdir) + "/" + unprefixed;
+                        if (isFile(cand1) || isDirectory(cand1) || isFile(cand1 + ".luau") || isFile(cand1 + "/init.luau"))
+                        {
+                            resolvedTarget = cand1;
+                            break;
+                        }
+                        if (isFile(cand2) || isDirectory(cand2) || isFile(cand2 + ".luau") || isFile(cand2 + "/init.luau"))
+                        {
+                            resolvedTarget = cand2;
+                            break;
+                        }
+                    }
+                    if (resolvedTarget.empty())
+                        resolvedTarget = target;
                 }
                 else
                 {

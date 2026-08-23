@@ -162,6 +162,8 @@ Error Navigator::navigateImpl(std::string_view path)
                 }
             }
 
+            if (Error error = resetToRequirer())
+                return error;
             if (Error error = toAliasFallback(alias))
                 return error;
             if (Error error = navigateThroughPath(path))

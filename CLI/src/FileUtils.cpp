@@ -402,7 +402,7 @@ bool isFile(const std::string& path)
     return (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 #else
     struct stat st;
-    if (lstat(path.c_str(), &st) == 0)
+    if (stat(path.c_str(), &st) == 0)
         return (st.st_mode & S_IFMT) == S_IFREG;
     return false;
 #endif
@@ -417,7 +417,7 @@ bool isDirectory(const std::string& path)
     return (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #else
     struct stat st;
-    if (lstat(path.c_str(), &st) == 0)
+    if (stat(path.c_str(), &st) == 0)
         return (st.st_mode & S_IFMT) == S_IFDIR;
     return false;
 #endif
