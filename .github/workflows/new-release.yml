@@ -62,6 +62,10 @@ jobs:
       - name: Configure CMake (Windows)
         if: matrix.os.name == 'windows'
         shell: bash
+        env:
+          # Git Bash (MSYS) rewrites /looking-like-paths arguments into
+          # Windows paths (/O2 -> C:/Program Files/Git/O2); disable it.
+          MSYS2_ARG_CONV_EXCL: "*"
         run: |
           V="${{ github.event.inputs.version }}"
           V="${V#v}"
