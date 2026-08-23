@@ -165,7 +165,10 @@ if(MSVC)
     list(APPEND LUAU_OPTIONS "/we4018") # Signed/unsigned mismatch
     list(APPEND LUAU_OPTIONS "/we4388") # Also signed/unsigned mismatch
     list(APPEND LUAU_OPTIONS /Gy) # Enable function-level linking
+    list(APPEND LUAU_OPTIONS /Zc:inline) # Remove unreferenced functions and data
+    list(APPEND LUAU_OPTIONS /Z7) # Store debug info in .obj (much faster for parallel builds)
     list(APPEND LUAU_OPTIONS /GR-) # Disable RTTI for compact binaries
+    list(APPEND LUAU_OPTIONS /EHsc) # Enable C++ exceptions
     list(APPEND LUAU_LINK_OPTIONS /OPT:REF /OPT:ICF)
 else()
     list(APPEND LUAU_OPTIONS -Wall) # All warnings
