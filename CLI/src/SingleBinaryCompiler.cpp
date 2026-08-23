@@ -937,24 +937,37 @@ static bool compileDirectBundle(
         if (const char* envStub = getenv("JACI_RUNNER_STUB"))
             stubPath = envStub;
     }
+    // Explicit environment overrides only: JACI_ROOT (source tree) and
+    // JACI_BUILD (build tree). No machine-specific defaults: the running
+    // executable itself (below) is the portable fallback base.
     if (stubPath.empty() || !isFile(stubPath))
     {
-        std::string rootDir = "/home/klee/Documentos/jaci";
-        if (const char* envRoot = getenv("JACI_ROOT"))
-            rootDir = envRoot;
-        std::string buildDir = rootDir + "/build";
         if (const char* envBuild = getenv("JACI_BUILD"))
-            buildDir = envBuild;
-
-        static const char* kCandidates[] = {
-            "/luau", "/luau.exe", "/build/luau", "/build/luau.exe"
-        };
-        for (const char* cand : kCandidates)
         {
-            std::string c1 = buildDir + cand;
-            if (isFile(c1)) { stubPath = c1; break; }
-            std::string c2 = rootDir + cand;
-            if (isFile(c2)) { stubPath = c2; break; }
+            if (isFile(envBuild))
+            {
+                stubPath = envBuild;
+            }
+            else if (isDirectory(envBuild))
+            {
+                static const char* kExeNames[] = {"luau", "luau.exe"};
+                for (const char* name : kExeNames)
+                {
+                    std::string c = std::string(envBuild) + "/" + name;
+                    if (isFile(c)) { stubPath = c; break; }
+                }
+            }
+        }
+        if (const char* envRoot = getenv("JACI_ROOT"); envRoot && (stubPath.empty() || !isFile(stubPath)))
+        {
+            static const char* kCandidates[] = {
+                "luau", "luau.exe", "build/luau", "build/luau.exe"
+            };
+            for (const char* cand : kCandidates)
+            {
+                std::string c = std::string(envRoot) + "/" + cand;
+                if (isFile(c)) { stubPath = c; break; }
+            }
         }
     }
     if (stubPath.empty() || !isFile(stubPath))
@@ -1815,6 +1828,15 @@ static int rt_loadstring(lua_State* L)
 
 std::optional<int> SingleBinaryCompiler::checkAndRunBundledPayload(int argc, char** argv)
 {
+    // An explicit engine-level build request (luau --build entry -o out) must
+    // reach the normal CLI even on a payload-bearing binary. This is what lets
+    // `klur build` inside a single binary re-invoke itself as the engine.
+    for (int i = 1; i < argc; ++i)
+    {
+        if (argv[i] && (strcmp(argv[i], "--build") == 0 || strcmp(argv[i], "--bundle") == 0 || strcmp(argv[i], "-b") == 0))
+            return std::nullopt;
+    }
+
     std::string exePath = getExecutablePath();
     if (exePath.empty() && argc > 0 && argv[0])
         exePath = argv[0];
@@ -2022,11 +2044,14 @@ std::optional<int> SingleBinaryCompiler::checkAndRunBundledPayload(int argc, cha
     lua_getglobal(L, "process");
     if (lua_istable(L, -1))
     {
-        lua_createtable(L, argc, 0);
-        for (int i = 0; i < argc; ++i)
+        // Program arguments only (argv[1..]), matching the REPL convention:
+        // argv[0] is the executable itself, never a program argument. Putting
+        // it here made a bare `./klur` look like "run the file ./klur".
+        lua_createtable(L, argc > 1 ? argc - 1 : 0, 0);
+        for (int i = 1; i < argc; ++i)
         {
             lua_pushstring(L, argv[i]);
-            lua_rawseti(L, -2, i + 1);
+            lua_rawseti(L, -2, i);
         }
         lua_setfield(L, -2, "args");
     }

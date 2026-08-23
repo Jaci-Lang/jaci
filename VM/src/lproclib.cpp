@@ -24,6 +24,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 static auto g_procStartTime = std::chrono::steady_clock::now();
@@ -55,6 +58,42 @@ static int proc_cwd(lua_State* L)
     }
     lua_pushnil(L);
     return 1;
+}
+
+// Absolute path of the currently running executable ("" when it cannot be
+// determined). Lets embedded toolchains (e.g. klur) locate the engine they
+// are running on without relying on PATH.
+static void getSelfExecutablePath(char* buf, size_t bufSize)
+{
+#if defined(_WIN32)
+    wchar_t wbuf[MAX_PATH * 4] = {};
+    DWORD len = GetModuleFileNameW(NULL, wbuf, MAX_PATH * 4);
+    if (len > 0)
+    {
+        int sz = WideCharToMultiByte(CP_UTF8, 0, wbuf, (int)len, NULL, 0, NULL, NULL);
+        if (sz > 0 && sz < (int)bufSize)
+        {
+            WideCharToMultiByte(CP_UTF8, 0, wbuf, (int)len, buf, sz, NULL, NULL);
+            buf[sz] = '\0';
+        }
+    }
+    else
+        buf[0] = '\0';
+#elif defined(__linux__)
+    ssize_t len = readlink("/proc/self/exe", buf, bufSize - 1);
+    if (len > 0)
+        buf[len] = '\0';
+    else
+        buf[0] = '\0';
+#elif defined(__APPLE__)
+    uint32_t size = bufSize;
+    if (_NSGetExecutablePath(buf, &size) == 0)
+        buf[bufSize - 1] = '\0';
+    else
+        buf[0] = '\0';
+#else
+    buf[0] = '\0';
+#endif
 }
 
 static int proc_chdir(lua_State* L)
@@ -467,6 +506,17 @@ int luaopen_process(lua_State* L)
     lua_pushstring(L, "unknown");
 #endif
     lua_setfield(L, -2, "arch");
+
+    // process.executable: absolute path of the running executable (nil if unknown).
+    {
+        char buf[4096];
+        getSelfExecutablePath(buf, sizeof(buf));
+        if (buf[0] != '\0')
+        {
+            lua_pushstring(L, buf);
+            lua_setfield(L, -2, "executable");
+        }
+    }
 
     lua_newtable(L);
     lua_setfield(L, -2, "args");
