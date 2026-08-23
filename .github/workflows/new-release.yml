@@ -61,6 +61,7 @@ jobs:
 
       - name: Configure CMake (Windows)
         if: matrix.os.name == 'windows'
+        shell: bash
         run: |
           V="${{ github.event.inputs.version }}"
           V="${V#v}"
