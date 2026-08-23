@@ -9,6 +9,7 @@
 #include "Luau/FileUtils.h"
 #include "Luau/Parser.h"
 #include "Luau/Require.h"
+#include "Luau/VfsCompress.h"
 #include "Luau/VfsNavigator.h"
 #include "lua.h"
 #include "lualib.h"
@@ -252,10 +253,7 @@ std::string generateRunnerCpp(
     const std::vector<DiscoveredModule>& modules,
     size_t entryIndex,
     const std::vector<DiscoveredAsset>& assets,
-    bool enableCodegen,
-    int optimizationLevel,
-    int debugLevel,
-    bool windowed
+    const SingleBinaryOptions& options
 )
 {
     std::ostringstream out;
@@ -268,9 +266,7 @@ std::string generateRunnerCpp(
     out << "#include \"Luau/CodeGen.h\"\n";
     out << "#include \"Luau/Compiler.h\"\n";
     out << "#include \"Luau/Require.h\"\n";
-    out << "#include \"Luau/VfsNavigator.h\"\n";
-    out << "#include \"Luau/FileUtils.h\"\n";
-    out << "#include \"Luau/ReplRequirer.h\"\n\n";
+    out << "#include \"Luau/FileUtils.h\"\n\n";
     out << "#include <cstdio>\n";
     out << "#include <cstdlib>\n";
     out << "#include <cstring>\n";
@@ -278,11 +274,53 @@ std::string generateRunnerCpp(
     out << "#include <string_view>\n";
     out << "#include <vector>\n\n";
 
+    // Inlined high-performance zero-dependency LZ decompressor
+    out << "static std::string decompressData(const unsigned char* comp, size_t compSz, size_t origSz)\n{\n";
+    out << "    if (compSz == 0 || origSz == 0) return \"\";\n";
+    out << "    if (comp[0] == '\\0') return std::string(reinterpret_cast<const char*>(comp + 1), compSz - 1);\n";
+    out << "    const unsigned char* src = comp + 1;\n";
+    out << "    const size_t srcLen = compSz - 1;\n";
+    out << "    std::string outBuf;\n";
+    out << "    outBuf.resize(origSz);\n";
+    out << "    unsigned char* dst = reinterpret_cast<unsigned char*>(&outBuf[0]);\n";
+    out << "    size_t ip = 0, op = 0;\n";
+    out << "    while (ip < srcLen && op < origSz)\n    {\n";
+    out << "        size_t litLen = src[ip++];\n";
+    out << "        if (litLen == 255)\n        {\n";
+    out << "            while (ip < srcLen && src[ip] == 255) { litLen += 255; ++ip; }\n";
+    out << "            if (ip < srcLen) litLen += src[ip++];\n";
+    out << "        }\n";
+    out << "        if (litLen > 0)\n        {\n";
+    out << "            if (ip + litLen > srcLen || op + litLen > origSz) break;\n";
+    out << "            memcpy(&dst[op], &src[ip], litLen);\n";
+    out << "            ip += litLen;\n";
+    out << "            op += litLen;\n";
+    out << "        }\n";
+    out << "        if (ip + 2 > srcLen) break;\n";
+    out << "        uint16_t offset = static_cast<uint16_t>(src[ip] | (src[ip + 1] << 8));\n";
+    out << "        ip += 2;\n";
+    out << "        if (offset == 0) break;\n";
+    out << "        if (ip >= srcLen) break;\n";
+    out << "        size_t matchLen = 4 + src[ip++];\n";
+    out << "        if (matchLen == 4 + 255)\n        {\n";
+    out << "            while (ip < srcLen && src[ip] == 255) { matchLen += 255; ++ip; }\n";
+    out << "            if (ip < srcLen) matchLen += src[ip++];\n";
+    out << "        }\n";
+    out << "        if (offset > op || op + matchLen > origSz) break;\n";
+    out << "        size_t ref = op - offset;\n";
+    out << "        for (size_t i = 0; i < matchLen; ++i) dst[op + i] = dst[ref + i];\n";
+    out << "        op += matchLen;\n";
+    out << "    }\n";
+    out << "    outBuf.resize(op);\n";
+    out << "    return outBuf;\n";
+    out << "}\n\n";
+
     // Embed bytecode arrays for modules
     for (size_t i = 0; i < modules.size(); ++i)
     {
+        std::string payload = options.compress ? Luau::Vfs::compress(modules[i].bytecode) : modules[i].bytecode;
         out << "static const unsigned char kModuleData_" << i << "[] = "
-            << formatHexBytes(modules[i].bytecode) << ";\n\n";
+            << formatHexBytes(payload) << ";\n\n";
     }
 
     out << "struct EmbeddedModuleRecord\n{\n";
@@ -291,16 +329,20 @@ std::string generateRunnerCpp(
     out << "    const char* absolutePath;\n";
     out << "    const unsigned char* bytecode;\n";
     out << "    size_t bytecodeSize;\n";
+    out << "    size_t originalSize;\n";
     out << "};\n\n";
 
     out << "static const EmbeddedModuleRecord kEmbeddedModules[] = {\n";
     for (size_t i = 0; i < modules.size(); ++i)
     {
+        std::string payload = options.compress ? Luau::Vfs::compress(modules[i].bytecode) : modules[i].bytecode;
+        size_t origSize = options.compress ? modules[i].bytecode.size() : 0;
         out << "    { \"" << escapeCString(modules[i].chunkName) << "\", \""
             << escapeCString(modules[i].loadName) << "\", \""
             << escapeCString(modules[i].absolutePath) << "\", "
             << "kModuleData_" << i << ", "
-            << modules[i].bytecode.size() << " },\n";
+            << payload.size() << ", "
+            << origSize << " },\n";
     }
     out << "};\n";
     out << "static const size_t kNumEmbeddedModules = " << modules.size() << ";\n";
@@ -309,8 +351,9 @@ std::string generateRunnerCpp(
     // Embed asset data arrays
     for (size_t i = 0; i < assets.size(); ++i)
     {
+        std::string payload = options.compress ? Luau::Vfs::compress(assets[i].data) : assets[i].data;
         out << "static const unsigned char kAssetData_" << i << "[] = "
-            << formatHexBytes(assets[i].data) << ";\n\n";
+            << formatHexBytes(payload) << ";\n\n";
     }
 
     out << "struct EmbeddedAssetRecord\n{\n";
@@ -319,16 +362,20 @@ std::string generateRunnerCpp(
     out << "    const char* absolutePath;\n";
     out << "    const unsigned char* data;\n";
     out << "    size_t size;\n";
+    out << "    size_t originalSize;\n";
     out << "};\n\n";
 
     out << "static const EmbeddedAssetRecord kEmbeddedAssets[] = {\n";
     for (size_t i = 0; i < assets.size(); ++i)
     {
+        std::string payload = options.compress ? Luau::Vfs::compress(assets[i].data) : assets[i].data;
+        size_t origSize = options.compress ? assets[i].data.size() : 0;
         out << "    { \"" << escapeCString(assets[i].path) << "\", \""
             << escapeCString(assets[i].relativePath) << "\", \""
             << escapeCString(assets[i].absolutePath) << "\", "
             << "kAssetData_" << i << ", "
-            << assets[i].data.size() << " },\n";
+            << payload.size() << ", "
+            << origSize << " },\n";
     }
     out << "};\n";
     out << "static const size_t kNumEmbeddedAssets = " << assets.size() << ";\n\n";
@@ -510,27 +557,29 @@ std::string generateRunnerCpp(
     out << "    }\n\n";
     out << "    int status = LUA_OK;\n";
     out << "    if (mod)\n    {\n";
-    out << "        status = luau_load(ML, chunkname, reinterpret_cast<const char*>(mod->bytecode), mod->bytecodeSize, 0);\n";
+    out << "        std::string bc = (mod->originalSize > 0) ? decompressData(mod->bytecode, mod->bytecodeSize, mod->originalSize) : std::string(reinterpret_cast<const char*>(mod->bytecode), mod->bytecodeSize);\n";
+    out << "        status = luau_load(ML, chunkname, bc.data(), bc.size(), 0);\n";
     out << "    }\n    else\n    {\n";
     out << "        const EmbeddedAssetRecord* asset = findEmbeddedAsset(loadname);\n";
     out << "        if (!asset) asset = findEmbeddedAsset(path);\n";
     out << "        if (asset)\n        {\n";
+    out << "            std::string assetData = (asset->originalSize > 0) ? decompressData(asset->data, asset->size, asset->originalSize) : std::string(reinterpret_cast<const char*>(asset->data), asset->size);\n";
     out << "            Luau::CompileOptions copts;\n";
-    out << "            copts.optimizationLevel = " << optimizationLevel << ";\n";
-    out << "            copts.debugLevel = " << debugLevel << ";\n";
-    out << "            std::string bytecode = Luau::compile(std::string(reinterpret_cast<const char*>(asset->data), asset->size), copts);\n";
+    out << "            copts.optimizationLevel = " << options.optimizationLevel << ";\n";
+    out << "            copts.debugLevel = " << options.debugLevel << ";\n";
+    out << "            std::string bytecode = Luau::compile(assetData, copts);\n";
     out << "            status = luau_load(ML, chunkname, bytecode.data(), bytecode.size(), 0);\n";
     out << "        }\n        else\n        {\n";
     out << "            std::optional<std::string> contents = readFile(loadname);\n";
     out << "            if (!contents) luaL_error(L, \"could not read module '%s'\", loadname);\n";
     out << "            Luau::CompileOptions copts;\n";
-    out << "            copts.optimizationLevel = " << optimizationLevel << ";\n";
-    out << "            copts.debugLevel = " << debugLevel << ";\n";
+    out << "            copts.optimizationLevel = " << options.optimizationLevel << ";\n";
+    out << "            copts.debugLevel = " << options.debugLevel << ";\n";
     out << "            std::string bytecode = Luau::compile(*contents, copts);\n";
     out << "            status = luau_load(ML, chunkname, bytecode.data(), bytecode.size(), 0);\n";
     out << "        }\n    }\n\n";
     out << "    if (status != 0) luaL_error(L, \"failed to load module '%s'\", loadname);\n\n";
-    if (enableCodegen)
+    if (options.codegen)
     {
         out << "    Luau::CodeGen::CompilationOptions nativeOptions;\n";
         out << "    Luau::CodeGen::compile(ML, -1, nativeOptions);\n\n";
@@ -569,7 +618,8 @@ std::string generateRunnerCpp(
     out << "    const char* pathStr = luaL_checkstring(L, 1);\n";
     out << "    const EmbeddedAssetRecord* asset = findEmbeddedAsset(pathStr);\n";
     out << "    if (asset)\n    {\n";
-    out << "        lua_pushlstring(L, reinterpret_cast<const char*>(asset->data), asset->size);\n";
+    out << "        std::string d = (asset->originalSize > 0) ? decompressData(asset->data, asset->size, asset->originalSize) : std::string(reinterpret_cast<const char*>(asset->data), asset->size);\n";
+    out << "        lua_pushlstring(L, d.data(), d.size());\n";
     out << "        return 1;\n";
     out << "    }\n";
     out << "    std::optional<std::string> fileData = readFile(pathStr);\n";
@@ -610,8 +660,9 @@ std::string generateRunnerCpp(
     out << "    const char* pathStr = luaL_checkstring(L, 1);\n";
     out << "    const EmbeddedAssetRecord* asset = findEmbeddedAsset(pathStr);\n";
     out << "    if (asset)\n    {\n";
+    out << "        size_t actualSize = (asset->originalSize > 0) ? asset->originalSize : asset->size;\n";
     out << "        lua_createtable(L, 0, 4);\n";
-    out << "        lua_pushnumber(L, static_cast<double>(asset->size)); lua_setfield(L, -2, \"size\");\n";
+    out << "        lua_pushnumber(L, static_cast<double>(actualSize)); lua_setfield(L, -2, \"size\");\n";
     out << "        lua_pushboolean(L, 1); lua_setfield(L, -2, \"is_file\");\n";
     out << "        lua_pushboolean(L, 0); lua_setfield(L, -2, \"is_dir\");\n";
     out << "        lua_pushnumber(L, 0); lua_setfield(L, -2, \"modified\");\n";
@@ -635,7 +686,7 @@ std::string generateRunnerCpp(
     out << "int runApplication(int argc, char** argv)\n{\n";
     out << "    lua_State* L = luaL_newstate();\n";
     out << "    if (!L) { fprintf(stderr, \"Failed to initialize Luau VM\\n\"); return 1; }\n\n";
-    if (enableCodegen)
+    if (options.codegen)
     {
         out << "    if (Luau::CodeGen::isSupported())\n        Luau::CodeGen::create(L);\n\n";
     }
@@ -676,13 +727,14 @@ std::string generateRunnerCpp(
 
     // Load entry point module
     out << "    const EmbeddedModuleRecord& entry = kEmbeddedModules[kEntryModuleIndex];\n";
-    out << "    int status = luau_load(L, entry.chunkName, reinterpret_cast<const char*>(entry.bytecode), entry.bytecodeSize, 0);\n";
+    out << "    std::string entryBytecode = (entry.originalSize > 0) ? decompressData(entry.bytecode, entry.bytecodeSize, entry.originalSize) : std::string(reinterpret_cast<const char*>(entry.bytecode), entry.bytecodeSize);\n";
+    out << "    int status = luau_load(L, entry.chunkName, entryBytecode.data(), entryBytecode.size(), 0);\n";
     out << "    if (status != 0)\n    {\n";
     out << "        fprintf(stderr, \"Error loading entry chunk: %s\\n\", lua_tostring(L, -1));\n";
     out << "        lua_close(L);\n";
     out << "        return 1;\n";
     out << "    }\n\n";
-    if (enableCodegen)
+    if (options.codegen)
     {
         out << "    if (Luau::CodeGen::isSupported())\n    {\n";
         out << "        Luau::CodeGen::CompilationOptions nativeOpts;\n";

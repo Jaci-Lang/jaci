@@ -30,6 +30,9 @@ struct SingleBinaryOptions
     bool codegen = true;
     bool verbose = false;
     bool windowed = false;          // Windows GUI / main window application mode (subsystem:windows, no console window)
+    bool strip = true;             // Strip debug symbols from output binary for minimal artifact size
+    bool compress = true;          // Compress bytecode and asset payload using LZ VFS compression
+    bool optimizeForSize = false;  // Optimize compiler code generation for minimal size (-Os / /O1)
 };
 
 class SingleBinaryCompiler

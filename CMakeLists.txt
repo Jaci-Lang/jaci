@@ -13,6 +13,9 @@ option(LUAU_WERROR "Warnings as errors" OFF)
 option(LUAU_STATIC_CRT "Link with the static CRT (/MT)" OFF)
 option(LUAU_EXTERN_C "Use extern C for all APIs" OFF)
 option(LUAU_BUILD_SHARED "Build as a shared library" OFF)
+option(LUAU_ENABLE_LTO "Enable Link-Time Optimization (LTO / IPO)" OFF)
+option(LUAU_OPTIMIZE_SIZE "Optimize compilation and linking for minimal binary size" OFF)
+option(LUAU_STRIP_BINARIES "Strip debug symbols from release executable artifacts" OFF)
 
 if(LUAU_BUILD_SHARED AND NOT LUAU_EXTERN_C)
     message(FATAL_ERROR "LUAU_BUILD_SHARED requires LUAU_EXTERN_C to be ON")
@@ -20,6 +23,9 @@ endif()
 
 cmake_policy(SET CMP0054 NEW)
 cmake_policy(SET CMP0091 NEW)
+if(POLICY CMP0069)
+    cmake_policy(SET CMP0069 NEW)
+endif()
 
 if(LUAU_STATIC_CRT)
     cmake_minimum_required(VERSION 3.15)
@@ -152,15 +158,54 @@ target_include_directories(isocline PUBLIC extern/isocline/include)
 target_include_directories(Luau.VM.Internals INTERFACE VM/src)
 
 set(LUAU_OPTIONS)
+set(LUAU_LINK_OPTIONS)
 
 if(MSVC)
     list(APPEND LUAU_OPTIONS /D_CRT_SECURE_NO_WARNINGS) # We need to use the portable CRT functions.
     list(APPEND LUAU_OPTIONS "/we4018") # Signed/unsigned mismatch
     list(APPEND LUAU_OPTIONS "/we4388") # Also signed/unsigned mismatch
+    list(APPEND LUAU_OPTIONS /Gy) # Enable function-level linking
+    list(APPEND LUAU_OPTIONS /GR-) # Disable RTTI for compact binaries
+    list(APPEND LUAU_LINK_OPTIONS /OPT:REF /OPT:ICF)
 else()
     list(APPEND LUAU_OPTIONS -Wall) # All warnings
     list(APPEND LUAU_OPTIONS -Wimplicit-fallthrough)
     list(APPEND LUAU_OPTIONS -Wsign-compare) # This looks to be included in -Wall for GCC but not clang
+    list(APPEND LUAU_OPTIONS -ffunction-sections)
+    list(APPEND LUAU_OPTIONS -fdata-sections)
+    list(APPEND LUAU_OPTIONS -fno-rtti)
+    if(NOT LUAU_BUILD_SHARED)
+        list(APPEND LUAU_OPTIONS -fvisibility=hidden)
+        list(APPEND LUAU_OPTIONS -fvisibility-inlines-hidden)
+    endif()
+
+    if(APPLE)
+        list(APPEND LUAU_LINK_OPTIONS -Wl,-dead_strip)
+    elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|Android|BSD|SunOS")
+        list(APPEND LUAU_LINK_OPTIONS -Wl,--gc-sections)
+    endif()
+endif()
+
+if(LUAU_OPTIMIZE_SIZE)
+    if(MSVC)
+        list(APPEND LUAU_OPTIONS /O1 /Os)
+    else()
+        list(APPEND LUAU_OPTIONS -Os)
+    endif()
+endif()
+
+if(LUAU_STRIP_BINARIES AND NOT MSVC AND NOT APPLE)
+    list(APPEND LUAU_LINK_OPTIONS -s)
+endif()
+
+if(LUAU_ENABLE_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
+    if(ipo_supported)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+    else()
+        message(WARNING "IPO / LTO not supported: ${ipo_error}")
+    endif()
 endif()
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
@@ -195,11 +240,17 @@ if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     list(APPEND ISOCLINE_OPTIONS -Wno-unused-function)
 endif()
 
+target_compile_options(Luau.Common PRIVATE ${LUAU_OPTIONS})
 target_compile_options(Luau.Ast PRIVATE ${LUAU_OPTIONS})
+target_compile_options(Luau.Bytecode PRIVATE ${LUAU_OPTIONS})
+target_compile_options(Luau.Inliner PRIVATE ${LUAU_OPTIONS})
+target_compile_options(Luau.Compiler PRIVATE ${LUAU_OPTIONS})
+target_compile_options(Luau.Config PRIVATE ${LUAU_OPTIONS})
 target_compile_options(Luau.Analysis PRIVATE ${LUAU_OPTIONS})
-target_compile_options(Luau.CLI.lib PRIVATE ${LUAU_OPTIONS})
 target_compile_options(Luau.CodeGen PRIVATE ${LUAU_OPTIONS})
 target_compile_options(Luau.VM PRIVATE ${LUAU_OPTIONS})
+target_compile_options(Luau.Require PRIVATE ${LUAU_OPTIONS})
+target_compile_options(Luau.CLI.lib PRIVATE ${LUAU_OPTIONS})
 target_compile_options(isocline PRIVATE ${LUAU_OPTIONS} ${ISOCLINE_OPTIONS})
 
 if(LUAU_EXTERN_C)
@@ -284,6 +335,15 @@ if(LUAU_BUILD_CLI)
     target_compile_options(Luau.Compile.CLI PRIVATE ${LUAU_OPTIONS})
     target_compile_options(Luau.Bytecode.CLI PRIVATE ${LUAU_OPTIONS})
 
+    if(LUAU_LINK_OPTIONS)
+        target_link_options(Luau.Repl.CLI PRIVATE ${LUAU_LINK_OPTIONS})
+        target_link_options(Luau.Reduce.CLI PRIVATE ${LUAU_LINK_OPTIONS})
+        target_link_options(Luau.Analyze.CLI PRIVATE ${LUAU_LINK_OPTIONS})
+        target_link_options(Luau.Ast.CLI PRIVATE ${LUAU_LINK_OPTIONS})
+        target_link_options(Luau.Compile.CLI PRIVATE ${LUAU_LINK_OPTIONS})
+        target_link_options(Luau.Bytecode.CLI PRIVATE ${LUAU_LINK_OPTIONS})
+    endif()
+
     target_include_directories(Luau.Repl.CLI PRIVATE extern extern/isocline/include)
 
     target_link_libraries(Luau.Repl.CLI PRIVATE Luau.Compiler Luau.Analysis Luau.Inliner Luau.Config Luau.CodeGen Luau.VM Luau.Require Luau.CLI.lib isocline)
@@ -337,6 +397,13 @@ if(LUAU_BUILD_TESTS)
     target_include_directories(t_native_interop_test PRIVATE extern VM/src)
     target_link_libraries(t_native_interop_test PRIVATE Luau.Analysis Luau.Bytecode Luau.Compiler Luau.CodeGen Luau.VM Luau.Config)
     target_link_libraries(t_native_interop_test PRIVATE osthreads)
+
+    if(LUAU_LINK_OPTIONS)
+        target_link_options(Luau.UnitTest PRIVATE ${LUAU_LINK_OPTIONS})
+        target_link_options(Luau.Conformance PRIVATE ${LUAU_LINK_OPTIONS})
+        target_link_options(Luau.CLI.Test PRIVATE ${LUAU_LINK_OPTIONS})
+        target_link_options(t_native_interop_test PRIVATE ${LUAU_LINK_OPTIONS})
+    endif()
 
     add_subdirectory(fuzz)
 endif()
