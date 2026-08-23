@@ -216,7 +216,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.version }}
-          name: Jaci ${{ github.event.inputs.version }}
+          name: ${{ github.event.inputs.version }}
           draft: ${{ github.event.inputs.draft }}
           prerelease: ${{ github.event.inputs.prerelease }}
           body_path: release_notes.md
