@@ -284,7 +284,9 @@ struct DecodeState {
     bool parse_null() {
         if (end - p >= 4 && strncmp(p, "null", 4) == 0) {
             p += 4;
-            lua_pushlightuserdata(L, (void*)json_null_marker);
+            // Standard semantics: JSON null decodes to Lua nil. The json.null
+            // sentinel remains available for encoding null values.
+            lua_pushnil(L);
             return true;
         }
         error = "invalid null literal";
