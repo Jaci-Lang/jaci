@@ -159,9 +159,9 @@ jobs:
           mkdir -p release-assets
           find artifacts -type f \( -name "*.zip" -o -name "*.js" \) -exec cp {} release-assets/ \;
           cd release-assets
-          cp luau-ubuntu.zip jaci-x86_64-unknown-linux-gnu.zip 2>/dev/null || true
-          cp luau-macos.zip jaci-x86_64-apple-darwin.zip 2>/dev/null || true
-          cp luau-windows.zip jaci-x86_64-pc-windows-msvc.zip 2>/dev/null || true
+          cp jaci-ubuntu.zip jaci-x86_64-unknown-linux-gnu.zip 2>/dev/null || true
+          cp jaci-macos.zip jaci-x86_64-apple-darwin.zip 2>/dev/null || true
+          cp jaci-windows.zip jaci-x86_64-pc-windows-msvc.zip 2>/dev/null || true
           for f in *.zip; do
             sha256sum "$f" | awk '{print $1}' > "$f.sha256"
           done
