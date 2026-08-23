@@ -169,7 +169,9 @@ if(MSVC)
     list(APPEND LUAU_OPTIONS /Z7) # Store debug info in .obj (much faster for parallel builds)
     list(APPEND LUAU_OPTIONS /GR-) # Disable RTTI for compact binaries
     list(APPEND LUAU_OPTIONS /EHsc) # Enable C++ exceptions
-    list(APPEND LUAU_LINK_OPTIONS /OPT:REF /OPT:ICF)
+    # Only use /OPT:REF and /OPT:ICF in release builds, as they disable incremental linking and drastically slow down the linker
+    list(APPEND LUAU_LINK_OPTIONS "$<$<NOT:$<CONFIG:Debug>>:/OPT:REF>")
+    list(APPEND LUAU_LINK_OPTIONS "$<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>")
 else()
     list(APPEND LUAU_OPTIONS -Wall) # All warnings
     list(APPEND LUAU_OPTIONS -Wimplicit-fallthrough)
