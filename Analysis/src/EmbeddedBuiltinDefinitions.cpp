@@ -23,6 +23,7 @@ declare function gcinfo(): number
 declare function collectgarbage(opt: string?, arg: any?): any
 
 declare function print<T...>(...: T...)
+declare function warn<T...>(...: T...)
 
 declare function type<T>(value: T): string
 declare function typeof<T>(value: T): string
@@ -269,9 +270,51 @@ declare table: {
 
 static constexpr const char* kBuiltinDefinitionDebugSrc = R"BUILTIN_SRC(
 
+export type StackFrame = {
+    level: number,
+    source: string,
+    line: number,
+    name: string,
+    nparams: number,
+    isvararg: boolean,
+}
+
+export type InspectOptions = {
+    depth: number?,
+    indent: string?,
+    showMetatables: boolean?,
+    showFunctions: boolean?,
+    sortKeys: boolean?,
+    compact: boolean?,
+}
+
 declare debug: {
     info: ((thread: thread, level: number, options: string) -> ...any) & ((level: number, options: string) -> ...any) & (<A..., R1...>(func: (A...) -> R1..., options: string) -> ...any),
+    getinfo: ((thread: thread, level: number, options: string) -> ...any) & ((level: number, options: string) -> ...any) & (<A..., R1...>(func: (A...) -> R1..., options: string) -> ...any),
     traceback: ((message: string?, level: number?) -> string) & ((thread: thread, message: string?, level: number?) -> string),
+    getlocal: ((thread: thread, level: number, index: number) -> (string?, any)) & ((level: number, index: number) -> (string?, any)),
+    getlocals: ((thread: thread, level: number) -> {[string]: any}) & ((level: number) -> {[string]: any}),
+    setlocal: ((thread: thread, level: number, index: number, value: any) -> string?) & ((level: number, index: number, value: any) -> string?),
+    getupvalue: ((func: any, indexOrName: number | string) -> (string?, any)),
+    getupvalues: ((func: any) -> {[string]: any}),
+    setupvalue: ((func: any, indexOrName: number | string, value: any) -> string?),
+    dumpstack: ((thread: thread?, startLevel: number?) -> {StackFrame}) & ((startLevel: number?) -> {StackFrame}),
+    getmetatable: (obj: any) -> any?,
+    setmetatable: <T>(obj: T, mt: any?) -> T,
+    getregistry: () -> {[any]: any},
+    getfenv: (target: any) -> {[string]: any},
+    setfenv: <T..., R...>(target: number | (T...) -> R..., env: {[string]: any}) -> ((T...) -> R...)?,
+    getconstants: (func: any) -> {any},
+    getconstant: (func: any, index: number) -> any?,
+    getprotos: (func: any) -> {any},
+    getproto: (func: any, index: number) -> any?,
+    getstack: ((thread: thread, level: number, index: number?) -> any) & ((level: number, index: number?) -> any),
+    inspect: (value: any, options: InspectOptions?) -> string,
+    dump: (value: any, options: InspectOptions?) -> string,
+    setwarnhandler: (handler: ((...any) -> ())?) -> (),
+    getwarnhandler: () -> ((...any) -> ())?,
+    setglobalwarning: (enabled: boolean?) -> (),
+    strictglobals: (enabled: boolean?) -> (),
 }
 
 )BUILTIN_SRC";

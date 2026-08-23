@@ -32,6 +32,32 @@ static int luaB_print(lua_State* L)
     return 0;
 }
 
+static int luaB_warn(lua_State* L)
+{
+    int n = lua_gettop(L);
+    lua_getfield(L, LUA_REGISTRYINDEX, "_WARN_HANDLER");
+    if (lua_isfunction(L, -1))
+    {
+        lua_insert(L, 1);
+        lua_call(L, n, 0);
+        return 0;
+    }
+    lua_pop(L, 1);
+
+    for (int i = 1; i <= n; i++)
+    {
+        size_t l;
+        const char* s = luaL_tolstring(L, i, &l);
+        if (i > 1)
+            fwrite("\t", 1, 1, stderr);
+        fwrite(s, 1, l, stderr);
+        lua_pop(L, 1);
+    }
+    fwrite("\n", 1, 1, stderr);
+    fflush(stderr);
+    return 0;
+}
+
 static int luaB_tonumber(lua_State* L)
 {
     int base = luaL_optinteger(L, 2, 10);
@@ -380,6 +406,7 @@ static const luaL_Reg base_funcs[] = {
     {"tostring", luaB_tostring},
     {"type", luaB_type},
     {"typeof", luaB_typeof},
+    {"warn", luaB_warn},
     {NULL, NULL},
 };
 

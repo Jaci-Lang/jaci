@@ -2104,6 +2104,30 @@ static int print(lua_State* L)
     return 0;
 }
 
+static int warn(lua_State* L)
+{
+    std::string result;
+
+    int n = lua_gettop(L);
+    for (int i = 1; i <= n; i++)
+    {
+        size_t l = 0;
+        const char* s = luaL_tolstring(L, i, &l); // convert to string using __tostring et al
+        if (i > 1)
+        {
+            result.append(1, '\t');
+        }
+        result.append(s, l);
+        lua_pop(L, 1);
+    }
+
+    auto ctx = getTypeFunctionRuntime(L);
+
+    ctx->messages.push_back(std::move(result));
+
+    return 0;
+}
+
 // Add libraries / globals for type function environment
 void setTypeFunctionEnvironment(lua_State* L)
 {
@@ -2158,6 +2182,9 @@ void setTypeFunctionEnvironment(lua_State* L)
 
     lua_pushcfunction(L, print, "print");
     lua_setglobal(L, "print");
+
+    lua_pushcfunction(L, warn, "warn");
+    lua_setglobal(L, "warn");
 }
 
 void resetTypeFunctionState(lua_State* L)

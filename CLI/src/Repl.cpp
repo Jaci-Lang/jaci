@@ -127,6 +127,16 @@ struct GlobalOptions
     int debugLevel = 1;
 } globalOptions;
 
+void setReplDebugLevel(int level)
+{
+    globalOptions.debugLevel = level;
+}
+
+int getReplDebugLevel()
+{
+    return globalOptions.debugLevel;
+}
+
 static Luau::CompileOptions copts()
 {
     Luau::CompileOptions result = {};

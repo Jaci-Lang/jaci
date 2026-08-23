@@ -14,5 +14,7 @@ void* createCliRequireContext(lua_State* L);
 void setupState(lua_State* L);
 std::string runCode(lua_State* L, const std::string& source);
 void getCompletions(lua_State* L, const std::string& editBuffer, const AddCompletionCallback& addCompletionCallback);
+void setReplDebugLevel(int level);
+int getReplDebugLevel();
 
 int replMain(int argc, char** argv);
