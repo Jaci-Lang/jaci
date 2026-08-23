@@ -12,6 +12,12 @@
 #endif
 #include <direct.h>
 #include <windows.h>
+// Some Windows SDK headers (e.g. certain 10.0.26100.x builds) do not expose
+// FILE_FLAG_BACKWARD_COMPATIBILITY as a standalone symbol. Define the canonical
+// value when it is missing so reparse-point resolution keeps compiling.
+#ifndef FILE_FLAG_BACKWARD_COMPATIBILITY
+#define FILE_FLAG_BACKWARD_COMPATIBILITY 0x00000004L
+#endif
 #else
 #include <dirent.h>
 #include <fcntl.h>
