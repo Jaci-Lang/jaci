@@ -159,9 +159,12 @@ jobs:
           mkdir -p release-assets
           find artifacts -type f \( -name "*.zip" -o -name "*.js" \) -exec cp {} release-assets/ \;
           cd release-assets
-          cp luau-ubuntu.zip luau-x86_64-unknown-linux-gnu.zip 2>/dev/null || true
-          cp luau-macos.zip luau-x86_64-apple-darwin.zip 2>/dev/null || true
-          cp luau-windows.zip luau-x86_64-pc-windows-msvc.zip 2>/dev/null || true
+          # Release assets are the triple-named zips only. The registry
+          # derives target metadata from the file name, so the triple must
+          # be truthful: macos-latest runners are arm64 (aarch64).
+          mv luau-ubuntu.zip luau-x86_64-unknown-linux-gnu.zip 2>/dev/null || true
+          mv luau-macos.zip luau-aarch64-apple-darwin.zip 2>/dev/null || true
+          mv luau-windows.zip luau-x86_64-pc-windows-msvc.zip 2>/dev/null || true
           for f in *.zip; do
             sha256sum "$f" | awk '{print $1}' > "$f.sha256"
           done
