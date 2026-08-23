@@ -93,6 +93,11 @@ NavigationContext::NavigateResult RuntimeNavigationContext::toChild(const std::s
     return convertNavigateResult(config->to_child(L, ctx, component.c_str()));
 }
 
+bool RuntimeNavigationContext::resetIsDirectoryModule() const
+{
+    return config->reset_is_directory_module ? config->reset_is_directory_module(L, ctx) : false;
+}
+
 bool RuntimeNavigationContext::isModulePresent() const
 {
     return config->is_module_present(L, ctx);

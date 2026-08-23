@@ -1168,6 +1168,23 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
     // Application assets: files and directories embedded verbatim, addressed
     // at runtime by their build-time relative path.
     std::set<std::string> visitedAssetPaths;
+
+    // The entry file's directory is the application root: runtime lookup keys
+    // are relative to it, matching how application code addresses embedded
+    // files (e.g. fs.readFile("./assets/data.txt")).
+    std::string appRoot = getParentPath(entryAbsPath).value_or("");
+
+    // Runtime key for an asset: its path relative to the application root when
+    // it lies under it, otherwise the asset-spec-relative form.
+    auto assetRuntimeKey = [&](const std::string& absPath, const std::string& fallbackKey) -> std::string
+    {
+        if (!appRoot.empty() && absPath.size() > appRoot.size() + 1 && absPath.compare(0, appRoot.size(), appRoot) == 0 &&
+            absPath[appRoot.size()] == '/')
+            return absPath.substr(appRoot.size() + 1);
+
+        return fallbackKey;
+    };
+
     for (const std::string& assetSpec : options.assetPaths)
     {
         if (assetSpec.empty())
@@ -1200,21 +1217,22 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
 
         if (isFile(resolved))
         {
-            addAssetFile(resolved, assetSpec);
+            addAssetFile(resolved, assetRuntimeKey(resolved, normalizePath(assetSpec)));
         }
         else if (isDirectory(resolved))
         {
             traverseDirectory(resolved, [&](const std::string& filePath)
                               {
-                                  std::string rel = filePath;
-                                  if (rel.size() >= resolved.size() && rel.substr(0, resolved.size()) == resolved)
+                                  std::string absFile = normalizePath(filePath);
+                                  std::string rel = absFile;
+                                  if (absFile.size() >= resolved.size() && absFile.substr(0, resolved.size()) == resolved)
                                   {
-                                      std::string sub = rel.substr(resolved.size());
+                                      std::string sub = absFile.substr(resolved.size());
                                       if (!sub.empty() && (sub[0] == '/' || sub[0] == '\\'))
                                           sub = sub.substr(1);
                                       rel = normalizePath(assetSpec + "/" + sub);
                                   }
-                                  addAssetFile(normalizePath(filePath), rel);
+                                  addAssetFile(absFile, assetRuntimeKey(absFile, rel));
                               });
         }
         else

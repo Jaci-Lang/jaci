@@ -6,12 +6,41 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <optional>
 #include <string>
+
+namespace
+{
+
+// The generated single binary is packaged on top of a base engine executable
+// whose entry point recognizes the appended payload (checkAndRunBundledPayload).
+// When no JACI_RUNNER_STUB / JACI_BUILD override is present, pin the stub to
+// the `luau` binary next to this test executable: the default fallback would
+// use the test binary itself, whose doctest main ignores the payload and
+// re-runs the whole test suite as the "app".
+void ensureEngineStub()
+{
+    if (std::getenv("JACI_RUNNER_STUB") || std::getenv("JACI_BUILD"))
+        return;
+
+    if (std::optional<std::string> exe = getExecutablePath())
+    {
+        if (std::optional<std::string> dir = getParentPath(*exe))
+        {
+            std::string candidate = *dir + "/luau";
+            if (isFile(candidate))
+                setenv("JACI_RUNNER_STUB", candidate.c_str(), 1);
+        }
+    }
+}
+
+} // namespace
 
 TEST_SUITE_BEGIN("SingleBinaryCompilerTests");
 
 TEST_CASE("SingleBinaryEndToEndCompilation")
 {
+    ensureEngineStub();
     std::string testDir = "/tmp/jaci_single_bin_test";
     system(("mkdir -p " + testDir).c_str());
 
@@ -51,6 +80,7 @@ TEST_CASE("SingleBinaryEndToEndCompilation")
 
 TEST_CASE("SingleBinaryAssetBundlingAndVirtualFs")
 {
+    ensureEngineStub();
     std::string testDir = "/tmp/jaci_single_bin_asset_test";
     system(("mkdir -p " + testDir + "/assets").c_str());
 
@@ -84,10 +114,12 @@ TEST_CASE("SingleBinaryAssetBundlingAndVirtualFs")
     CHECK(ret == 0);
 
     system(("rm -rf " + testDir).c_str());
+
 }
 
 TEST_CASE("SingleBinaryStandardLibraryVirtualImports")
 {
+    ensureEngineStub();
     std::string testDir = "/tmp/jaci_single_bin_std_test";
     system(("mkdir -p " + testDir).c_str());
 
@@ -125,6 +157,7 @@ TEST_CASE("SingleBinaryStandardLibraryVirtualImports")
 
 TEST_CASE("SingleBinaryDirectBundlingExplicit")
 {
+    ensureEngineStub();
     std::string testDir = "/tmp/jaci_single_bin_direct_test";
     system(("mkdir -p " + testDir).c_str());
 
@@ -166,6 +199,7 @@ TEST_CASE("SingleBinaryDirectBundlingExplicit")
 
 TEST_CASE("SingleBinaryDirectBundlingWithAssetsAndVfs")
 {
+    ensureEngineStub();
     std::string testDir = "/tmp/jaci_single_bin_direct_assets";
     system(("mkdir -p " + testDir + "/config").c_str());
 
@@ -204,10 +238,12 @@ TEST_CASE("SingleBinaryDirectBundlingWithAssetsAndVfs")
     CHECK(ret == 0);
 
     system(("rm -rf " + testDir).c_str());
+
 }
 
 TEST_CASE("SingleBinaryWindowedModeOptions")
 {
+    ensureEngineStub();
     std::string testDir = "/tmp/jaci_single_bin_windowed_test";
     system(("mkdir -p " + testDir).c_str());
 
@@ -240,6 +276,7 @@ TEST_CASE("SingleBinaryWindowedModeOptions")
 
 TEST_CASE("SingleBinaryCliDirectBuildFlag")
 {
+    ensureEngineStub();
     std::string testDir = "/tmp/jaci_cli_direct_test";
     system(("mkdir -p " + testDir).c_str());
 
@@ -263,6 +300,7 @@ TEST_CASE("SingleBinaryCliDirectBuildFlag")
 
 TEST_CASE("SingleBinaryCompressedPayloadDirectAndNative")
 {
+    ensureEngineStub();
     std::string testDir = "/tmp/jaci_single_bin_compressed_test";
     system(("mkdir -p " + testDir).c_str());
 

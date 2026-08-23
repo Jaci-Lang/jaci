@@ -110,6 +110,12 @@ static luarequire_NavigateResult to_child(lua_State* L, void* ctx, const char* n
     return convert(req->vfs.toChild(name));
 }
 
+static bool reset_is_directory_module(lua_State* L, void* ctx)
+{
+    ReplRequirer* req = static_cast<ReplRequirer*>(ctx);
+    return req->vfs.requirerIsDirectoryModule();
+}
+
 static bool is_module_present(lua_State* L, void* ctx)
 {
     ReplRequirer* req = static_cast<ReplRequirer*>(ctx);
@@ -337,6 +343,7 @@ void requireConfigInit(luarequire_Configuration* config)
     config->jump_to_alias = jump_to_alias;
     config->to_parent = to_parent;
     config->to_child = to_child;
+    config->reset_is_directory_module = reset_is_directory_module;
     config->is_module_present = is_module_present;
     config->get_config_status = get_config_status;
     config->get_chunkname = get_chunkname;

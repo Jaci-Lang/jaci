@@ -35,8 +35,9 @@ enum class CodeGenCompilationResult
     CodeGenAssemblerFinalizationFailure = 7,  // Failure during assembler finalization
     CodeGenLoweringFailure = 8,               // Lowering failed
     AllocationFailed = 9,                     // Native codegen failed due to an allocation error
+    CodeGenLlvmFailure = 10,                  // LLVM backend compilation failed
 
-    Count = 10,
+    Count = 11,
 };
 
 std::string toString(const CodeGenCompilationResult& result);

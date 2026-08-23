@@ -72,6 +72,15 @@ public:
     virtual NavigateResult toParent() = 0;
     virtual NavigateResult toChild(const std::string& component) = 0;
 
+    // True right after resetToRequirer when the requirer is a collapsed
+    // directory module (dir/init.luau or dir/index.luau): the position is
+    // already at the directory level, so the state machine's file-to-directory
+    // step must be skipped.
+    virtual bool resetIsDirectoryModule() const
+    {
+        return false;
+    }
+
     enum class ConfigBehavior
     {
         GetAlias,

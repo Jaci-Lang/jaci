@@ -38,6 +38,7 @@ public:
 
     NavigateResult toParent() override;
     NavigateResult toChild(const std::string& component) override;
+    bool resetIsDirectoryModule() const override;
 
     NavigationContext::ConfigStatus getConfigStatus() const override;
     NavigationContext::ConfigBehavior getConfigBehavior() const override;

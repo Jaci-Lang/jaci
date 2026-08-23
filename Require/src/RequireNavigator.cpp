@@ -181,10 +181,18 @@ Error Navigator::navigateImpl(std::string_view path)
         // navigateThroughPath resolves the remaining path: the leading "./"
         // or "../" prefix is stripped (the relative-path type already accounts
         // for it), and the rest is navigated segment by segment.
+        //
+        // A collapsed directory-module requirer (dir/init.luau) is already at
+        // the directory level after reset; the file-to-directory step would
+        // overshoot to the grandparent, so relative paths resolve from the
+        // directory itself.
         if (Error error = resetToRequirer())
             return error;
-        if (Error error = navigateToParent(std::nullopt))
-            return error;
+        if (!navigationContext.resetIsDirectoryModule())
+        {
+            if (Error error = navigateToParent(std::nullopt))
+                return error;
+        }
         if (Error error = navigateThroughPath(path))
             return error;
     }

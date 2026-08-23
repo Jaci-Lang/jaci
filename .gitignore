@@ -27,3 +27,5 @@ jaciup/
 build_unity/
 test-out/
 _probe*.luau
+.llvmdev/
+.debug/

@@ -5,6 +5,10 @@
 
 #include "NativeState.h"
 
+#if LUAU_USE_LLVM
+#include "JitObjectLoader.h"
+#endif
+
 #include <memory>
 #include <optional>
 #include <stdint.h>
@@ -51,6 +55,21 @@ public:
         size_t codeSize
     ) = 0;
 
+#if LUAU_USE_LLVM
+    // Insert an LLVM-compiled module, finalize the allocation (relocations,
+    // W^X protections, .eh_frame registration), and bind the protos.
+    [[nodiscard]] virtual ModuleBindResult bindLlvmModule(
+        const std::optional<ModuleId>& moduleId,
+        const std::vector<Proto*>& moduleProtos,
+        std::vector<NativeProtoExecDataPtr> nativeProtos,
+        const uint8_t* data,
+        size_t dataSize,
+        const uint8_t* code,
+        size_t codeSize,
+        const Jit::JitObjectLayout& layout
+    ) = 0;
+#endif
+
     virtual void onCloseState() noexcept = 0;
     virtual void onDestroyFunction(void* execdata) noexcept = 0;
 
@@ -84,6 +103,19 @@ public:
         size_t codeSize
     ) override;
 
+#if LUAU_USE_LLVM
+    [[nodiscard]] ModuleBindResult bindLlvmModule(
+        const std::optional<ModuleId>& moduleId,
+        const std::vector<Proto*>& moduleProtos,
+        std::vector<NativeProtoExecDataPtr> nativeProtos,
+        const uint8_t* data,
+        size_t dataSize,
+        const uint8_t* code,
+        size_t codeSize,
+        const Jit::JitObjectLayout& layout
+    ) override;
+#endif
+
     void onCloseState() noexcept override;
     void onDestroyFunction(void* execdata) noexcept override;
 
@@ -107,6 +139,19 @@ public:
         const uint8_t* code,
         size_t codeSize
     ) override;
+
+#if LUAU_USE_LLVM
+    [[nodiscard]] ModuleBindResult bindLlvmModule(
+        const std::optional<ModuleId>& moduleId,
+        const std::vector<Proto*>& moduleProtos,
+        std::vector<NativeProtoExecDataPtr> nativeProtos,
+        const uint8_t* data,
+        size_t dataSize,
+        const uint8_t* code,
+        size_t codeSize,
+        const Jit::JitObjectLayout& layout
+    ) override;
+#endif
 
     void onCloseState() noexcept override;
     void onDestroyFunction(void* execdata) noexcept override;

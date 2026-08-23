@@ -11,6 +11,10 @@
 #include <string>
 #include <filesystem>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace fs_std = std::filesystem;
 
 class FilesystemFixture
@@ -250,7 +254,7 @@ TEST_CASE("ResolveSymlink")
 #endif
 
     // resolveSymlink should return the canonical (real) path
-    auto resolved = Luau::resolveSymlink(link);
+    auto resolved = ::resolveSymlink(link);
 #ifdef _WIN32
     // Windows path not tested in this unit test
 #else
@@ -258,7 +262,7 @@ TEST_CASE("ResolveSymlink")
     if (resolved.has_value())
     {
         // The resolved path should equal the real path of the target
-        auto targetReal = Luau::resolveSymlink(target);
+        auto targetReal = ::resolveSymlink(target);
         CHECK(targetReal.has_value());
         CHECK(*resolved == *targetReal);
     }
@@ -291,11 +295,11 @@ TEST_CASE("ResolveSymlinkChain")
     CHECK(symlink(target.c_str(), link1.c_str()) == 0);
     CHECK(symlink(link1.c_str(), link2.c_str()) == 0);
 
-    auto resolved = Luau::resolveSymlink(link2);
+    auto resolved = ::resolveSymlink(link2);
     CHECK(resolved.has_value());
     if (resolved.has_value())
     {
-        auto targetReal = Luau::resolveSymlink(target);
+        auto targetReal = ::resolveSymlink(target);
         CHECK(targetReal.has_value());
         CHECK(*resolved == *targetReal);
     }

@@ -4,210 +4,140 @@
 #include "lualib.h"
 #include "luacodegen.h"
 
-#include "Luau/Llvm.h"
+#include "luacode.h"
+
 #include "Luau/CodeGen.h"
 #include "doctest.h"
 
-#include <iostream>
-#include <vector>
+#include <chrono>
+#include <cstddef>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <string>
+
+#if LUAU_USE_LLVM
 
 using namespace Luau::CodeGen;
 
+namespace
+{
+
+// Numeric workload compiled and executed by each backend. The loop dominates
+// the runtime so both backends are measured on the same hot path.
+const char kBenchmarkSource[] =
+    "local function work(n)\n"
+    "    local sum = 0.0\n"
+    "    for i = 1, n do\n"
+    "        local t = i % 997\n"
+    "        sum = sum + t * t * 0.001\n"
+    "    end\n"
+    "    return sum\n"
+    "end\n"
+    "return work(100000)\n";
+
+struct BackendResult
+{
+    CodeGenCompilationResult compileResult = CodeGenCompilationResult::CodeGenNotInitialized;
+    double value = 0.0;
+    double totalMs = 0.0;
+    bool executed = false;
+};
+
+// Compile the benchmark chunk with the given backend flags and execute it
+// `iterations` times, measuring wall time of the executions only.
+BackendResult runBackend(unsigned int flags, int iterations)
+{
+    BackendResult result;
+
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+
+    if (luau_codegen_supported() == 0)
+        return result;
+
+    luau_codegen_create(L);
+
+    size_t bytecodeSize = 0;
+    char* bytecode = luau_compile(kBenchmarkSource, std::strlen(kBenchmarkSource), nullptr, &bytecodeSize);
+    if (bytecode == nullptr)
+        return result;
+    int loadResult = luau_load(L, "bench", bytecode, bytecodeSize, 0);
+    std::free(bytecode);
+    if (loadResult != 0)
+        return result;
+
+    // The compiled closure stays at stack index 1; each iteration pushes a
+    // copy to the top so lua_pcall consumes the copy, not the original.
+    REQUIRE(lua_gettop(L) == 1);
+
+    CompilationOptions options;
+    options.flags = flags;
+    CompilationResult cres = Luau::CodeGen::compile(L, -1, options);
+    result.compileResult = cres.result;
+
+    double totalNs = 0.0;
+
+    for (int i = 0; i < iterations; ++i)
+    {
+        lua_pushvalue(L, 1);
+
+        auto t0 = std::chrono::steady_clock::now();
+        int callResult = lua_pcall(L, 0, 1, 0);
+        auto t1 = std::chrono::steady_clock::now();
+
+        if (callResult != 0)
+            return result;
+
+        result.value = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        totalNs += double(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+    }
+
+    result.totalMs = totalNs / 1000000.0;
+    result.executed = true;
+    return result;
+}
+
+} // namespace
+
 TEST_SUITE_BEGIN("BenchmarkAssemblyVsLlvm");
 
-TEST_CASE("Benchmark_NumericMandelbrot")
+// Compares the assembly backend against the LLVM backend on the same Luau
+// program. Both backends must produce the same result; the measured ratio is
+// reported for observability only. No speedup is asserted: in the current
+// phase the LLVM entries resume in the VM, so the assembly backend is
+// expected to be at least as fast.
+TEST_CASE("BackendComparison_NumericLoop")
 {
-    Llvm::LlvmEngine engine;
-    engine.initialize();
+    if (luau_codegen_supported() == 0)
+        return;
 
-    auto runMandelbrotBaseline = []() {
-        double sum = 0.0;
-        for (int y = -20; y < 20; ++y)
-        {
-            for (int x = -40; x < 20; ++x)
-            {
-                double cr = x * 0.05;
-                double ci = y * 0.05;
-                double zr = 0.0;
-                double zi = 0.0;
-                int iter = 0;
-                while (iter < 100 && (zr * zr + zi * zi) < 4.0)
-                {
-                    double next_zr = zr * zr - zi * zi + cr;
-                    zi = 2.0 * zr * zi + ci;
-                    zr = next_zr;
-                    iter++;
-                }
-                sum += iter;
-            }
-        }
-        volatile double res = sum;
-        (void)res;
-    };
+    const int iterations = 5;
 
-    auto runMandelbrotLlvm = []() {
-        // LLVM optimized loop with unboxed doubles, cardioid/bulb early fastpath and register reuse
-        double sum = 0.0;
-        for (int y = -20; y < 20; ++y)
-        {
-            double ci = y * 0.05;
-            double ci2 = ci * ci;
-            for (int x = -40; x < 20; ++x)
-            {
-                double cr = x * 0.05;
-                // Cardioid / period-2 bulb optimization in LLVM JIT/AOT
-                double cr_minus_quarter = cr - 0.25;
-                double q = cr_minus_quarter * cr_minus_quarter + ci2;
-                if (q * (q + cr_minus_quarter) < 0.25 * ci2)
-                {
-                    sum += 100;
-                    continue;
-                }
-                double cr_plus_one = cr + 1.0;
-                if (cr_plus_one * cr_plus_one + ci2 < 0.0625)
-                {
-                    sum += 100;
-                    continue;
-                }
+    BackendResult assembly = runBackend(CodeGen_ColdFunctions, iterations);
+    BackendResult llvm = runBackend(CodeGen_ColdFunctions | CodeGen_UseLlvm, iterations);
 
-                double zr = 0.0;
-                double zi = 0.0;
-                int iter = 0;
-                while (iter < 100 && (zr * zr + zi * zi) < 4.0)
-                {
-                    double next_zr = zr * zr - zi * zi + cr;
-                    zi = 2.0 * zr * zi + ci;
-                    zr = next_zr;
-                    iter++;
-                }
-                sum += iter;
-            }
-        }
-        volatile double res = sum;
-        (void)res;
-    };
+    REQUIRE(assembly.executed);
+    REQUIRE(llvm.executed);
+    REQUIRE(assembly.compileResult == CodeGenCompilationResult::Success);
+    REQUIRE(llvm.compileResult == CodeGenCompilationResult::Success);
 
-    Llvm::BenchmarkResult res = engine.comparePerformance("Mandelbrot", runMandelbrotBaseline, runMandelbrotLlvm, 2);
-    std::cout << "  " << res.summary << "\n";
-    CHECK_GT(res.assemblyTimeMs, 0.0);
-    CHECK_GT(res.llvmTimeMs, 0.0);
-    CHECK_GT(res.speedupRatio, 1.0);
-}
+    // Same program, same machine: results must agree (small epsilon for
+    // floating point ordering differences, if any).
+    CHECK(std::fabs(assembly.value - llvm.value) < 1e-6 * std::fabs(assembly.value));
 
-TEST_CASE("Benchmark_TypedPackedArraySum")
-{
-    Llvm::LlvmEngine engine;
-    engine.initialize();
+    CHECK_GT(assembly.totalMs, 0.0);
+    CHECK_GT(llvm.totalMs, 0.0);
 
-    const size_t N = 10000;
-    std::vector<double> packedData(N, 1.25);
+    double ratio = llvm.totalMs / assembly.totalMs;
 
-    auto runArrayBaseline = [&packedData, N]() {
-        double sum = 0.0;
-        for (size_t i = 0; i < N; ++i)
-        {
-            sum += packedData[i];
-        }
-        volatile double res = sum;
-        (void)res;
-    };
-
-    auto runArrayLlvm = [&packedData, N]() {
-        // SIMD 8-way unrolled vector loop over packed contiguous buffer with multi-accumulators
-        double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
-        double s4 = 0.0, s5 = 0.0, s6 = 0.0, s7 = 0.0;
-        const double* ptr = packedData.data();
-        size_t i = 0;
-        for (; i + 8 <= N; i += 8)
-        {
-            s0 += ptr[i + 0];
-            s1 += ptr[i + 1];
-            s2 += ptr[i + 2];
-            s3 += ptr[i + 3];
-            s4 += ptr[i + 4];
-            s5 += ptr[i + 5];
-            s6 += ptr[i + 6];
-            s7 += ptr[i + 7];
-        }
-        double sum = ((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7));
-        for (; i < N; ++i)
-            sum += ptr[i];
-        volatile double res = sum;
-        (void)res;
-    };
-
-    Llvm::BenchmarkResult res = engine.comparePerformance("TypedArraySum", runArrayBaseline, runArrayLlvm, 50);
-    std::cout << "  " << res.summary << "\n";
-    CHECK_GT(res.assemblyTimeMs, 0.0);
-    CHECK_GT(res.llvmTimeMs, 0.0);
-    CHECK_GT(res.speedupRatio, 1.0);
-}
-
-TEST_CASE("Benchmark_ShapeGuardedFieldAccess")
-{
-    Llvm::LlvmEngine engine;
-    engine.initialize();
-
-    struct Point { double x; double y; double z; };
-    Point pt = { 10.5, 20.25, 30.75 };
-
-    auto runGenericAccess = [&pt]() {
-        double sum = 0.0;
-        for (int i = 0; i < 2000; ++i)
-        {
-            sum += pt.x + pt.y + pt.z + double(i & 1);
-        }
-        volatile double res = sum;
-        (void)res;
-    };
-
-    auto runShapeGuardedAccess = [&pt]() {
-        double sum = 0.0;
-        // Shape guard hoisted: direct offset load and LLVM closed-form loop scalar replacement
-        double xyz = pt.x + pt.y + pt.z;
-        sum = (xyz + 0.5) * 2000.0;
-        volatile double res = sum;
-        (void)res;
-    };
-
-    Llvm::BenchmarkResult res = engine.comparePerformance("ShapeGuardedAccess", runGenericAccess, runShapeGuardedAccess, 100);
-    std::cout << "  " << res.summary << "\n";
-    CHECK_GT(res.assemblyTimeMs, 0.0);
-    CHECK_GT(res.llvmTimeMs, 0.0);
-    CHECK_GT(res.speedupRatio, 1.0);
-}
-
-TEST_CASE("Benchmark_VirtualTableScalarReplacement")
-{
-    Llvm::LlvmEngine engine;
-    engine.initialize();
-
-    auto runAllocating = []() {
-        double sum = 0.0;
-        for (int i = 0; i < 500; ++i)
-        {
-            // Temporary heap object simulation
-            struct Vec3 { double x, y, z; };
-            Vec3* v = new Vec3{ double(i), double(i * 2), double(i * 3) };
-            sum += v->x + v->y + v->z;
-            delete v;
-        }
-        volatile double res = sum;
-        (void)res;
-    };
-
-    auto runScalarReplaced = []() {
-        // Virtual table scalar replacement (SROA in LLVM)
-        double sum = double(500 * (500 - 1) / 2) * 6.0;
-        volatile double res = sum;
-        (void)res;
-    };
-
-    Llvm::BenchmarkResult res = engine.comparePerformance("VirtualTableSROA", runAllocating, runScalarReplaced, 200);
-    std::cout << "  " << res.summary << "\n";
-    CHECK_GT(res.assemblyTimeMs, 0.0);
-    CHECK_GT(res.llvmTimeMs, 0.0);
-    CHECK_GT(res.speedupRatio, 1.0);
+    std::printf("  [BackendComparison] Assembly: %.3f ms | LLVM: %.3f ms | LLVM/Assembly: %.3fx\n", assembly.totalMs, llvm.totalMs, ratio);
 }
 
 TEST_SUITE_END();
+
+#endif // LUAU_USE_LLVM

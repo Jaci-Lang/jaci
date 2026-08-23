@@ -410,6 +410,15 @@ static StateRef runConformance(
                         " encountered an internal lowering failure"
                     );
                     break;
+                case Luau::CodeGen::CodeGenCompilationResult::CodeGenLlvmFailure:
+                    MESSAGE(
+                        "Function '",
+                        protoFailure.debugname.empty() ? "(anonymous)" : protoFailure.debugname,
+                        "':",
+                        protoFailure.line,
+                        " encountered an LLVM backend failure"
+                    );
+                    break;
                 case Luau::CodeGen::CodeGenCompilationResult::Count:
                     LUAU_ASSERT(false);
                 }

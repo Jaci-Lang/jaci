@@ -59,6 +59,8 @@ NativeModule::NativeModule(
         NativeProtoExecDataHeader& header = getNativeProtoExecDataHeader(nativeProto.get());
         header.nativeModule = this;
         header.entryOffsetOrAddress = codeAllocationData.codeStart + reinterpret_cast<uintptr_t>(header.entryOffsetOrAddress);
+        if (header.usesGateEntry)
+            header.gateEntry = codeAllocationData.codeStart + reinterpret_cast<uintptr_t>(header.gateEntry);
     }
 
     std::sort(this->nativeProtos.begin(), this->nativeProtos.end(), NativeProtoBytecodeIdLess{});

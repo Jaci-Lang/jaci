@@ -25,6 +25,14 @@ struct NativeProtoExecDataHeader
     // pages, after which point we store the actual address.
     const uint8_t* entryOffsetOrAddress = nullptr;
 
+    // When true, the gate function to use for this proto is gateEntry (LLVM
+    // backend: the global indirect-call gate inside the LLVM module).
+    // Offset relative to the code region until the module is bound, then an
+    // absolute address. When false, the codegen context's trampoline gate is
+    // used (assembly backend).
+    bool usesGateEntry = false;
+    const uint8_t* gateEntry = nullptr;
+
     // The bytecode id of the proto
     uint32_t bytecodeId = 0;
 

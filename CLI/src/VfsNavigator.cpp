@@ -111,17 +111,46 @@ static ResolvedRealPath getRealPath(std::string modulePath)
     }
     else
     {
-        // Plain file resolution (dir/foo.luau). For init/index components
-        // without a nested directory this also covers require("cli/init")
-        // finding the file cli/init.luau.
-        if (!trySuffixes(kSuffixes) || !trySuffixes(kNativeSuffixes))
-            return {NavigationStatus::Ambiguous};
-
-        if (!found && isDirectory(modulePath))
+        // Plain file resolution (dir/foo.luau) plus native shared libraries.
+        // Bare init/index components are excluded: an init/index file is
+        // reached through its directory (upstream-pinned semantics), so
+        // require(".../init") with no nested init/ directory is an error.
+        if (!isInitOrIndex)
         {
-            // A directory of the same name is an alternative entry point.
-            if (!trySuffixes(kInitSuffixes) || (!found && !trySuffixes(kIndexSuffixes)))
+            if (!trySuffixes(kSuffixes) || !trySuffixes(kNativeSuffixes))
                 return {NavigationStatus::Ambiguous};
+        }
+
+        if (isDirectory(modulePath))
+        {
+            bool directoryHasEntryPoint = false;
+
+            for (std::string_view s : kInitSuffixes)
+                if (isFile(modulePath + std::string(s)))
+                {
+                    directoryHasEntryPoint = true;
+                    break;
+                }
+            for (std::string_view s : kIndexSuffixes)
+                if (isFile(modulePath + std::string(s)))
+                {
+                    directoryHasEntryPoint = true;
+                    break;
+                }
+
+            if (found)
+            {
+                // A file and a directory entry point both match the same
+                // component (upstream-pinned: report ambiguity instead of
+                // silently preferring the file).
+                if (directoryHasEntryPoint)
+                    return {NavigationStatus::Ambiguous};
+            }
+            else if (directoryHasEntryPoint)
+            {
+                if (!trySuffixes(kInitSuffixes) || (!found && !trySuffixes(kIndexSuffixes)))
+                    return {NavigationStatus::Ambiguous};
+            }
 
             if (!found)
                 found = true; // directory itself counts as presence; load will fail later
@@ -259,7 +288,7 @@ NavigationStatus VfsNavigator::resetToPath(const std::string& path)
     {
         // If the resolved module is a directory module (dir/init.luau or
         // dir/index.luau), modulePath is the directory itself; the require
-        // state machine's file-to-directory step must be a no-op next.
+        // state machine's file-to-directory step must be skipped next.
         dirModuleReset = isDirectoryModule(realPath);
     }
     else
@@ -269,21 +298,15 @@ NavigationStatus VfsNavigator::resetToPath(const std::string& path)
     return status;
 }
 
+bool VfsNavigator::requirerIsDirectoryModule() const
+{
+    return dirModuleReset;
+}
+
 NavigationStatus VfsNavigator::toParent()
 {
     if (absoluteModulePath == "/")
         return NavigationStatus::NotFound;
-
-    // The require state machine performs one file-to-directory step right
-    // after resetting to the requirer. When the requirer is a directory
-    // module (dir/init.luau or dir/index.luau), getModulePath already
-    // collapsed the path to the directory, so the containing directory is
-    // modulePath itself and stepping up would overshoot to the grandparent.
-    if (dirModuleReset)
-    {
-        dirModuleReset = false;
-        return NavigationStatus::Success;
-    }
 
     size_t numSlashes = 0;
     for (char c : absoluteModulePath)
@@ -324,6 +347,7 @@ NavigationStatus VfsNavigator::toChild(const std::string& name)
 
 NavigationStatus VfsNavigator::toBarePackage(const std::string& pkgName)
 {
+    bool collapsedDirectoryRequirer = dirModuleReset;
     dirModuleReset = false;
 
     // Try a single package root: <root>/<pkgDir>/<name> and the scoped
@@ -361,10 +385,15 @@ NavigationStatus VfsNavigator::toBarePackage(const std::string& pkgName)
     // filesystem root, nearest package directory wins.
     std::string searchDir = absoluteModulePath;
 
-    // Start from the parent directory of the current module.
-    size_t lastSlash = searchDir.find_last_of('/');
-    if (lastSlash != std::string::npos && lastSlash > 0)
-        searchDir = searchDir.substr(0, lastSlash);
+    // Start from the parent directory of the current module. A collapsed
+    // directory-module requirer is already at the directory level, so no
+    // step-up is needed.
+    if (!collapsedDirectoryRequirer)
+    {
+        size_t lastSlash = searchDir.find_last_of('/');
+        if (lastSlash != std::string::npos && lastSlash > 0)
+            searchDir = searchDir.substr(0, lastSlash);
+    }
 
     while (true)
     {

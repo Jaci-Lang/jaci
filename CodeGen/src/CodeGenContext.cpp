@@ -5,6 +5,10 @@
 #include "CodeGenLower.h"
 #include "CodeGenX64.h"
 
+#if LUAU_USE_LLVM
+#include "LlvmJit.h"
+#endif
+
 #include "Luau/CodeGenCommon.h"
 #include "Luau/CodeBlockUnwind.h"
 #include "Luau/UnwindBuilder.h"
@@ -232,6 +236,37 @@ StandaloneCodeGenContext::StandaloneCodeGenContext(
     return {CodeGenCompilationResult::Success, protosBound};
 }
 
+#if LUAU_USE_LLVM
+[[nodiscard]] ModuleBindResult StandaloneCodeGenContext::bindLlvmModule(
+    const std::optional<ModuleId>&,
+    const std::vector<Proto*>& moduleProtos,
+    std::vector<NativeProtoExecDataPtr> nativeProtos,
+    const uint8_t* data,
+    size_t dataSize,
+    const uint8_t* code,
+    size_t codeSize,
+    const Jit::JitObjectLayout& layout
+)
+{
+    NativeModuleRef moduleRef = sharedAllocator.insertAnonymousNativeModule(std::move(nativeProtos), data, dataSize, code, codeSize);
+
+    // If we did not get a NativeModule back, allocation failed:
+    if (moduleRef.empty())
+        return {CodeGenCompilationResult::AllocationFailed};
+
+    // Apply the deferred relocations and restore the W^X protections:
+    finalizeLlvmAllocation(moduleRef->getCodeAllocationData(), dataSize, layout);
+
+    logPerfFunctions(moduleProtos, moduleRef->getModuleBaseAddress(), moduleRef->getNativeProtos());
+
+    // Bind the native protos and acquire an owning reference for each:
+    const uint32_t protosBound = bindNativeProtos<false>(moduleProtos, moduleRef->getNativeProtos());
+    moduleRef->addRefs(protosBound);
+
+    return {CodeGenCompilationResult::Success, protosBound};
+}
+#endif
+
 void StandaloneCodeGenContext::onCloseState() noexcept
 {
     // The StandaloneCodeGenContext is owned by the one VM that owns it, so when
@@ -310,6 +345,49 @@ SharedCodeGenContext::SharedCodeGenContext(
 
     return {CodeGenCompilationResult::Success, protosBound};
 }
+
+#if LUAU_USE_LLVM
+[[nodiscard]] ModuleBindResult SharedCodeGenContext::bindLlvmModule(
+    const std::optional<ModuleId>& moduleId,
+    const std::vector<Proto*>& moduleProtos,
+    std::vector<NativeProtoExecDataPtr> nativeProtos,
+    const uint8_t* data,
+    size_t dataSize,
+    const uint8_t* code,
+    size_t codeSize,
+    const Jit::JitObjectLayout& layout
+)
+{
+    const std::pair<NativeModuleRef, bool> insertionResult = [&]() -> std::pair<NativeModuleRef, bool>
+    {
+        if (moduleId.has_value())
+        {
+            return sharedAllocator.getOrInsertNativeModule(*moduleId, std::move(nativeProtos), data, dataSize, code, codeSize);
+        }
+        else
+        {
+            return {sharedAllocator.insertAnonymousNativeModule(std::move(nativeProtos), data, dataSize, code, codeSize), true};
+        }
+    }();
+
+    // If we did not get a NativeModule back, allocation failed:
+    if (insertionResult.first.empty())
+        return {CodeGenCompilationResult::AllocationFailed};
+
+    // Finalize the allocation only when a new module was inserted:
+    if (insertionResult.second)
+    {
+        finalizeLlvmAllocation(insertionResult.first->getCodeAllocationData(), dataSize, layout);
+        logPerfFunctions(moduleProtos, insertionResult.first->getModuleBaseAddress(), insertionResult.first->getNativeProtos());
+    }
+
+    // Bind the native protos and acquire an owning reference for each:
+    const uint32_t protosBound = bindNativeProtos<false>(moduleProtos, insertionResult.first->getNativeProtos());
+    insertionResult.first->addRefs(protosBound);
+
+    return {CodeGenCompilationResult::Success, protosBound};
+}
+#endif
 
 void SharedCodeGenContext::onCloseState() noexcept
 {
@@ -390,8 +468,13 @@ static int onEnter(lua_State* L, Proto* proto)
 
     uintptr_t target = proto->exectarget + static_cast<uint32_t*>(proto->execdata)[L->ci->savedpc - proto->code];
 
+    // The LLVM backend installs its own indirect-call gate per module; the
+    // assembly backend uses the context's trampoline gate.
+    const NativeProtoExecDataHeader& header = getNativeProtoExecDataHeader(static_cast<const uint32_t*>(proto->execdata));
+    const uint8_t* gateEntry = header.usesGateEntry ? header.gateEntry : codeGenContext->context.gateEntry;
+
     // Returns 1 to finish the function in the VM
-    return GateFn(codeGenContext->context.gateEntry)(L, proto, target, &codeGenContext->context);
+    return GateFn(gateEntry)(L, proto, target, &codeGenContext->context);
 }
 
 static int onEnterDisabled(lua_State* L, Proto* proto)
@@ -541,6 +624,79 @@ template<typename AssemblyBuilder>
     return createNativeProtoExecData(proto, ir);
 }
 
+#if LUAU_USE_LLVM
+// LLVM backend: compile the protos through the LLVM pipeline and bind the
+// resulting module. Phase A entries dispatch by resume index and return to
+// the VM at L->ci->savedpc, so execution is identical to the interpreter.
+[[nodiscard]] static CompilationResult compileLlvmBackend(
+    const std::optional<ModuleId>& moduleId,
+    BaseCodeGenContext* codeGenContext,
+    const std::vector<Proto*>& protos,
+    const CompilationOptions& options,
+    CompilationStats* stats
+)
+{
+    LlvmJitCompileResult jit = compileLlvmProtos(protos);
+
+    if (!jit.success)
+    {
+        fprintf(stderr, "[jit-debug] compileLlvmProtos failed: %s\n", jit.error.c_str());
+        return CompilationResult{CodeGenCompilationResult::CodeGenLlvmFailure};
+    }
+
+    // One execdata table per proto. All instruction offsets stay zero: the
+    // LLVM entry is the exectarget itself, so target = exectarget + 0.
+    std::vector<NativeProtoExecDataPtr> nativeProtos;
+    nativeProtos.reserve(protos.size());
+
+    for (size_t i = 0; i < protos.size(); ++i)
+    {
+        Proto* proto = protos[i];
+
+        NativeProtoExecDataPtr nativeExecData = createNativeProtoExecData(proto->sizecode, 0);
+
+        NativeProtoExecDataHeader& header = getNativeProtoExecDataHeader(nativeExecData.get());
+        header.entryOffsetOrAddress = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(jit.entryOffsets[i]));
+        header.usesGateEntry = true;
+        header.gateEntry = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(jit.gateOffset));
+        header.bytecodeId = uint32_t(proto->bytecodeid);
+        header.bytecodeInstructionCount = proto->sizecode;
+        header.extraDataCount = 0;
+
+        nativeProtos.push_back(std::move(nativeExecData));
+    }
+
+    CompilationResult compilationResult;
+
+    const ModuleBindResult bindResult = codeGenContext->bindLlvmModule(
+        moduleId,
+        protos,
+        std::move(nativeProtos),
+        jit.data.data(),
+        jit.data.size(),
+        jit.code.data(),
+        jit.code.size(),
+        jit.layout
+    );
+
+    if (stats != nullptr)
+    {
+        stats->functionsBound = bindResult.functionsBound;
+        stats->functionsCompiled = uint32_t(protos.size());
+        stats->nativeCodeSizeBytes += jit.code.size();
+        stats->nativeDataSizeBytes += jit.data.size();
+
+        for (Proto* proto : protos)
+            stats->bytecodeSizeBytes += proto->sizecode * sizeof(Instruction);
+    }
+
+    if (bindResult.compilationResult != CodeGenCompilationResult::Success)
+        compilationResult.result = bindResult.compilationResult;
+
+    return compilationResult;
+}
+#endif
+
 [[nodiscard]] static CompilationResult compileInternal(
     const std::optional<ModuleId>& moduleId,
     lua_State* L,
@@ -593,6 +749,11 @@ template<typename AssemblyBuilder>
             return CompilationResult{existingModuleBindResult->compilationResult};
         }
     }
+
+#if LUAU_USE_LLVM
+    if ((options.flags & CodeGen_UseLlvm) != 0)
+        return compileLlvmBackend(moduleId, codeGenContext, protos, options, stats);
+#endif
 
 #if defined(CODEGEN_TARGET_A64)
     static unsigned int cpuFeatures = getCpuFeaturesA64();

@@ -100,6 +100,13 @@ typedef struct luarequire_Configuration
     luarequire_NavigateResult (*to_parent)(lua_State* L, void* ctx);
     luarequire_NavigateResult (*to_child)(lua_State* L, void* ctx, const char* name);
 
+    // Returns whether the module that reset points at is a collapsed
+    // directory module (dir/init.luau or dir/index.luau): the position is
+    // already at the directory level, so the require state machine's
+    // file-to-directory step right after a reset must be skipped. Only
+    // called immediately after reset. Can be left undefined.
+    bool (*reset_is_directory_module)(lua_State* L, void* ctx);
+
     // Returns whether the context is currently pointing at a module.
     bool (*is_module_present)(lua_State* L, void* ctx);
 

@@ -95,8 +95,12 @@ TEST_CASE_FIXTURE(JsonFixture, "JsonDecodeBasic")
         assert(obj.name == "jaci")
         assert(obj.version == 1)
 
+        -- JSON null decodes to Lua nil (see commit 5c563755). The json.null
+        -- sentinel is still registered and encodes back to null.
         local n = json.decode("null")
-        assert(n == json.null)
+        assert(n == nil)
+        assert(type(json.null) == "userdata")
+        assert(json.encode({ x = json.null }) == '{"x":null}')
 
         local invalid, errmsg = json.decode("{invalid json")
         assert(invalid == nil)

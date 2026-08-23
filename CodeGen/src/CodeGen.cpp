@@ -90,6 +90,8 @@ std::string toString(const CodeGenCompilationResult& result)
         return "CodeGenLoweringFailure";
     case CodeGenCompilationResult::AllocationFailed:
         return "AllocationFailed";
+    case CodeGenCompilationResult::CodeGenLlvmFailure:
+        return "CodeGenLlvmFailure";
     case CodeGenCompilationResult::Count:
         return "Count";
     }

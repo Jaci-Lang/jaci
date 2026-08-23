@@ -189,12 +189,15 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/src/LlvmBuilder.cpp
     CodeGen/src/LlvmLowering.cpp
     CodeGen/src/LlvmEngine.cpp
+    CodeGen/src/LlvmJit.cpp
+    CodeGen/src/LlvmJitLowering.cpp
     CodeGen/src/IrAnalysis.cpp
     CodeGen/src/IrBuilder.cpp
     CodeGen/src/IrCallWrapperX64.cpp
     CodeGen/src/IrDump.cpp
     CodeGen/src/IrLoweringA64.cpp
     CodeGen/src/IrLoweringX64.cpp
+    CodeGen/src/JitObjectLoader.cpp
     CodeGen/src/IrRegAllocA64.cpp
     CodeGen/src/IrRegAllocX64.cpp
     CodeGen/src/IrTranslateBuiltins.cpp
@@ -218,6 +221,8 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/src/CodeGenContext.h
     CodeGen/src/CodeGenLower.h
     CodeGen/src/CodeGenUtils.h
+    CodeGen/src/JitObjectLoader.h
+    CodeGen/src/LlvmJit.h
     CodeGen/src/CodeGenA64.h
     CodeGen/src/CodeGenX64.h
     CodeGen/src/EmitBuiltinsX64.h
@@ -682,7 +687,12 @@ if(TARGET Luau.Conformance)
         tests/Process.test.cpp
         tests/IrLowering.test.cpp
         tests/SharedCodeAllocator.test.cpp
-        tests/main.cpp)
+        tests/main.cpp
+
+        CLI/include/Luau/FileUtils.h
+        CLI/include/Luau/VfsLayer.h
+        CLI/src/FileUtils.cpp
+        CLI/src/VfsLayer.cpp)
 endif()
 
 if(TARGET Luau.CLI.Test)

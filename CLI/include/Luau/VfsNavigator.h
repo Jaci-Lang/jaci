@@ -29,6 +29,11 @@ public:
     const std::string& getFilePath() const;
     const std::string& getAbsoluteFilePath() const;
 
+    // True right after a reset when the requirer module is a collapsed
+    // directory module (dir/init.luau or dir/index.luau): the navigator
+    // position is already at the directory level.
+    bool requirerIsDirectoryModule() const;
+
     // Returns true if the resolved path is a native shared library (.so/.dylib/.dll).
     bool isNativeLibrary() const;
 
@@ -61,9 +66,10 @@ private:
 
     // Set when resetToPath lands on a directory module (the requirer file is
     // dir/init.luau or dir/index.luau, so getModulePath collapsed the path to
-    // the directory itself). The require state machine's file-to-directory
-    // step right after a reset must then be a no-op: the containing directory
-    // is already modulePath, and stepping up would overshoot to the
-    // grandparent. Cleared by the first toParent or any toChild.
+    // the directory itself). The Navigator reads this (via
+    // requirerIsDirectoryModule) right after a reset to skip the state
+    // machine's file-to-directory step for relative paths; alias config
+    // lookup is unaffected and always steps up. Cleared by any toChild or
+    // toBarePackage.
     bool dirModuleReset = false;
 };
