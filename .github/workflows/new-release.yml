@@ -49,8 +49,11 @@ jobs:
       - name: Configure CMake (Unix)
         if: matrix.os.name != 'windows'
         run: |
+          V="${{ github.event.inputs.version }}"
+          V="${V#v}"
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DJACI_VERSION="$V" \
             -DLUAU_STRIP_BINARIES=ON \
             -DLUAU_ENABLE_LTO=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -59,8 +62,11 @@ jobs:
       - name: Configure CMake (Windows)
         if: matrix.os.name == 'windows'
         run: |
+          V="${{ github.event.inputs.version }}"
+          V="${V#v}"
           cmake -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
+            -DJACI_VERSION="$V" `
             -DLUAU_STRIP_BINARIES=ON `
             -DLUAU_ENABLE_LTO=ON `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `

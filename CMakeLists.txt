@@ -12,6 +12,12 @@ option(LUAU_BUILD_WEB "Build Web module" OFF)
 option(LUAU_WERROR "Warnings as errors" OFF)
 option(LUAU_STATIC_CRT "Link with the static CRT (/MT)" OFF)
 option(LUAU_EXTERN_C "Use extern C for all APIs" OFF)
+
+# Version string embedded in the CLI binaries, reported by `luau --version`.
+# Set from the release workflow; defaults to "dev" for local builds.
+if(NOT DEFINED JACI_VERSION)
+    set(JACI_VERSION "dev" CACHE STRING "Jaci version string embedded in CLI binaries")
+endif()
 option(LUAU_BUILD_SHARED "Build as a shared library" OFF)
 option(LUAU_ENABLE_LTO "Enable Link-Time Optimization (LTO / IPO)" OFF)
 option(LUAU_OPTIMIZE_SIZE "Optimize compilation and linking for minimal binary size" OFF)
@@ -77,6 +83,8 @@ if(LUAU_BUILD_CLI)
     set_target_properties(Luau.Reduce.CLI PROPERTIES OUTPUT_NAME luau-reduce)
     set_target_properties(Luau.Compile.CLI PROPERTIES OUTPUT_NAME luau-compile)
     set_target_properties(Luau.Bytecode.CLI PROPERTIES OUTPUT_NAME luau-bytecode)
+
+    target_compile_definitions(Luau.Repl.CLI PRIVATE JACI_VERSION="${JACI_VERSION}")
 endif()
 
 if(LUAU_BUILD_TESTS)
