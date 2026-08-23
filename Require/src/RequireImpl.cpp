@@ -9,6 +9,8 @@
 
 #include "lua.h"
 #include "lualib.h"
+#include <stdlib.h>
+#include <stdio.h>
 
 LUAU_FASTFLAGVARIABLE(LuauCyclicRequireShortCircuit)
 
@@ -120,7 +122,18 @@ static bool checkCachedModule(lua_State* L, const char* cacheKey)
 
 static ResolvedRequire resolveRequire(luarequire_Configuration* lrc, lua_State* L, void* ctx, const char* requirerChunkname, std::string path)
 {
-    if (!lrc->is_require_allowed(L, ctx, requirerChunkname))
+    if (getenv("KLEDBG_REQUIRE"))
+    {
+        fprintf(stderr, "[resolveRequire] chunkname='%s' path='%s' lrc=%p allowed_fp=%p\n", requirerChunkname ? requirerChunkname : "(null)", path.c_str(), (void*)lrc, (void*)(lrc->is_require_allowed));
+        fflush(stderr);
+    }
+    bool allowed = lrc->is_require_allowed(L, ctx, requirerChunkname);
+    if (getenv("KLEDBG_REQUIRE"))
+    {
+        fprintf(stderr, "[resolveRequire] allowed=%d\n", (int)allowed);
+        fflush(stderr);
+    }
+    if (!allowed)
         return ResolvedRequire::fromErrorMessage("require is not supported in this context");
 
     RuntimeNavigationContext navigationContext{lrc, L, ctx, requirerChunkname};
@@ -188,10 +201,28 @@ static int checkRegisteredModules(lua_State* L, const char* path)
 
     luaL_findtable(L, LUA_REGISTRYINDEX, registeredCacheTableKey, 1);
     lua_getfield(L, -1, pathLower);
+    if (getenv("KLEDBG_REQUIRE"))
+        fprintf(stderr, "[checkRegistered] path='%s' found=%d\n", path, !lua_isnil(L, -1) ? 1 : 0);
     if (!lua_isnil(L, -1))
     {
-        lua_remove(L, -2);
-        return 1;
+        // Check if the registered value is a cyclic placeholder (not yet resolved).
+        // If so, fall through to resolveRequire instead of returning the placeholder.
+        if (!lua_istable(L, -1) || lua_getmetatable(L, -1) == 0)
+        {
+            lua_remove(L, -2);
+            return 1;
+        }
+        lua_rawgetp(L, LUA_REGISTRYINDEX, &cyclicPlaceholderMetatableSentinel);
+        if (lua_rawequal(L, -1, -2) != 1)
+        {
+            // Not a cyclic placeholder; the registered module is fully resolved.
+            lua_pop(L, 1); // pop metatable sentinel
+            lua_remove(L, -2);
+            return 1;
+        }
+        // It is a cyclic placeholder; fall through to resolveRequire.
+        lua_pop(L, 3); // pop registered value, cache table, sentinel
+        return 0;
     }
     lua_pop(L, 2);
 
@@ -506,7 +537,13 @@ int lua_require(lua_State* L)
             luaL_error(L, "require is not supported in this context");
     } while (ar.what[0] == 'C');
 
-    return lua_requireinternal(L, ar.source);
+    if (getenv("KLEDBG_REQUIRE"))
+        fprintf(stderr, "[lua_require] source='%s' calling_requireinternal\n", ar.source ? ar.source : "(null)");
+
+    int result = lua_requireinternal(L, ar.source);
+    if (getenv("KLEDBG_REQUIRE"))
+        fprintf(stderr, "[lua_require] returned %d\n", result);
+    return result;
 }
 
 int registerModuleImpl(lua_State* L)

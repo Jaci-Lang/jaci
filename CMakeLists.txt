@@ -99,8 +99,8 @@ target_compile_features(Luau.Common PUBLIC cxx_std_17)
 target_include_directories(Luau.Common PUBLIC Common/include)
 
 target_compile_features(Luau.CLI.lib PUBLIC cxx_std_17)
-target_include_directories(Luau.CLI.lib PUBLIC CLI/include)
-target_link_libraries(Luau.CLI.lib PUBLIC Luau.Analysis PRIVATE Luau.Common Luau.Config Luau.Compiler Luau.VM Luau.Require Luau.CodeGen)
+target_include_directories(Luau.CLI.lib PUBLIC CLI/include Analysis/include)
+target_link_libraries(Luau.CLI.lib PUBLIC Luau.Common Luau.Config Luau.Compiler Luau.VM Luau.Require Luau.CodeGen)
 
 target_compile_features(Luau.Ast PUBLIC cxx_std_17)
 target_include_directories(Luau.Ast PUBLIC Ast/include)
@@ -351,7 +351,18 @@ if(LUAU_BUILD_CLI)
 
     target_include_directories(Luau.Repl.CLI PRIVATE extern extern/isocline/include)
 
-    target_link_libraries(Luau.Repl.CLI PRIVATE Luau.Compiler Luau.Analysis Luau.Inliner Luau.Config Luau.CodeGen Luau.VM Luau.Require Luau.CLI.lib isocline)
+    # Static archives must be grouped so the linker can resolve symbols across them.
+    # LspServer.cpp.o (in Luau.CLI.lib.a) references Analysis symbols that appear earlier
+    # in the link list; --start-group forces multi-pass resolution on Linux/Android/BSD.
+    if(CMAKE_SYSTEM_NAME MATCHES "Linux|Android|BSD|SunOS" AND NOT MSVC AND NOT APPLE)
+        target_link_libraries(Luau.Repl.CLI PRIVATE -Wl,--start-group Luau.Compiler Luau.Analysis Luau.Inliner Luau.Config Luau.CodeGen Luau.VM Luau.Require Luau.CLI.lib isocline -Wl,--end-group)
+        target_link_libraries(Luau.Analyze.CLI PRIVATE -Wl,--start-group Luau.Analysis Luau.CodeGen Luau.VM Luau.Require Luau.CLI.lib isocline -Wl,--end-group)
+        target_link_libraries(Luau.Ast.CLI PRIVATE -Wl,--start-group Luau.Ast Luau.Analysis Luau.CLI.lib -Wl,--end-group)
+    else()
+        target_link_libraries(Luau.Repl.CLI PRIVATE Luau.Compiler Luau.Analysis Luau.Inliner Luau.Config Luau.CodeGen Luau.VM Luau.Require Luau.CLI.lib isocline)
+        target_link_libraries(Luau.Analyze.CLI PRIVATE Luau.Analysis Luau.CLI.lib Luau.Require)
+        target_link_libraries(Luau.Ast.CLI PRIVATE Luau.Ast Luau.Analysis Luau.CLI.lib)
+    endif()
 
     target_link_libraries(Luau.Repl.CLI PRIVATE osthreads)
     target_link_libraries(Luau.Reduce.CLI PRIVATE osthreads)
@@ -359,10 +370,6 @@ if(LUAU_BUILD_CLI)
     target_link_libraries(Luau.Ast.CLI PRIVATE osthreads)
     target_link_libraries(Luau.Compile.CLI PRIVATE osthreads)
     target_link_libraries(Luau.Bytecode.CLI PRIVATE osthreads)
-
-    target_link_libraries(Luau.Analyze.CLI PRIVATE Luau.Analysis Luau.CLI.lib Luau.Require)
-
-    target_link_libraries(Luau.Ast.CLI PRIVATE Luau.Ast Luau.Analysis Luau.CLI.lib)
 
     target_compile_features(Luau.Reduce.CLI PRIVATE cxx_std_17)
     target_include_directories(Luau.Reduce.CLI PUBLIC Reduce/include)

@@ -12,6 +12,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 LUAU_FASTFLAG(LuauCIProto)
 LUAU_FASTFLAG(LuauManagedDebugNames)
@@ -227,6 +228,10 @@ int lua_getinfo(lua_State* L, int level, const char* what, lua_Debug* ar)
         LUAU_ASSERT(ttisfunction(ci->func));
         f = clvalue(ci->func);
     }
+    if (getenv("KLEDBG_GETINFO"))
+    {
+        fprintf(stderr, "[getinfo] level=%d ci-base_ci=%ld f=%p\n", level, (long)(L->ci - L->base_ci), (void*)f);
+    }
     if (f)
     {
         // auxgetinfo fills ar and optionally requests to put closure on stack
@@ -236,6 +241,10 @@ int lua_getinfo(lua_State* L, int level, const char* what, lua_Debug* ar)
             setclvalue(L, L->top, fcl);
             incr_top(L);
         }
+    }
+    if (getenv("KLEDBG_GETINFO"))
+    {
+        fprintf(stderr, "[getinfo] returning %d source='%s' what='%s'\n", f ? 1 : 0, ar->source ? ar->source : "(null)", ar->what ? ar->what : "(null)");
     }
     return f ? 1 : 0;
 }

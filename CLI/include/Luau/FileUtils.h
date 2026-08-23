@@ -20,6 +20,11 @@ bool hasFileExtension(std::string_view name, const std::vector<std::string>& ext
 bool isAbsolutePath(std::string_view path);
 bool isFile(const std::string& path);
 bool isDirectory(const std::string& path);
+
+// Canonicalize a path by following symbolic links to its real location.
+// Cross-platform: Linux/macOS use realpath(); Windows uses GetFinalPathNameByHandleW.
+// Returns std::nullopt if the path cannot be resolved.
+std::optional<std::string> resolveSymlink(const std::string& path);
 bool traverseDirectory(const std::string& path, const std::function<void(const std::string& name)>& callback);
 
 std::vector<std::string_view> splitPath(std::string_view path);

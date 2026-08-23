@@ -175,6 +175,12 @@ Error Navigator::navigateImpl(std::string_view path)
 
     if (pathType == PathType::RelativeToCurrent || pathType == PathType::RelativeToParent)
     {
+        // Relative paths are resolved from the requirer's containing directory.
+        // resetToRequirer lands the navigator at the requirer's file module,
+        // and navigateToParent steps up to that file's directory. From there,
+        // navigateThroughPath resolves the remaining path: the leading "./"
+        // or "../" prefix is stripped (the relative-path type already accounts
+        // for it), and the rest is navigated segment by segment.
         if (Error error = resetToRequirer())
             return error;
         if (Error error = navigateToParent(std::nullopt))
@@ -194,6 +200,22 @@ Error Navigator::navigateThroughPath(std::string_view path)
         // If the path is aliased, we ignore the alias: this function assumes
         // that navigation to an alias is handled by the caller.
         components = splitPath(components.second);
+    }
+    else if (path.size() >= 2 && path.substr(0, 2) == "./")
+    {
+        // A "./" prefix marks a path relative to the current directory. The
+        // caller (navigateImpl) already positioned the navigator at the
+        // requirer's directory, so the leading "." is consumed by the path
+        // type and must not be re-navigated. Strip it and continue.
+        components = splitPath(path.substr(2));
+    }
+    else if (path.size() >= 3 && path.substr(0, 3) == "../")
+    {
+        // A "../" prefix marks a path relative to the parent directory. The
+        // caller (navigateImpl) already performed the parent step for the
+        // relative path, so the ".." here is consumed by the path type and
+        // must not be re-navigated. Strip it and continue with the rest.
+        components = splitPath(path.substr(3));
     }
 
     std::optional<std::string> previousComponent;

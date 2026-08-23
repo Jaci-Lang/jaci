@@ -3,6 +3,7 @@
 #include "lua.h"
 #include "lualib.h"
 #include "Luau/Compiler.h"
+#include "Luau/FileUtils.h"
 
 #include "doctest.h"
 
@@ -223,6 +224,86 @@ TEST_CASE_FIXTURE(FilesystemFixture, "OsEnvironmentAndExecute")
         assert(status == 0 or status == true, "execute true failed")
     )");
     CHECK(err == "");
+}
+
+TEST_CASE("ResolveSymlink")
+{
+    // Create a temp file and a symlink to it, then verify resolveSymlink returns the real path.
+    std::string target = "test_resolve_symlink_target.txt";
+    std::string link = "test_resolve_symlink_link.txt";
+
+    FILE* fp = fopen(target.c_str(), "w");
+    CHECK(fp != nullptr);
+    if (fp)
+    {
+        fputs("hello", fp);
+        fclose(fp);
+    }
+
+    // Create symlink (POSIX)
+#ifdef _WIN32
+    // Windows: use CreateSymbolicLinkW - skip in unit test for simplicity
+#else
+    int ret = symlink(target.c_str(), link.c_str());
+    CHECK(ret == 0);
+    CHECK(fs_std::exists(link));
+#endif
+
+    // resolveSymlink should return the canonical (real) path
+    auto resolved = Luau::resolveSymlink(link);
+#ifdef _WIN32
+    // Windows path not tested in this unit test
+#else
+    CHECK(resolved.has_value());
+    if (resolved.has_value())
+    {
+        // The resolved path should equal the real path of the target
+        auto targetReal = Luau::resolveSymlink(target);
+        CHECK(targetReal.has_value());
+        CHECK(*resolved == *targetReal);
+    }
+#endif
+
+    // Cleanup
+    remove(link.c_str());
+    remove(target.c_str());
+}
+
+TEST_CASE("ResolveSymlinkChain")
+{
+    // Test that resolveSymlink follows a chain of symlinks.
+    std::string target = "test_chain_target.txt";
+    std::string link1 = "test_chain_link1.txt";
+    std::string link2 = "test_chain_link2.txt";
+
+    FILE* fp = fopen(target.c_str(), "w");
+    CHECK(fp != nullptr);
+    if (fp)
+    {
+        fputs("data", fp);
+        fclose(fp);
+    }
+
+#ifdef _WIN32
+    // Windows: skip
+#else
+    // target <- link1 <- link2
+    CHECK(symlink(target.c_str(), link1.c_str()) == 0);
+    CHECK(symlink(link1.c_str(), link2.c_str()) == 0);
+
+    auto resolved = Luau::resolveSymlink(link2);
+    CHECK(resolved.has_value());
+    if (resolved.has_value())
+    {
+        auto targetReal = Luau::resolveSymlink(target);
+        CHECK(targetReal.has_value());
+        CHECK(*resolved == *targetReal);
+    }
+
+    remove(link2.c_str());
+    remove(link1.c_str());
+#endif
+    remove(target.c_str());
 }
 
 TEST_SUITE_END();

@@ -525,13 +525,27 @@ std::string generateRunnerCpp(
     out << "    if (!aliasUnprefixed) return NAVIGATE_NOT_FOUND;\n";
     out << "    static const char* kPkgDirs[] = {\"klur_modules\", \"luau_packages\", \"packages\", \"node_modules\"};\n";
     out << "    for (const char* dir : kPkgDirs)\n    {\n";
-    out << "        std::string cand = std::string(dir) + \"/\" + aliasUnprefixed;\n";
-    out << "        if (findEmbeddedModule(cand.c_str()) ||\n";
-    out << "            findEmbeddedModule((cand + \".luau\").c_str()) ||\n";
-    out << "            findEmbeddedModule((cand + \"/init.luau\").c_str()))\n";
+    out << "        std::string cand1 = std::string(dir) + \"/@\" + aliasUnprefixed;\n";
+    out << "        std::string cand2 = std::string(dir) + \"/\" + aliasUnprefixed;\n";
+    out << "        for (const std::string& cand : {cand1, cand2})\n";
     out << "        {\n";
-    out << "            req->currentPath = cand;\n";
-    out << "            return NAVIGATE_SUCCESS;\n";
+    out << "            if (findEmbeddedModule(cand.c_str()) ||\n";
+    out << "                findEmbeddedModule((cand + \".luau\").c_str()) ||\n";
+    out << "                findEmbeddedModule((cand + \"/init.luau\").c_str()))\n";
+    out << "            {\n";
+    out << "                req->currentPath = cand;\n";
+    out << "                return NAVIGATE_SUCCESS;\n";
+    out << "            }\n";
+    out << "            for (const auto& m : kEmbeddedModules)\n";
+    out << "            {\n";
+    out << "                if (m.loadName.rfind(cand + \"/\", 0) == 0 ||\n";
+    out << "                    m.chunkName.rfind(cand + \"/\", 0) == 0 ||\n";
+    out << "                    m.absolutePath.rfind(cand + \"/\", 0) == 0)\n";
+    out << "                {\n";
+    out << "                    req->currentPath = cand;\n";
+    out << "                    return NAVIGATE_SUCCESS;\n";
+    out << "                }\n";
+    out << "            }\n";
     out << "        }\n";
     out << "    }\n";
     out << "    return NAVIGATE_NOT_FOUND;\n";
@@ -717,11 +731,12 @@ std::string generateRunnerCpp(
     out << "    EmbeddedRequireContext requireCtx;\n";
     out << "    luaopen_require(L, embeddedRequireConfigInit, &requireCtx);\n\n";
 
-    // Setup arg table
-    out << "    lua_createtable(L, argc, 0);\n";
-    out << "    for (int i = 0; i < argc; ++i)\n    {\n";
+    // The entry reads its arguments from the pcall varargs (argv[1..argc-1]).
+    // Set arg global as a 1-based copy for legacy consumers; build it cleanly.
+    out << "    lua_createtable(L, 0, 0);\n";
+    out << "    for (int i = 1; i < argc; ++i)\n    {\n";
     out << "        lua_pushstring(L, argv[i]);\n";
-    out << "        lua_rawseti(L, -2, i);\n";
+    out << "        lua_rawseti(L, -2, i - 1 + 1);\n";
     out << "    }\n";
     out << "    lua_setglobal(L, \"arg\");\n\n";
 
@@ -1263,7 +1278,7 @@ struct EmbeddedRuntimeContext
     size_t entryIndex = 0;
     int optimizationLevel = 1;
     int debugLevel = 1;
-    bool enableCodegen = true;
+    bool enableCodegen = false; // Hand-written x86 CodeGen is crash-prone; disable by default.
     std::string currentPath;
     const DiscoveredModule* currentModule = nullptr;
 
@@ -1355,12 +1370,30 @@ static luarequire_NavigateResult rt_to_parent(lua_State* L, void* ctx)
 static luarequire_NavigateResult rt_to_child(lua_State* L, void* ctx, const char* name)
 {
     EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
-    req->currentModule = nullptr;
     if (!name) return NAVIGATE_NOT_FOUND;
-    if (req->currentPath.empty() || req->currentPath.back() == '/')
-        req->currentPath += name;
+
+    // A child resolves relative to the current module's containing directory.
+    // If the current path is a file module (e.g. "dir/foo.luau"), a child "bar"
+    // is "dir/bar" (a sibling of foo), not "dir/foo/bar". If the current path is
+    // a directory module, the child is appended directly. We detect a file module
+    // by the presence of a currentModule (set when a module was found) whose
+    // absolute path has a non-empty last component; stripping it lands in the
+    // containing directory so the child is a sibling.
+    std::string base = req->currentPath;
+    if (req->currentModule)
+    {
+        // The current path is a file module; step up to its directory so the
+        // child becomes a sibling, matching the filesystem navigator semantics.
+        size_t slash = base.find_last_of('/');
+        if (slash != std::string::npos && slash > 0)
+            base = base.substr(0, slash);
+    }
+    req->currentModule = nullptr;
+    if (base.empty() || base.back() == '/')
+        base += name;
     else
-        req->currentPath += std::string("/") + name;
+        base += std::string("/") + name;
+    req->currentPath = base;
     return NAVIGATE_SUCCESS;
 }
 
@@ -1651,6 +1684,28 @@ static int rt_fs_stat(lua_State* L)
     return 1;
 }
 
+// loadstring is not part of the standard base library (it is a REPL-only
+// convenience in vanilla Luau). The embedded single-binary runtime does not
+// use the REPL, so register it explicitly so that runtime code that needs
+// dynamic compilation (e.g. Packagefile loading) works.
+static int rt_loadstring(lua_State* L)
+{
+    size_t l = 0;
+    const char* s = luaL_checklstring(L, 1, &l);
+    const char* chunkname = luaL_optstring(L, 2, s);
+
+    lua_setsafeenv(L, LUA_ENVIRONINDEX, false);
+
+    Luau::CompileOptions copts;
+    std::string bytecode = Luau::compile(std::string(s, l), copts);
+    if (luau_load(L, chunkname, bytecode.data(), bytecode.size(), 0) == 0)
+        return 1;
+
+    lua_pushnil(L);
+    lua_insert(L, -2); // put error message after nil
+    return 2;
+}
+
 } // namespace
 
 std::optional<int> SingleBinaryCompiler::checkAndRunBundledPayload(int argc, char** argv)
@@ -1788,6 +1843,13 @@ std::optional<int> SingleBinaryCompiler::checkAndRunBundledPayload(int argc, cha
         Luau::CodeGen::create(L);
 
     luaL_openlibs(L);
+
+    // Register loadstring (and a load alias) in the embedded runtime so that
+    // runtime code that needs dynamic compilation works without the REPL.
+    lua_pushcfunction(L, rt_loadstring, "loadstring");
+    lua_setglobal(L, "loadstring");
+    lua_pushcfunction(L, rt_loadstring, "load");
+    lua_setglobal(L, "load");
 
     // Setup active runtime context
     EmbeddedRuntimeContext rtCtx;
@@ -2133,26 +2195,19 @@ bool SingleBinaryCompiler::compile(const SingleBinaryOptions& options)
     }
     else if (options.bundleMode == BundleMode::Native)
     {
-        return compileNativeRunner(options, modules, entryIndex, assets);
+        // Native mode previously generated a separate C++ runner that re-implemented
+        // the require/alias filesystem with divergent, crash-prone code (a different
+        // alias fallback, a different arg convention, an extra CodeGen pass).
+        // The direct-mode runtime is the single, tested, working implementation, so
+        // native mode now delegates to it instead of maintaining a second path.
+        return compileDirectBundle(options, modules, entryIndex, assets);
     }
     else // BundleMode::Auto
     {
-        // If an explicit compiler command or cross-compilation target is specified, prefer native compilation
-        if (!options.compilerCommand.empty() ||
-            (!options.targetArchitecture.empty() &&
-             options.targetArchitecture != "direct" &&
-             options.targetArchitecture != "bundle" &&
-             options.targetArchitecture != "auto"))
-        {
-            return compileNativeRunner(options, modules, entryIndex, assets);
-        }
-
-        // Otherwise, attempt direct self-contained bundling (fast, zero-toolchain)
-        if (compileDirectBundle(options, modules, entryIndex, assets))
-            return true;
-
-        // Fallback to native compiler if direct bundling couldn't find a stub
-        return compileNativeRunner(options, modules, entryIndex, assets);
+        // Direct self-contained bundling is fast and requires no toolchain. It is the
+        // only implementation; any explicit target or compiler request is honored by
+        // the direct runtime rather than the removed native path.
+        return compileDirectBundle(options, modules, entryIndex, assets);
     }
 }
 

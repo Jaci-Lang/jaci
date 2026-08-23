@@ -423,6 +423,63 @@ bool isDirectory(const std::string& path)
 #endif
 }
 
+std::optional<std::string> resolveSymlink(const std::string& path)
+{
+    // Canonicalize a path by following symbolic links to its real location.
+    // Cross-platform: Linux/macOS use realpath(); Windows uses the
+    // GetFinalPathNameByHandleW reparse-point API so that reparse points
+    // (Windows symlinks / directory junctions) resolve to their target.
+#ifdef _WIN32
+    // Open the path so that the reparse-point chain can be followed.
+    HANDLE handle = CreateFileW(
+        fromUtf8(path).c_str(),
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKWARD_COMPATIBILITY,
+        nullptr
+    );
+    if (handle == INVALID_HANDLE_VALUE)
+        return std::nullopt;
+    CloseHandle(handle);
+    handle = CreateFileW(
+        fromUtf8(path).c_str(),
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr
+    );
+    if (handle == INVALID_HANDLE_VALUE)
+        return std::nullopt;
+    DWORD bufferSize = GetFinalPathNameByHandleW(handle, nullptr, 0, 0);
+    if (bufferSize == 0)
+    {
+        CloseHandle(handle);
+        return std::nullopt;
+    }
+    std::wstring result(bufferSize, L'\0');
+    if (!GetFinalPathNameByHandleW(handle, &result[0], bufferSize, 0))
+    {
+        CloseHandle(handle);
+        return std::nullopt;
+    }
+    CloseHandle(handle);
+    // GetFinalPathNameByHandleW returns a \\?\ prefixed wide path; strip it.
+    if (result.size() >= 4 && result[0] == L'\\' && result[1] == L'\\' && result[2] == L'?' && result[3] == L'\\')
+        result.erase(0, 4);
+    return toUtf8(result);
+#else
+    // POSIX: realpath follows every symbolic link in the chain.
+    char resolved[4096];
+    if (realpath(path.c_str(), resolved) == nullptr)
+        return std::nullopt;
+    return std::string(resolved);
+#endif
+}
+
 std::vector<std::string_view> splitPath(std::string_view path)
 {
     std::vector<std::string_view> components;

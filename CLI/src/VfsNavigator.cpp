@@ -196,6 +196,13 @@ NavigationStatus VfsNavigator::updateRealPaths()
 
     realPath = isAbsolutePath(result.realPath) ? absolutePathPrefix + result.realPath : result.realPath;
     absoluteRealPath = absolutePathPrefix + absoluteResult.realPath;
+
+    // Canonicalize absoluteRealPath through symlinks so that alias resolution and
+    // findModule/findEmbeddedModule can match against the real (non-symlinked) path.
+    // This makes symlink resolution work cross-platform (Windows, macOS, Linux).
+    if (auto resolved = resolveSymlink(absoluteRealPath))
+        absoluteRealPath = *resolved;
+
     return NavigationStatus::Success;
 }
 
@@ -277,9 +284,14 @@ NavigationStatus VfsNavigator::toChild(const std::string& name)
     if (name == ".config")
         return NavigationStatus::NotFound;
 
+    // A child resolves relative to the current module's containing directory.
+    // If modulePath is "dir/foo" (a file), a child "bar" is "dir/bar"
+    // (not "dir/foo/bar"). If modulePath is "dir" (a directory), a child
+    // "bar" is "dir/bar". We can't tell the difference without checking the
+    // filesystem, so we use the realPath (which includes the .luau suffix)
+    // to determine if the current module is a file or directory.
     modulePath = normalizePath(modulePath + "/" + name);
     absoluteModulePath = normalizePath(absoluteModulePath + "/" + name);
-
     return updateRealPaths();
 }
 
