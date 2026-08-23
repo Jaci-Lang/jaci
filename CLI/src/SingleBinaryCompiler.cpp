@@ -566,8 +566,6 @@ std::string generateRunnerCpp(
     out << "static luarequire_NavigateResult embedded_alias_fallback(lua_State* L, void* ctx, const char* aliasUnprefixed)\n{\n";
     out << "    EmbeddedRequireContext* req = static_cast<EmbeddedRequireContext*>(ctx);\n";
     out << "    if (!aliasUnprefixed) return NAVIGATE_NOT_FOUND;\n";
-    out << "    if (getenv(\"KLEDBG_REQUIRE\"))\n";
-    out << "        fprintf(stderr, \"[emb_alias_fallback] alias='%s' moduleCount=%zu\\n\", aliasUnprefixed, kNumEmbeddedModules);\n";
     out << "    static const char* kPkgDirs[] = {\"klur_modules\", \"luau_packages\", \"packages\", \"node_modules\"};\n";
     out << "    for (const char* dir : kPkgDirs)\n    {\n";
     out << "        std::string cand1 = std::string(dir) + \"/@\" + aliasUnprefixed;\n";
@@ -1546,9 +1544,6 @@ static luarequire_NavigateResult rt_alias_fallback(lua_State* L, void* ctx, cons
 {
     EmbeddedRuntimeContext* req = static_cast<EmbeddedRuntimeContext*>(ctx);
     if (!aliasUnprefixed) return NAVIGATE_NOT_FOUND;
-    if (const char* dbg = getenv("KLEDBG_REQUIRE"))
-        fprintf(stderr, "[alias_fallback] alias='%s' projectRoot='%s' moduleCount=%zu\n",
-                aliasUnprefixed, req->projectRoot.c_str(), req->modules.size());
     static const char* kPkgDirs[] = {"klur_modules", "luau_packages", "packages", "node_modules"};
     for (const char* dir : kPkgDirs)
     {
@@ -1561,8 +1556,6 @@ static luarequire_NavigateResult rt_alias_fallback(lua_State* L, void* ctx, cons
                 req->findModule((cand + ".luau").c_str()) ||
                 req->findModule((cand + "/init.luau").c_str()))
             {
-                if (const char* dbg = getenv("KLEDBG_REQUIRE"))
-                    fprintf(stderr, "[alias_fallback] EXACT match for '%s' -> '%s'\n", cand.c_str(), aliasUnprefixed);
                 req->currentPath = cand;
                 return NAVIGATE_SUCCESS;
             }
@@ -1575,8 +1568,6 @@ static luarequire_NavigateResult rt_alias_fallback(lua_State* L, void* ctx, cons
                     m.chunkName.rfind(cand + "/", 0) == 0 ||
                     m.absolutePath.rfind(cand + "/", 0) == 0)
                 {
-                    if (const char* dbg = getenv("KLEDBG_REQUIRE"))
-                        fprintf(stderr, "[alias_fallback] RAW-PREFIX match for '%s' via loadName '%s'\n", cand.c_str(), m.loadName.c_str());
                     req->currentPath = cand;
                     return NAVIGATE_SUCCESS;
                 }
@@ -1590,20 +1581,11 @@ static luarequire_NavigateResult rt_alias_fallback(lua_State* L, void* ctx, cons
                     m.canonicalKey.substr(0, candCanon.size()) == candCanon &&
                     m.canonicalKey[candCanon.size()] == '/')
                 {
-                    if (const char* dbg = getenv("KLEDBG_REQUIRE"))
-                        fprintf(stderr, "[alias_fallback] CANON-PREFIX match for '%s' (candCanon='%s') via canonicalKey '%s'\n", cand.c_str(), candCanon.c_str(), m.canonicalKey.c_str());
                     req->currentPath = cand;
                     return NAVIGATE_SUCCESS;
                 }
             }
         }
-    }
-    if (const char* dbg = getenv("KLEDBG_REQUIRE"))
-    {
-        fprintf(stderr, "[alias_fallback] NO match for '%s'. sample canonicalKeys:\n", aliasUnprefixed);
-        for (size_t i = 0; i < req->modules.size() && i < 8; ++i)
-            fprintf(stderr, "  [%zu] loadName='%s' chunkName='%s' canonicalKey='%s'\n",
-                i, req->modules[i].loadName.c_str(), req->modules[i].chunkName.c_str(), req->modules[i].canonicalKey.c_str());
     }
     return NAVIGATE_NOT_FOUND;
 }

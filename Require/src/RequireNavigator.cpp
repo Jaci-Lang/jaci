@@ -201,22 +201,6 @@ Error Navigator::navigateThroughPath(std::string_view path)
         // that navigation to an alias is handled by the caller.
         components = splitPath(components.second);
     }
-    else if (path.size() >= 2 && path.substr(0, 2) == "./")
-    {
-        // A "./" prefix marks a path relative to the current directory. The
-        // caller (navigateImpl) already positioned the navigator at the
-        // requirer's directory, so the leading "." is consumed by the path
-        // type and must not be re-navigated. Strip it and continue.
-        components = splitPath(path.substr(2));
-    }
-    else if (path.size() >= 3 && path.substr(0, 3) == "../")
-    {
-        // A "../" prefix marks a path relative to the parent directory. The
-        // caller (navigateImpl) already performed the parent step for the
-        // relative path, so the ".." here is consumed by the path type and
-        // must not be re-navigated. Strip it and continue with the rest.
-        components = splitPath(path.substr(3));
-    }
 
     std::optional<std::string> previousComponent;
     while (!(components.first.empty() && components.second.empty()))

@@ -58,4 +58,12 @@ private:
 
     std::string modulePath;
     std::string absoluteModulePath;
+
+    // Set when resetToPath lands on a directory module (the requirer file is
+    // dir/init.luau or dir/index.luau, so getModulePath collapsed the path to
+    // the directory itself). The require state machine's file-to-directory
+    // step right after a reset must then be a no-op: the containing directory
+    // is already modulePath, and stepping up would overshoot to the
+    // grandparent. Cleared by the first toParent or any toChild.
+    bool dirModuleReset = false;
 };

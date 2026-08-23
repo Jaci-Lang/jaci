@@ -122,17 +122,7 @@ static bool checkCachedModule(lua_State* L, const char* cacheKey)
 
 static ResolvedRequire resolveRequire(luarequire_Configuration* lrc, lua_State* L, void* ctx, const char* requirerChunkname, std::string path)
 {
-    if (getenv("KLEDBG_REQUIRE"))
-    {
-        fprintf(stderr, "[resolveRequire] chunkname='%s' path='%s' lrc=%p allowed_fp=%p\n", requirerChunkname ? requirerChunkname : "(null)", path.c_str(), (void*)lrc, (void*)(lrc->is_require_allowed));
-        fflush(stderr);
-    }
     bool allowed = lrc->is_require_allowed(L, ctx, requirerChunkname);
-    if (getenv("KLEDBG_REQUIRE"))
-    {
-        fprintf(stderr, "[resolveRequire] allowed=%d\n", (int)allowed);
-        fflush(stderr);
-    }
     if (!allowed)
         return ResolvedRequire::fromErrorMessage("require is not supported in this context");
 
@@ -201,8 +191,6 @@ static int checkRegisteredModules(lua_State* L, const char* path)
 
     luaL_findtable(L, LUA_REGISTRYINDEX, registeredCacheTableKey, 1);
     lua_getfield(L, -1, pathLower);
-    if (getenv("KLEDBG_REQUIRE"))
-        fprintf(stderr, "[checkRegistered] path='%s' found=%d\n", path, !lua_isnil(L, -1) ? 1 : 0);
     if (!lua_isnil(L, -1))
     {
         // Check if the registered value is a cyclic placeholder (not yet resolved).
@@ -537,13 +525,7 @@ int lua_require(lua_State* L)
             luaL_error(L, "require is not supported in this context");
     } while (ar.what[0] == 'C');
 
-    if (getenv("KLEDBG_REQUIRE"))
-        fprintf(stderr, "[lua_require] source='%s' calling_requireinternal\n", ar.source ? ar.source : "(null)");
-
-    int result = lua_requireinternal(L, ar.source);
-    if (getenv("KLEDBG_REQUIRE"))
-        fprintf(stderr, "[lua_require] returned %d\n", result);
-    return result;
+    return lua_requireinternal(L, ar.source);
 }
 
 int registerModuleImpl(lua_State* L)

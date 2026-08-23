@@ -42,6 +42,26 @@ static bool hasNativeSuffix(std::string_view str)
     return false;
 }
 
+// True when realPath is the init/index file inside the directory that
+// modulePath denotes (a "directory module"). getModulePath collapses
+// dir/init.luau to dir, so after a reset the requirer of such a file sits
+// at the directory level; the require state machine's file-to-directory
+// step must then be a no-op instead of overshooting to the grandparent.
+static bool isDirectoryModule(const std::string& realPath)
+{
+    for (std::string_view s : kInitSuffixes)
+    {
+        if (hasSuffix(realPath, s))
+            return true;
+    }
+    for (std::string_view s : kIndexSuffixes)
+    {
+        if (hasSuffix(realPath, s))
+            return true;
+    }
+    return false;
+}
+
 static ResolvedRealPath getRealPath(std::string modulePath)
 {
     bool found = false;
@@ -50,82 +70,60 @@ static ResolvedRealPath getRealPath(std::string modulePath)
     size_t lastSlash = modulePath.find_last_of('/');
     LUAU_ASSERT(lastSlash != std::string::npos);
     std::string_view lastComponent = std::string_view(modulePath).substr(lastSlash + 1);
+    bool isInitOrIndex = (lastComponent == "init" || lastComponent == "index");
 
     std::string testBuf;
     testBuf.reserve(modulePath.size() + 32);
 
-    if (lastComponent != "init" && lastComponent != "index")
+    // Try each suffix in order; returns false on ambiguity (a second hit
+    // after one was already found).
+    auto trySuffixes = [&](auto&& suffixes) -> bool
     {
-        for (std::string_view potentialSuffix : kSuffixes)
+        for (std::string_view s : suffixes)
         {
             testBuf = modulePath;
-            testBuf.append(potentialSuffix.data(), potentialSuffix.size());
+            testBuf.append(s.data(), s.size());
             if (isFile(testBuf))
             {
                 if (found)
-                    return {NavigationStatus::Ambiguous};
+                    return false;
 
-                suffix = potentialSuffix;
+                suffix = s;
                 found = true;
             }
         }
+        return true;
+    };
 
-        // Check for native shared library.
-        for (std::string_view potentialSuffix : kNativeSuffixes)
-        {
-            testBuf = modulePath;
-            testBuf.append(potentialSuffix.data(), potentialSuffix.size());
-            if (isFile(testBuf))
-            {
-                if (found)
-                    return {NavigationStatus::Ambiguous};
-
-                suffix = potentialSuffix;
-                found = true;
-            }
-        }
-    }
-
-    if (isDirectory(modulePath))
+    if (isInitOrIndex && isDirectory(modulePath))
     {
-        if (found)
+        // Directory module: the nested directory's init/index takes
+        // precedence over a sibling X/init.luau file (pinned by the
+        // upstream nested_inits semantics: require("@self/init") from
+        // dir/init.luau resolves to dir/init/init.luau).
+        if (!trySuffixes(kInitSuffixes) || (!found && !trySuffixes(kIndexSuffixes)))
             return {NavigationStatus::Ambiguous};
-
-        // Try init.luau / init.lua first.
-        for (std::string_view potentialSuffix : kInitSuffixes)
-        {
-            testBuf = modulePath;
-            testBuf.append(potentialSuffix.data(), potentialSuffix.size());
-            if (isFile(testBuf))
-            {
-                if (found)
-                    return {NavigationStatus::Ambiguous};
-
-                suffix = potentialSuffix;
-                found = true;
-            }
-        }
-
-        // Try index.luau / index.lua as an alternative entry point.
-        if (!found)
-        {
-            for (std::string_view potentialSuffix : kIndexSuffixes)
-            {
-                testBuf = modulePath;
-                testBuf.append(potentialSuffix.data(), potentialSuffix.size());
-                if (isFile(testBuf))
-                {
-                    if (found)
-                        return {NavigationStatus::Ambiguous};
-
-                    suffix = potentialSuffix;
-                    found = true;
-                }
-            }
-        }
 
         if (!found)
             found = true; // directory itself counts as presence; load will fail later
+    }
+    else
+    {
+        // Plain file resolution (dir/foo.luau). For init/index components
+        // without a nested directory this also covers require("cli/init")
+        // finding the file cli/init.luau.
+        if (!trySuffixes(kSuffixes) || !trySuffixes(kNativeSuffixes))
+            return {NavigationStatus::Ambiguous};
+
+        if (!found && isDirectory(modulePath))
+        {
+            // A directory of the same name is an alternative entry point.
+            if (!trySuffixes(kInitSuffixes) || (!found && !trySuffixes(kIndexSuffixes)))
+                return {NavigationStatus::Ambiguous};
+
+            if (!found)
+                found = true; // directory itself counts as presence; load will fail later
+        }
     }
 
     if (!found)
@@ -221,6 +219,8 @@ NavigationStatus VfsNavigator::resetToStdIn()
     LUAU_ASSERT(firstSlash != std::string::npos);
     absolutePathPrefix = absoluteRealPath.substr(0, firstSlash);
 
+    dirModuleReset = false; // stdin is never a directory module
+
     return NavigationStatus::Success;
 }
 
@@ -252,13 +252,36 @@ NavigationStatus VfsNavigator::resetToPath(const std::string& path)
         absolutePathPrefix = joinedPath.substr(0, firstSlash);
     }
 
-    return updateRealPaths();
+    NavigationStatus status = updateRealPaths();
+    if (status == NavigationStatus::Success)
+    {
+        // If the resolved module is a directory module (dir/init.luau or
+        // dir/index.luau), modulePath is the directory itself; the require
+        // state machine's file-to-directory step must be a no-op next.
+        dirModuleReset = isDirectoryModule(realPath);
+    }
+    else
+    {
+        dirModuleReset = false;
+    }
+    return status;
 }
 
 NavigationStatus VfsNavigator::toParent()
 {
     if (absoluteModulePath == "/")
         return NavigationStatus::NotFound;
+
+    // The require state machine performs one file-to-directory step right
+    // after resetting to the requirer. When the requirer is a directory
+    // module (dir/init.luau or dir/index.luau), getModulePath already
+    // collapsed the path to the directory, so the containing directory is
+    // modulePath itself and stepping up would overshoot to the grandparent.
+    if (dirModuleReset)
+    {
+        dirModuleReset = false;
+        return NavigationStatus::Success;
+    }
 
     size_t numSlashes = 0;
     for (char c : absoluteModulePath)
@@ -284,12 +307,14 @@ NavigationStatus VfsNavigator::toChild(const std::string& name)
     if (name == ".config")
         return NavigationStatus::NotFound;
 
+    // Navigating to a child ends the reset positioning; a later parent step
+    // is an explicit ".." and must actually step up.
+    dirModuleReset = false;
+
     // A child resolves relative to the current module's containing directory.
-    // If modulePath is "dir/foo" (a file), a child "bar" is "dir/bar"
-    // (not "dir/foo/bar"). If modulePath is "dir" (a directory), a child
-    // "bar" is "dir/bar". We can't tell the difference without checking the
-    // filesystem, so we use the realPath (which includes the .luau suffix)
-    // to determine if the current module is a file or directory.
+    // The require state machine always steps to that directory first for
+    // relative paths (file-to-directory step), so modulePath is at directory
+    // level here and appending is correct.
     modulePath = normalizePath(modulePath + "/" + name);
     absoluteModulePath = normalizePath(absoluteModulePath + "/" + name);
     return updateRealPaths();
@@ -297,6 +322,8 @@ NavigationStatus VfsNavigator::toChild(const std::string& name)
 
 NavigationStatus VfsNavigator::toBarePackage(const std::string& pkgName)
 {
+    dirModuleReset = false;
+
     // Walk from the current directory up to the filesystem root, searching
     // for kPackageDirs/<pkgName> at each level.
     std::string searchDir = absoluteModulePath;
