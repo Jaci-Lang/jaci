@@ -64,17 +64,17 @@ jobs:
         else
           strip -s luau luau-analyze luau-compile luau-ast || true
         fi
-        zip -j -9 ../luau-${{ matrix.os.name }}.zip luau luau-analyze luau-compile luau-ast
+        zip -j -9 ../jaci-${{ matrix.os.name }}.zip luau luau-analyze luau-compile luau-ast
 
     - name: Package Release (Windows)
       if: matrix.os.name == 'windows'
       run: |
-        7z a -mx=9 luau-${{ matrix.os.name }}.zip .\build\luau.exe .\build\luau-analyze.exe .\build\luau-compile.exe .\build\luau-ast.exe
+        7z a -mx=9 jaci-${{ matrix.os.name }}.zip .\build\luau.exe .\build\luau-analyze.exe .\build\luau-compile.exe .\build\luau-ast.exe
 
     - uses: actions/upload-artifact@v4
       with:
-        name: luau-${{ matrix.os.name }}
-        path: luau-${{ matrix.os.name }}.zip
+        name: jaci-${{ matrix.os.name }}
+        path: jaci-${{ matrix.os.name }}.zip
         overwrite: true
 
   web:
