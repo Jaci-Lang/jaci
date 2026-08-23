@@ -505,10 +505,17 @@ int main(int argc, char** argv)
 
     setLuauFlagsDefault();
 
+    // A single binary whose base executable is luau-compile (built with
+    // `luau-compile --build`) runs the bundled entry, exactly like the
+    // luau entry point.
+    if (auto exitCode = Luau::SingleBinaryCompiler::checkAndRunBundledPayload(argc, argv))
+        return *exitCode;
+
     CompileFormat compileFormat = CompileFormat::Text;
     Luau::CodeGen::AssemblyOptions::Target assemblyTarget = Luau::CodeGen::AssemblyOptions::Host;
     std::string targetArch;
     std::vector<std::string> assetPaths;
+    std::vector<std::string> embedPaths;
     RecordStats recordStats = RecordStats::None;
     std::string statsFile("stats.json");
     bool bytecodeSummary = false;
@@ -600,6 +607,14 @@ int main(int argc, char** argv)
         else if (strncmp(argv[i], "--include-assets=", 17) == 0)
         {
             assetPaths.push_back(argv[i] + 17);
+        }
+        else if (strcmp(argv[i], "--embed") == 0 && i + 1 < argc)
+        {
+            embedPaths.push_back(argv[++i]);
+        }
+        else if (strncmp(argv[i], "--embed=", 8) == 0)
+        {
+            embedPaths.push_back(argv[i] + 8);
         }
         else if (strcmp(argv[i], "--timetrace") == 0)
         {
@@ -776,6 +791,7 @@ int main(int argc, char** argv)
         opts.compilerCommand = compilerCommand;
         opts.customStubPath = customStubPath;
         opts.assetPaths = assetPaths;
+        opts.embedPaths = embedPaths;
         opts.bundleMode = bundleMode;
         opts.optimizationLevel = globalOptions.optimizationLevel;
         opts.debugLevel = globalOptions.debugLevel;

@@ -499,6 +499,7 @@ target_sources(Luau.CLI.lib PRIVATE
     CLI/include/Luau/JsonRpc.h
     CLI/include/Luau/LspProtocol.h
     CLI/include/Luau/LspServer.h
+    CLI/include/Luau/ReplRequirer.h
     CLI/include/Luau/SingleBinaryCompiler.h
     CLI/include/Luau/VfsCompress.h
     CLI/include/Luau/VfsLayer.h
@@ -509,6 +510,7 @@ target_sources(Luau.CLI.lib PRIVATE
     CLI/src/Flags.cpp
     CLI/src/JsonRpc.cpp
     CLI/src/LspServer.cpp
+    CLI/src/ReplRequirer.cpp
     CLI/src/SingleBinaryCompiler.cpp
     CLI/src/VfsCompress.cpp
     CLI/src/VfsLayer.cpp
