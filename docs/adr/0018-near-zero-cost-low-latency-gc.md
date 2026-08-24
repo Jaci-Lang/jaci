@@ -2,38 +2,31 @@
 
 ## Context
 
-Luau uses an incremental tri-color mark-and-sweep garbage collector. Under high-throughput allocation workloads, traditional collectors encounter two primary bottlenecks:
-1. **Allocator Churn & Kernel Syscall Overhead**: When GC pages are swept and emptied, releasing memory immediately to the operating system via `free` and reallocating via `malloc` on subsequent demands induces high kernel page faulting, lock contention, and cache pollution.
-2. **Atomic Synchronization Latency**: Deferring dirty table rescan work to the indivisible Stop-The-World (STW) atomic phase creates noticeable latency pauses under write-heavy workloads.
-3. **Traversal Overhead**: Marking deeply nested structures one slot at a time with full function call dispatch stalls processor execution pipelines.
+Luau uses an incremental tri-color mark-and-sweep collector. Empty-page release and reacquisition adds allocator traffic during repeated churn. Marking leaf objects through the generic object dispatcher also adds avoidable work for string-heavy tables.
 
 ## Decision
 
-Implement a high-throughput, low-latency GC subsystem in Jaci:
+Keep Luau's collection schedule and write barriers unchanged. Optimize allocation reuse and leaf marking without changing reachability, weak-table, or finalization behavior.
 
-### 1. Zero-Syscall Page Pool (Hot Page Cache)
-- Maintain size-segregated free page pools (`pagepool_small` and `pagepool_large` in `global_State`) for 16KB and 32KB pages.
-- When sweeping empties a page (`busyBlocks == 0`), recycle the page into the page pool in $O(1)$ time instead of releasing it to libc/OS.
-- When allocating a new page, pop from the page pool before querying system memory allocators.
-- Completely eliminates OS allocation/deallocation overhead during steady-state GC cycles.
+### Reuse empty pages
 
-### 2. Fast-Path Vectorized Marking & Cache Prefetching
-- Optimize `traversetable` with 4-way loop unrolling and hardware cache prefetching (`__builtin_prefetch`) for table arrays and hash node buckets.
-- Inline fast-path checks for non-collectable primitive types (integers, floats, booleans, nil) to skip recursive function calls entirely.
-- Inline string, vector, and buffer marking paths.
+- Maintain size-segregated pools for 16 KiB and 32 KiB pages.
+- Reuse a pooled page before calling the host allocator.
+- Cap the pools at 128 small pages and 32 large pages. Limit retained physical memory to 3 MiB.
+- Release every pooled page when closing the state.
 
-### 3. Multi-Pass Non-Blocking Propagation
-- Enhance `GCSpropagateagain` to perform iterative bounded propagation passes while the mutator executes.
-- Drain dirty `grayagain` sets in small incremental slices so that when entering the indivisible atomic phase (`GCSatomic`), outstanding work is near zero ($O(1)$), reducing STW pause times to microseconds.
+### Mark leaf objects directly
 
-### 4. Branch-Predictor Optimized Write Barriers
-- Decorate `luaC_barrier`, `luaC_barriert`, `luaC_barrierfast`, `luaC_objbarrier`, and `luaC_threadbarrier` with branch hints (`LUAU_UNLIKELY`) to minimize mutator bytecode dispatch penalties.
+- Mark strings, buffers, and heap vectors directly in `markvalue`.
+- Bypass the generic object switch for objects that cannot contain GC edges.
+- Preserve the same white-to-gray-to-black transition.
 
-### 5. Streamlined Vectorized Sweeping
-- Unroll page sweep loops with cache prefetching and fast bitwise alive checks.
+Reject manual table-scan unrolling, cache prefetching, write-barrier branch hints, and extra `grayagain` passes. Measurements showed throughput regressions, and the extra propagation pass allowed the sampled logical heap to grow from roughly 16 MiB to 95 MiB under churn.
+
+Keep dedicated tests for page reuse, incremental barriers, weak tables, and every table-array scan position. Run the full Luau conformance suite after changes.
 
 ## Consequences
 
-- Near-zero memory allocation overhead and kernel churn in steady-state garbage collection cycles.
-- Sub-millisecond Go-like pause latency during atomic synchronization.
-- Full backward compatibility with standard Luau and full conformance with all existing language invariants.
+- Avoid host allocation calls while a matching pooled page is available.
+- Reduce median time for 400 full collections of a 262,144-entry string table from 83.456 ms to 78.061 ms in the release A/B benchmark.
+- Retain Luau's GC schedule, write-barrier behavior, table semantics, and public API.

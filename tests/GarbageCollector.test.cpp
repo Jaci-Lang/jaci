@@ -54,7 +54,7 @@ TEST_CASE("GcPagePoolReuse")
     CHECK(g->pagepool_size_small > 0);
 }
 
-TEST_CASE("GcMultiPassPropagationAndBarriers")
+TEST_CASE("GcIncrementalPropagationAndBarriers")
 {
     std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
     lua_State* L = state.get();
@@ -93,7 +93,7 @@ TEST_CASE("GcMultiPassPropagationAndBarriers")
     lua_pop(L, 1);
 }
 
-TEST_CASE("GcVectorizedTableScanning")
+TEST_CASE("GcTableScanning")
 {
     std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
     lua_State* L = state.get();
@@ -139,7 +139,7 @@ TEST_CASE("GcVectorizedTableScanning")
     lua_pop(L, 1);
 }
 
-TEST_CASE("GcVectorizedTableScanningMarksEveryLane")
+TEST_CASE("GcTableScanningMarksArrayPositions")
 {
     std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
     lua_State* L = state.get();
@@ -178,6 +178,47 @@ TEST_CASE("GcVectorizedTableScanningMarksEveryLane")
     }
 
     lua_pop(L, 1);
+}
+
+TEST_CASE("GcTableScanningPreservesLeafObjects")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+
+    std::string script = R"(
+        local bytes = buffer.create(8)
+        buffer.writeu8(bytes, 0, 0x78)
+        return { "leaf-string", bytes, vector.create(1, 2, 3) }
+    )";
+
+    std::string bytecode = Luau::compile(script);
+    int status = luau_load(L, "test_leaf_marking", bytecode.data(), bytecode.size(), 0);
+    CHECK(status == LUA_OK);
+    status = lua_pcall(L, 0, 1, 0);
+    CHECK(status == LUA_OK);
+
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    lua_rawgeti(L, -1, 1);
+    CHECK(std::string(lua_tostring(L, -1)) == "leaf-string");
+    lua_pop(L, 1);
+
+    lua_rawgeti(L, -1, 2);
+    CHECK(lua_isbuffer(L, -1));
+    size_t length = 0;
+    unsigned char* bytes = static_cast<unsigned char*>(lua_tobuffer(L, -1, &length));
+    CHECK(length == 8);
+    CHECK(bytes[0] == 0x78);
+    lua_pop(L, 1);
+
+    lua_rawgeti(L, -1, 3);
+    CHECK(lua_isvector(L, -1));
+    const LUA_VECTOR_TYPE* vector = lua_tovector(L, -1);
+    CHECK(vector[0] == LUA_VECTOR_TYPE(1));
+    CHECK(vector[1] == LUA_VECTOR_TYPE(2));
+    CHECK(vector[2] == LUA_VECTOR_TYPE(3));
+    lua_pop(L, 2);
 }
 
 TEST_CASE("GcWeakTablesAndUpvalues")

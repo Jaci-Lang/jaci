@@ -11,8 +11,8 @@ local function measure_gc_profile(name, n_objects, churn_loops)
         root[i] = { id = i, val = i * 1.5, tag = "item_" .. (i % 100) }
     end
     
-    local max_pause_us = 0
-    local total_pause_us = 0
+    local max_batch_us = 0
+    local total_batch_us = 0
     local samples = 0
     local t0 = os.clock()
     
@@ -24,21 +24,21 @@ local function measure_gc_profile(name, n_objects, churn_loops)
             root[idx] = { id = idx, val = (cycle * 1000 + i) * 1.5, tag = "item_" .. (i % 100) }
         end
         local p1 = os.clock()
-        local pause_us = (p1 - p0) * 1e6
-        if pause_us > max_pause_us then max_pause_us = pause_us end
-        total_pause_us = total_pause_us + pause_us
+        local batch_us = (p1 - p0) * 1e6
+        if batch_us > max_batch_us then max_batch_us = batch_us end
+        total_batch_us = total_batch_us + batch_us
         samples = samples + 1
     end
     
     local total_time_ms = (os.clock() - t0) * 1000
-    local avg_pause_us = total_pause_us / samples
+    local avg_batch_us = total_batch_us / samples
     local total_allocs = churn_loops * 1000
     local throughput_m_allocs_sec = (total_allocs / (total_time_ms / 1000)) / 1e6
 
     print(string.format("Throughput:            %.2f Million allocs/sec", throughput_m_allocs_sec))
     print(string.format("Total Runtime:         %.2f ms", total_time_ms))
-    print(string.format("Average Pause Time:    %.2f µs (per 1K alloc batch)", avg_pause_us))
-    print(string.format("Worst-case Max Pause:  %.2f µs", max_pause_us))
+    print(string.format("Average Batch Time:    %.2f µs (per 1K allocations)", avg_batch_us))
+    print(string.format("Worst Batch Time:      %.2f µs", max_batch_us))
     print(string.format("Memory Baseline:       %d KB -> End: %d KB", gc_start_mem, gcinfo()))
 end
 
