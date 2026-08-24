@@ -39,8 +39,9 @@ constexpr uint64_t k64 = 1;
 constexpr uint64_t kPC32 = 2;
 constexpr uint64_t kPLT32 = 4;
 constexpr uint64_t kGOTPCREL = 9;
-constexpr uint64_t k32S = 11;
 constexpr uint64_t k32 = 10;
+constexpr uint64_t k32S = 11;
+constexpr uint64_t kPC64 = 24;
 constexpr uint64_t kGOTPCRELX = 41;
 constexpr uint64_t kREXGOTPCRELX = 42;
 constexpr uint64_t kRELATIVE = 0x401;
@@ -204,23 +205,11 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
         return false;
     }
 
-    // Code region starts at align(dataSize, kLayoutCodeAlignment), matching
-    // CodeAllocator::allocate. Code sections were placed in a 0-based space
-    // (codePos starts at 0), so shift them into the code region.
-    uint32_t codeRegionOffset = alignUp(dataPos, kLayoutCodeAlignment);
-    for (SectionInfo& info : sections)
-        if (info.inCode)
-            info.layoutOffset += codeRegionOffset;
-
     uint32_t dataSize = dataPos;
-    uint32_t codeSize = 0;
-    for (const SectionInfo& info : sections)
-        if (info.inCode)
-            codeSize = std::max(codeSize, info.layoutOffset + info.size - codeRegionOffset);
+    uint32_t codeSize = codePos;
 
     out.data.resize(dataSize);
     out.code.resize(codeSize);
-    out.codeOffset = codeRegionOffset;
 
     for (const SectionInfo& info : sections)
     {
@@ -232,20 +221,20 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
         }
 
         if (info.inCode)
-            std::memcpy(out.code.data() + (info.layoutOffset - codeRegionOffset), contents->data(), info.size);
+            std::memcpy(out.code.data() + info.layoutOffset, contents->data(), info.size);
         else
             std::memcpy(out.data.data() + info.layoutOffset, contents->data(), info.size);
     }
 
-    // Resolve the layout offset of a section by identity
-    auto sectionLayoutOffset = [&sections](const SectionRef& sec) -> uint32_t {
+    // Resolve section info by identity
+    auto findSectionInfo = [&sections](const SectionRef& sec) -> const SectionInfo* {
         for (const SectionInfo& info : sections)
             if (info.sec == sec)
-                return info.layoutOffset;
-        return 0;
+                return &info;
+        return nullptr;
     };
 
-    // Symbols: record layout offsets for defined symbols
+    // Symbols: record code-relative layout offsets for defined code symbols
     for (auto symIt = obj.symbol_begin(); symIt != obj.symbol_end(); ++symIt)
     {
         SymbolRef sym = *symIt;
@@ -266,18 +255,20 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
         if (name.empty())
             continue;
 
-        uint64_t offset;
         if (flags & BasicSymbolRef::SF_Absolute)
-            offset = *sym.getAddress();
-        else
-        {
-            auto secResult = sym.getSection();
-            if (!secResult)
-                continue;
-            offset = uint64_t(sectionLayoutOffset(**secResult)) + *sym.getAddress();
-        }
+            continue;
 
-        out.symbols.emplace_back(std::string(name), offset);
+        auto secResult = sym.getSection();
+        if (!secResult)
+            continue;
+
+        const SectionInfo* info = findSectionInfo(**secResult);
+        if (!info)
+            continue;
+
+        uint64_t offset = uint64_t(info->layoutOffset) + *sym.getAddress();
+        if (info->inCode)
+            out.symbols.emplace_back(std::string(name), offset);
     }
 
     // .eh_frame regions
@@ -285,14 +276,24 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
         if (info.ehFrame)
             out.ehFrames.emplace_back(info.layoutOffset, info.size);
 
-    // Relocations
-    for (const SectionInfo& info : sections)
+    // Relocations: scan all relocation sections in the object
+    for (auto secIt = obj.section_begin(); secIt != obj.section_end(); ++secIt)
     {
-        for (const auto& rel : info.sec.relocations())
+        SectionRef relSec = *secIt;
+        auto targetSecIt = relSec.getRelocatedSection();
+        if (!targetSecIt || *targetSecIt == obj.section_end())
+            continue;
+
+        SectionRef targetSec = **targetSecIt;
+        const SectionInfo* info = findSectionInfo(targetSec);
+        if (!info)
+            continue;
+
+        for (const auto& rel : relSec.relocations())
         {
             JitRelocation r;
-            r.inCode = info.inCode;
-            r.siteOffset = info.layoutOffset + uint32_t(rel.getOffset());
+            r.inCode = info->inCode;
+            r.siteOffset = info->layoutOffset + uint32_t(rel.getOffset());
             ELFRelocationRef elfRel(rel);
             auto addendResult = elfRel.getAddend();
             r.addend = addendResult ? *addendResult : 0;
@@ -314,21 +315,9 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
                 r.symbolAbsolute = true;
                 r.symbolValue = *sym.getAddress();
             }
-            else if (symName.empty())
-            {
-                // Section reference (no symbol name): target is the section itself
-                auto secResult = sym.getSection();
-                if (!secResult)
-                {
-                    out.error = "section relocation target missing";
-                    return false;
-                }
-                r.symbolAbsolute = false;
-                r.symbolOffset = uint64_t(sectionLayoutOffset(**secResult)) + *sym.getAddress();
-            }
             else
             {
-                if (symFlags & BasicSymbolRef::SF_Undefined)
+                if ((symFlags & BasicSymbolRef::SF_Undefined) && !symName.empty())
                 {
                     out.error = std::string("undefined symbol in JIT object: ") + symName.str();
                     return false;
@@ -340,8 +329,17 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
                     out.error = "relocation symbol has no section";
                     return false;
                 }
+
+                const SectionInfo* targetSec = findSectionInfo(**secResult);
+                if (!targetSec)
+                {
+                    out.error = "relocation target section not allocatable";
+                    return false;
+                }
+
                 r.symbolAbsolute = false;
-                r.symbolOffset = uint64_t(sectionLayoutOffset(**secResult)) + *sym.getAddress();
+                r.targetInCode = targetSec->inCode;
+                r.symbolOffset = uint64_t(targetSec->layoutOffset) + *sym.getAddress();
             }
 
             uint64_t type = rel.getType();
@@ -362,6 +360,9 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
                     case x64::kPC32:
                     case x64::kPLT32:
                         r.kind = RelocKind::Pc32;
+                        break;
+                    case x64::kPC64:
+                        r.kind = RelocKind::Prel64;
                         break;
                     case x64::kRELATIVE:
                         r.kind = RelocKind::Relative;
@@ -419,13 +420,15 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
     return true;
 }
 
-void applyJitRelocations(const JitObjectLayout& layout, uint8_t* base)
+void applyJitRelocations(const JitObjectLayout& layout, uint8_t* codeStart, size_t dataSize)
 {
     for (const JitRelocation& r : layout.relocations)
     {
-        uint8_t* site = base + r.siteOffset;
+        uint8_t* site = r.inCode ? (codeStart + r.siteOffset) : (codeStart - dataSize + r.siteOffset);
 
-        uint64_t symbolValue = r.symbolAbsolute ? r.symbolValue : uint64_t(base) + r.symbolOffset;
+        uint64_t symbolValue = r.symbolAbsolute
+            ? r.symbolValue
+            : (r.targetInCode ? (uint64_t(codeStart) + r.symbolOffset) : (uint64_t(codeStart - dataSize) + r.symbolOffset));
         uint64_t siteAddress = uint64_t(site);
 
         switch (r.kind)

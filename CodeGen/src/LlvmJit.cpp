@@ -149,13 +149,7 @@ LlvmJitCompileResult compileLlvmProtos(const std::vector<Proto*>& protos, Llvm::
             return result;
         }
 
-        if (*offset < layout.codeOffset)
-        {
-            result.error = "entry symbol is not in the code region";
-            return result;
-        }
-
-        result.entryOffsets[i] = uint32_t(*offset - layout.codeOffset);
+        result.entryOffsets[i] = uint32_t(*offset);
     }
 
     const uint64_t* gateOffset = Jit::findSymbolOffset(layout, "luau_jit_gate");
@@ -165,13 +159,7 @@ LlvmJitCompileResult compileLlvmProtos(const std::vector<Proto*>& protos, Llvm::
         return result;
     }
 
-    if (*gateOffset < layout.codeOffset)
-    {
-        result.error = "gate symbol is not in the code region";
-        return result;
-    }
-
-    result.gateOffset = uint32_t(*gateOffset - layout.codeOffset);
+    result.gateOffset = uint32_t(*gateOffset);
 
     result.data = std::move(layout.data);
     result.code = std::move(layout.code);
@@ -193,10 +181,10 @@ void finalizeLlvmAllocation(const CodeAllocationData& allocation, size_t dataSiz
     uintptr_t lastPage = (end + pageSize - 1) & ~(pageSize - 1);
 
     // Open a temporary writable window over the allocation pages and apply
-    // the deferred relocations with the final base address.
+    // the deferred relocations with the final code/data addresses.
     protectRange(reinterpret_cast<void*>(firstPage), lastPage - firstPage, PROT_READ | PROT_WRITE);
 
-    Jit::applyJitRelocations(layout, allocation.start);
+    Jit::applyJitRelocations(layout, allocation.codeStart, dataSize);
 
     // Restore the W^X protections, mirroring CodeAllocator::allocate.
     bool protectData = FFlag::LuauCodegenProtectData && dataSize != 0;
@@ -216,7 +204,7 @@ void finalizeLlvmAllocation(const CodeAllocationData& allocation, size_t dataSiz
     if (__register_frame)
     {
         for (const auto& [ehFrameOffset, ehFrameSize] : layout.ehFrames)
-            __register_frame(reinterpret_cast<const void*>(allocation.start + ehFrameOffset));
+            __register_frame(reinterpret_cast<const void*>(allocation.codeStart - dataSize + ehFrameOffset));
     }
 #endif
 }

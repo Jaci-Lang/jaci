@@ -33,22 +33,17 @@ enum class RelocKind : uint8_t
 // region at JitObjectLayout::codeOffset).
 struct JitRelocation
 {
-    bool inCode = false;        // informational; site address is base + siteOffset
-    uint32_t siteOffset = 0;    // layout offset of the relocation site
+    bool inCode = false;        // true if site is in code, false if in data
+    uint32_t siteOffset = 0;    // offset of site within code (if inCode) or within data (if !inCode)
     RelocKind kind = RelocKind::Abs64;
     bool symbolAbsolute = false;
-    uint64_t symbolOffset = 0;  // layout offset of the target (when !symbolAbsolute)
+    bool targetInCode = false;  // true if target is in code, false if in data (when !symbolAbsolute)
+    uint64_t symbolOffset = 0;  // offset of target within code or data (when !symbolAbsolute)
     uint64_t symbolValue = 0;   // st_value (when symbolAbsolute)
     int64_t addend = 0;
 };
 
 // Result of loading an ELF relocatable object into the Jaci code layout
-//
-// The layout matches CodeAllocator::allocate(data, code): the data region
-// occupies layout offsets [0, data.size()), the code region occupies
-// [codeOffset, codeOffset + code.size()). Because the CodeAllocator places
-// the code region at exactly align(dataSize, 32) after the data region,
-// final address = allocationBase + layoutOffset for every site.
 struct JitObjectLayout
 {
     bool success = false;
@@ -57,13 +52,11 @@ struct JitObjectLayout
     std::vector<uint8_t> data;
     std::vector<uint8_t> code;
 
-    uint32_t codeOffset = 0; // == align(data.size(), 32)
-
-    // symbol name -> layout offset
+    // symbol name -> code-relative offset
     std::vector<std::pair<std::string, uint64_t>> symbols;
 
-    // .eh_frame sections: (layoutOffset, size) pairs; register the allocated
-    // addresses (base + layoutOffset) via __register_frame after allocation
+    // .eh_frame sections: (dataOffset, size) pairs; register the allocated
+    // addresses (codeStart - dataSize + dataOffset) via __register_frame after allocation
     std::vector<std::pair<uint32_t, uint32_t>> ehFrames;
 
     std::vector<JitRelocation> relocations;
@@ -74,9 +67,10 @@ struct JitObjectLayout
 // AArch64 objects; anything else fails with a descriptive error.
 bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out);
 
-// Apply the deferred relocations to the allocated pages. `base` is the
-// address of the data region (CodeAllocationData::start).
-void applyJitRelocations(const JitObjectLayout& layout, uint8_t* base);
+// Apply the deferred relocations to the allocated pages. `codeStart` is the
+// address of the code region (CodeAllocationData::codeStart), and `dataSize`
+// is the size of the data region placed immediately before it.
+void applyJitRelocations(const JitObjectLayout& layout, uint8_t* codeStart, size_t dataSize);
 
 // Offset of a named symbol within the layout, or nullptr when missing.
 const uint64_t* findSymbolOffset(const JitObjectLayout& layout, const char* name);

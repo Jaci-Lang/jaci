@@ -376,10 +376,14 @@ static int traversetable(global_State* g, LuaTable* h)
             const TValue* v2 = &arr[i + 2];
             const TValue* v3 = &arr[i + 3];
 
-            if (iscollectable(v0) && iswhite(gcvalue(v0))) reallymarkobject(g, gcvalue(v0));
-            if (iscollectable(v1) && iswhite(gcvalue(v1))) reallymarkobject(g, gcvalue(v1));
-            if (iscollectable(v2) && iswhite(gcvalue(v2))) reallymarkobject(g, gcvalue(v2));
-            if (iscollectable(v3) && iswhite(gcvalue(v3))) reallymarkobject(g, gcvalue(v3));
+            if (iscollectable(v0) && iswhite(gcvalue(v0)))
+                reallymarkobject(g, gcvalue(v0));
+            if (iscollectable(v1) && iswhite(gcvalue(v1)))
+                reallymarkobject(g, gcvalue(v1));
+            if (iscollectable(v2) && iswhite(gcvalue(v2)))
+                reallymarkobject(g, gcvalue(v2));
+            if (iscollectable(v3) && iswhite(gcvalue(v3)))
+                reallymarkobject(g, gcvalue(v3));
         }
         for (; i < size; ++i)
         {

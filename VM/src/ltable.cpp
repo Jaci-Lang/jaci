@@ -973,13 +973,7 @@ void luaH_clear(LuaTable* tt)
     {
         int size = sizenode(tt);
         tt->lastfree = size;
-        for (int i = 0; i < size; ++i)
-        {
-            LuaNode* n = gnode(tt, i);
-            setnilvalue(gkey(n));
-            setnilvalue(gval(n));
-            gnext(n) = 0;
-        }
+        memset(tt->node, 0, size * sizeof(LuaNode));
     }
 
     // back to empty -> no tag methods present

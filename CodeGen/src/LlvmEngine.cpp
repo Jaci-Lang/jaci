@@ -160,7 +160,7 @@ bool LlvmEngine::initialize()
     }
 
     pImpl->tm.reset(target->createTargetMachine(
-        Triple(tripleStr), "generic", /*features=*/"", TargetOptions(), Reloc::Model::Static, CodeModel::Small, CodeGenOptLevel::Default, /*JIT=*/false
+        Triple(tripleStr), "generic", /*features=*/"", TargetOptions(), Reloc::Model::Static, CodeModel::Large, CodeGenOptLevel::Default, /*JIT=*/false
     ));
     if (!pImpl->tm)
     {
@@ -345,24 +345,29 @@ void* LlvmEngine::compileFunction(const std::string& irCode, const std::string& 
     }
 
     size_t pageSize = 0;
-    void* base = allocateExecutablePage(layout.data.size() + layout.codeOffset + layout.code.size(), pageSize);
+    const size_t dataSize = layout.data.size();
+    const size_t codeSize = layout.code.size();
+    void* base = allocateExecutablePage(dataSize + codeSize, pageSize);
     if (!base)
     {
         lastErrorMessage = "failed to allocate executable memory";
         return nullptr;
     }
 
-    std::memcpy(base, layout.data.data(), layout.data.size());
-    std::memcpy(static_cast<uint8_t*>(base) + layout.codeOffset, layout.code.data(), layout.code.size());
+    uint8_t* codeStart = static_cast<uint8_t*>(base) + dataSize;
+    if (dataSize > 0)
+        std::memcpy(base, layout.data.data(), dataSize);
+    if (codeSize > 0)
+        std::memcpy(codeStart, layout.code.data(), codeSize);
 
-    Jit::applyJitRelocations(layout, static_cast<uint8_t*>(base));
+    Jit::applyJitRelocations(layout, codeStart, dataSize);
 
     makePageExecutable(base, pageSize);
 
     ExecutableRegion region;
     region.base = base;
     region.size = pageSize;
-    void* entry = static_cast<uint8_t*>(base) + *entryOffset;
+    void* entry = codeStart + *entryOffset;
     region.entries.push_back(entry);
     regions.push_back(region);
 

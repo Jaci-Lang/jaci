@@ -139,6 +139,47 @@ TEST_CASE("GcVectorizedTableScanning")
     lua_pop(L, 1);
 }
 
+TEST_CASE("GcVectorizedTableScanningMarksEveryLane")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+
+    std::string script = R"(
+        local root = table.create(16, 0)
+        for i = 1, 16 do
+            root[i] = i
+        end
+
+        root[1] = { lane = 0 }
+        root[6] = { lane = 1 }
+        root[11] = { lane = 2 }
+        root[16] = { lane = 3 }
+
+        return root
+    )";
+
+    std::string bytecode = Luau::compile(script);
+    int status = luau_load(L, "test_vectorized_scan_lanes", bytecode.data(), bytecode.size(), 0);
+    CHECK(status == LUA_OK);
+    status = lua_pcall(L, 0, 1, 0);
+    CHECK(status == LUA_OK);
+
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    const int positions[] = {1, 6, 11, 16};
+    for (int lane = 0; lane < 4; ++lane)
+    {
+        lua_rawgeti(L, -1, positions[lane]);
+        CHECK(lua_istable(L, -1));
+        lua_getfield(L, -1, "lane");
+        CHECK(lua_tointeger(L, -1) == lane);
+        lua_pop(L, 2);
+    }
+
+    lua_pop(L, 1);
+}
+
 TEST_CASE("GcWeakTablesAndUpvalues")
 {
     std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
