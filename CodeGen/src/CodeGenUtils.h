@@ -26,6 +26,7 @@ void getImport(lua_State* L, StkId res, unsigned id, unsigned pc);
 #define CALL_FALLBACK_YIELD 1
 
 Closure* callFallback(lua_State* L, StkId ra, StkId argtop, int nresults);
+Closure* callFeedbackFallback(lua_State* L, StkId ra, StkId argtop, int nresults, Instruction* feedback);
 
 const Instruction* executeGETGLOBAL(lua_State* L, const Instruction* pc, StkId base, TValue* k);
 const Instruction* executeSETGLOBAL(lua_State* L, const Instruction* pc, StkId base, TValue* k);
@@ -38,6 +39,11 @@ void executeGETVARARGSMultRet(lua_State* L, const Instruction* pc, StkId base, i
 void executeGETVARARGSConst(lua_State* L, StkId base, int rai, int b);
 const Instruction* executeDUPCLOSURE(lua_State* L, const Instruction* pc, StkId base, TValue* k);
 const Instruction* executePREPVARARGS(lua_State* L, const Instruction* pc, StkId base, TValue* k);
+const Instruction* executeNEWCLASSMEMBER(lua_State* L, const Instruction* pc, StkId base, TValue* k);
+const Instruction* executeNEWCLASS(lua_State* L, const Instruction* pc, StkId base, TValue* k);
+const Instruction* executeGETUDATAKS(lua_State* L, const Instruction* pc, StkId base, TValue* k);
+const Instruction* executeSETUDATAKS(lua_State* L, const Instruction* pc, StkId base, TValue* k);
+const Instruction* executeNAMECALLUDATA(lua_State* L, const Instruction* pc, StkId base, TValue* k);
 
 } // namespace CodeGen
 } // namespace Luau

@@ -22,8 +22,9 @@ option(LUAU_BUILD_SHARED "Build as a shared library" OFF)
 option(LUAU_ENABLE_LTO "Enable Link-Time Optimization (LTO / IPO)" OFF)
 option(LUAU_OPTIMIZE_SIZE "Optimize compilation and linking for minimal binary size" OFF)
 option(LUAU_STRIP_BINARIES "Strip debug symbols from release executable artifacts" OFF)
-# LLVM JIT backend: AUTO enables it when an LLVM CMake package is found, ON requires it, OFF disables it
-set(LUAU_USE_LLVM "AUTO" CACHE STRING "Use LLVM as the native code generation backend (AUTO/ON/OFF)")
+# LLVM JIT backend: Jaci requires LLVM by default; OFF remains available only
+# for explicit compatibility builds.
+set(LUAU_USE_LLVM "ON" CACHE STRING "Use LLVM as the native code generation backend (AUTO/ON/OFF)")
 set_property(CACHE LUAU_USE_LLVM PROPERTY STRINGS AUTO ON OFF)
 
 if(LUAU_BUILD_SHARED AND NOT LUAU_EXTERN_C)

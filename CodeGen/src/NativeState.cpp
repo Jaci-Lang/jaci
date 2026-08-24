@@ -94,6 +94,7 @@ void initFunctions(NativeContext& context)
     context.getImport = getImport;
 
     context.callFallback = callFallback;
+    context.callFeedbackFallback = callFeedbackFallback;
 
     context.executeGETGLOBAL = executeGETGLOBAL;
     context.executeSETGLOBAL = executeSETGLOBAL;
@@ -107,6 +108,11 @@ void initFunctions(NativeContext& context)
     context.executeDUPCLOSURE = executeDUPCLOSURE;
     context.executePREPVARARGS = executePREPVARARGS;
     context.executeSETLIST = executeSETLIST;
+    context.executeNEWCLASSMEMBER = executeNEWCLASSMEMBER;
+    context.executeNEWCLASS = executeNEWCLASS;
+    context.executeGETUDATAKS = executeGETUDATAKS;
+    context.executeSETUDATAKS = executeSETUDATAKS;
+    context.executeNAMECALLUDATA = executeNAMECALLUDATA;
 }
 
 } // namespace CodeGen

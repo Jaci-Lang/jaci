@@ -98,6 +98,7 @@ struct NativeContext
     void (*getImport)(lua_State* L, StkId res, unsigned id, unsigned pc) = nullptr;
 
     Closure* (*callFallback)(lua_State* L, StkId ra, StkId argtop, int nresults) = nullptr;
+    Closure* (*callFeedbackFallback)(lua_State* L, StkId ra, StkId argtop, int nresults, Instruction* feedback) = nullptr;
 
     // Opcode fallbacks, implemented in C
     const Instruction* (*executeGETGLOBAL)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
@@ -111,6 +112,11 @@ struct NativeContext
     void (*executeGETVARARGSConst)(lua_State* L, StkId base, int rai, int b) = nullptr;
     const Instruction* (*executeDUPCLOSURE)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
     const Instruction* (*executePREPVARARGS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeNEWCLASSMEMBER)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeNEWCLASS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeGETUDATAKS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeSETUDATAKS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeNAMECALLUDATA)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
 
     // Fast call methods, implemented in C
     luau_FastFunction luauF_table[256] = {};
