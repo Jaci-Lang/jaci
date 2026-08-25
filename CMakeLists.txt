@@ -190,6 +190,8 @@ if(LLVM_FOUND)
     # are not always usable on distro packages).
     if(TARGET LLVM)
         target_link_libraries(Luau.CodeGen PRIVATE LLVM)
+    elseif(TARGET LLVM-C)
+        target_link_libraries(Luau.CodeGen PRIVATE LLVM-C)
     else()
         target_link_libraries(Luau.CodeGen PRIVATE ${LLVM_AVAILABLE_LIBS})
     endif()
