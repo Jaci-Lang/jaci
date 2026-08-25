@@ -289,6 +289,8 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     list(APPEND LUAU_OPTIONS -Wno-unused)
     # some gcc versions warn maybe uninitialized on optional<string> members on structs
     list(APPEND LUAU_OPTIONS -Wno-maybe-uninitialized)
+    # some gcc versions report valid vector storage as a non-heap allocation after inlining
+    list(APPEND LUAU_OPTIONS -Wno-free-nonheap-object)
 endif()
 
 # Enabled in CI; we should be warning free on our main compiler versions but don't guarantee being warning free everywhere
