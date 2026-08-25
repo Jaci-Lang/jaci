@@ -92,11 +92,11 @@ static LuauBytecodeType getType(
         // not primitive or alias or generic => host-provided, we assume userdata for now
         return LBC_TYPE_USERDATA;
     }
-    else if (const AstTypeTable* table = ty->as<AstTypeTable>())
+    else if (ty->is<AstTypeTable>())
     {
         return LBC_TYPE_TABLE;
     }
-    else if (const AstTypeFunction* func = ty->as<AstTypeFunction>())
+    else if (ty->is<AstTypeFunction>())
     {
         return LBC_TYPE_FUNCTION;
     }
@@ -130,7 +130,7 @@ static LuauBytecodeType getType(
 
         return LuauBytecodeType(type | (optional && (type != LBC_TYPE_ANY) ? LBC_TYPE_OPTIONAL_BIT : 0));
     }
-    else if (const AstTypeIntersection* inter = ty->as<AstTypeIntersection>())
+    else if (ty->is<AstTypeIntersection>())
     {
         return LBC_TYPE_ANY;
     }
@@ -138,7 +138,7 @@ static LuauBytecodeType getType(
     {
         return getType(group->type, generics, typeAliases, hostVectorType, userdataTypes, bytecode, seenAliases);
     }
-    else if (const AstTypeOptional* optional = ty->as<AstTypeOptional>())
+    else if (ty->is<AstTypeOptional>())
     {
         return LBC_TYPE_NIL;
     }
