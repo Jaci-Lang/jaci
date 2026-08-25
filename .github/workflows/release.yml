@@ -28,7 +28,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ runner.temp }}/llvm-${{ env.LLVM_VERSION }}
-        key: llvm-dev-${{ env.LLVM_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+        key: llvm-dev-v2-${{ env.LLVM_VERSION }}-${{ runner.os }}-${{ runner.arch }}
 
     - name: Install LLVM toolchain
       if: matrix.os.name != 'windows'
@@ -40,14 +40,28 @@ jobs:
         env: false
 
     - name: Install LLVM development toolchain (Windows)
+      if: matrix.os.name == 'windows' && steps.llvm-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $destination = "${{ runner.temp }}/llvm-${{ env.LLVM_VERSION }}"
+        $archive = "${{ runner.temp }}/llvm-${{ env.LLVM_VERSION }}.tar.xz"
+        New-Item -ItemType Directory -Force -Path $destination | Out-Null
+        curl.exe --fail --location "https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VERSION }}/clang+llvm-${{ env.LLVM_VERSION }}-x86_64-pc-windows-msvc.tar.xz" --output $archive
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        tar.exe -xf $archive -C $destination --strip-components=1
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Remove-Item -Force $archive
+
+    - name: Export LLVM environment (Windows)
       if: matrix.os.name == 'windows'
-      uses: KyleMayes/install-llvm-action@v2.0.9
-      with:
-        version: ${{ env.LLVM_VERSION }}
-        force-url: https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VERSION }}/clang+llvm-${{ env.LLVM_VERSION }}-x86_64-pc-windows-msvc.tar.xz
-        directory: ${{ runner.temp }}/llvm-${{ env.LLVM_VERSION }}
-        cached: ${{ steps.llvm-cache.outputs.cache-hit }}
-        env: false
+      shell: pwsh
+      run: |
+        $llvmPath = "${{ runner.temp }}/llvm-${{ env.LLVM_VERSION }}"
+        if (-not (Test-Path "$llvmPath/lib/cmake/llvm/LLVMConfig.cmake")) {
+          throw "LLVMConfig.cmake is missing from $llvmPath"
+        }
+        "LLVM_PATH=$llvmPath" >> $env:GITHUB_ENV
+        "$llvmPath/bin" >> $env:GITHUB_PATH
 
     - name: Setup Compiler Cache
       uses: hendrikmuhs/ccache-action@v1.2
