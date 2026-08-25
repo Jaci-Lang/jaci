@@ -82,6 +82,20 @@ def gc_step_latency():
             va="center",
         )
 
+    median_speedup = float(np.median(luau) / np.median(jaci))
+    median_reduction = (1 - float(np.median(jaci) / np.median(luau))) * 100
+    ax.text(
+        0.5,
+        0.50,
+        f"{median_speedup:.1f}x lower median maximum\n{median_reduction:.2f}% latency reduction",
+        transform=ax.transAxes,
+        ha="center",
+        va="center",
+        color=ACCENT,
+        fontsize=14,
+        weight="bold",
+    )
+
     fig.text(0.10, 0.01, "Lower is better. Points are observed process maxima; the logarithmic axis keeps both distributions visible.", color=MUTED, fontsize=9)
     fig.tight_layout(rect=(0, 0.04, 1, 1))
     save(fig, "jaci-gc-step-latency-benchmark.png")
@@ -152,7 +166,81 @@ def llvm_backend():
     save(fig, "jaci-llvm-backend-benchmark.png")
 
 
+def broad_suite_gains():
+    # Mean elapsed milliseconds from 20 retained runs per VM. Both VMs are
+    # Release builds; upstream is the immutable Luau 0.735 tag.
+    results = [
+        ("base64", 16.978, 16.872),
+        ("chess", 83.472, 83.244),
+        ("life", 83.585, 83.149),
+        ("matrixmult", 19.353, 18.951),
+        ("qsort", 89.955, 91.142),
+        ("sha256", 17.683, 17.583),
+        ("sieve", 181.064, 177.646),
+        ("vector-math", 8.546, 9.464),
+        ("voxelgen", 68.230, 67.915),
+        ("mesh-normal-scalar", 28.983, 26.127),
+        ("mesh-normal-vector", 13.388, 12.802),
+        ("pcmmix", 7.375, 7.818),
+        ("binary-trees", 22.783, 23.288),
+        ("fannkuch-redux", 15.779, 16.122),
+        ("mandel", 52.051, 51.797),
+        ("n-body-vector", 15.786, 15.591),
+        ("n-body", 27.628, 27.953),
+        ("scimark", 74.338, 77.288),
+        ("spectral-norm", 17.352, 17.506),
+        ("n-body-oop", 42.371, 42.362),
+        ("trig", 21.779, 22.249),
+        ("stinky-n-body", 605.097, 591.681),
+    ]
+    measured = [(name, (luau / jaci - 1) * 100) for name, luau, jaci in results]
+    measured.sort(key=lambda item: item[1])
+    names = [item[0] for item in measured]
+    gains = np.array([item[1] for item in measured])
+    colors = [AFTER if gain >= 0 else BEFORE for gain in gains]
+
+    fig, ax = plt.subplots(figsize=(10, 9.2))
+    style_axes(
+        ax,
+        "Broad VM throughput remains near parity",
+        "Luau 0.735 vs Jaci; mean of 20 retained runs; positive values mean Jaci is faster",
+        "Workload",
+    )
+    y = np.arange(len(names))
+    bars = ax.barh(y, gains, color=colors, alpha=0.88, height=0.68)
+    ax.axvline(0, color=INK, linewidth=1.1)
+    ax.set_yticks(y, names)
+    ax.set_xlabel("Jaci speedup over Luau 0.735 (%)", color=MUTED, fontsize=11)
+    ax.grid(axis="x", color=GRID, linewidth=0.8, alpha=0.65)
+    ax.grid(axis="y", visible=False)
+    ax.set_xlim(-11.5, 12.8)
+
+    for bar, gain in zip(bars, gains):
+        ax.text(
+            gain + (0.25 if gain >= 0 else -0.25),
+            bar.get_y() + bar.get_height() / 2,
+            f"{gain:+.1f}%",
+            va="center",
+            ha="left" if gain >= 0 else "right",
+            color=INK,
+            fontsize=9,
+        )
+
+    ratios = [luau / jaci for _, luau, jaci in results]
+    geomean = (np.exp(np.mean(np.log(ratios))) - 1) * 100
+    fig.text(
+        0.10,
+        0.012,
+        f"22 workloads; geometric-mean change: {geomean:+.2f}%. This suite does not support a claim of universal VM throughput improvement.",
+        color=MUTED,
+        fontsize=9,
+    )
+    fig.tight_layout(rect=(0, 0.035, 1, 1))
+    save(fig, "jaci-luau-suite-gains.png")
+
+
 if __name__ == "__main__":
     gc_step_latency()
     operation_time()
     llvm_backend()
+    broad_suite_gains()
