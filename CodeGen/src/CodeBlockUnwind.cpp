@@ -39,7 +39,7 @@ extern "C" void __deregister_frame(const void*) REGISTER_FRAME_WEAK;
 extern "C" void __unw_add_dynamic_fde() __attribute__((weak));
 #endif
 
-#if defined(__APPLE__) && defined(CODEGEN_TARGET_A64)
+#if defined(__APPLE__) && defined(CODEGEN_TARGET_A64) && !defined(CODEGEN_TARGET_A64_PTRAUTH_RETURNS)
 #include <sys/sysctl.h>
 #include <mach-o/loader.h>
 #include <dlfcn.h>
@@ -139,9 +139,8 @@ void* createBlockUnwindInfo(void* context, uint8_t* block, size_t blockSize, siz
     visitFdeEntries(unwindData, __register_frame);
 #endif
 
-#if defined(__APPLE__) && defined(CODEGEN_TARGET_A64)
-    // Starting from macOS 14, we need to register unwind section callback to state that our ABI doesn't require pointer authentication
-    // This might conflict with other JITs that do the same; unfortunately this is the best we can do for now.
+#if defined(__APPLE__) && defined(CODEGEN_TARGET_A64) && !defined(CODEGEN_TARGET_A64_PTRAUTH_RETURNS)
+    // Tell the system unwinder that unsigned JIT frames use the arm64 ABI, not arm64e.
     static unw_add_find_dynamic_unwind_sections_t unw_add_find_dynamic_unwind_sections =
         unw_add_find_dynamic_unwind_sections_t(dlsym(RTLD_DEFAULT, "__unw_add_find_dynamic_unwind_sections"));
     static int regonce = unw_add_find_dynamic_unwind_sections ? unw_add_find_dynamic_unwind_sections(findDynamicUnwindSections) : 0;

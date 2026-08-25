@@ -161,6 +161,13 @@ unsigned int getCpuFeaturesA64()
         result |= A64::Feature_AdvSIMD;
 #endif
 
+#ifdef CODEGEN_TARGET_A64_PTRAUTH_CALLS
+    result |= A64::Feature_PtrAuthCall;
+#endif
+#ifdef CODEGEN_TARGET_A64_PTRAUTH_RETURNS
+    result |= A64::Feature_PtrAuthRet;
+#endif
+
     return result;
 }
 #else
