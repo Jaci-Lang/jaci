@@ -244,10 +244,10 @@ else()
     list(APPEND LUAU_OPTIONS -Wsign-compare) # This looks to be included in -Wall for GCC but not clang
     list(APPEND LUAU_OPTIONS -ffunction-sections)
     list(APPEND LUAU_OPTIONS -fdata-sections)
-    list(APPEND LUAU_OPTIONS -fno-rtti)
+    list(APPEND LUAU_OPTIONS "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>")
     if(NOT LUAU_BUILD_SHARED)
         list(APPEND LUAU_OPTIONS -fvisibility=hidden)
-        list(APPEND LUAU_OPTIONS -fvisibility-inlines-hidden)
+        list(APPEND LUAU_OPTIONS "$<$<COMPILE_LANGUAGE:CXX>:-fvisibility-inlines-hidden>")
     endif()
 
     if(APPLE)
