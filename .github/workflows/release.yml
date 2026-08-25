@@ -89,6 +89,8 @@ jobs:
       run: |
         cmake -B build -G Ninja `
           -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_C_COMPILER=cl `
+          -DCMAKE_CXX_COMPILER=cl `
           -DLLVM_DIR="$env:LLVM_PATH/lib/cmake/llvm" `
           -DLUAU_STRIP_BINARIES=ON `
           -DLUAU_ENABLE_LTO=ON `

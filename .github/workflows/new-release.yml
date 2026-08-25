@@ -119,6 +119,8 @@ jobs:
           # by the CMakeLists for MSVC. /O2 goes in the Release config flags.
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=cl \
+            -DCMAKE_CXX_COMPILER=cl \
             -DCMAKE_CXX_FLAGS_RELEASE="/O2" \
             -DJACI_VERSION="$V" \
             -DLLVM_DIR="$LLVM_PATH/lib/cmake/llvm" \
