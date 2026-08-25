@@ -605,7 +605,6 @@ private:
         auto lowerCmpJump = [&](uint32_t i, uint32_t a, uint32_t b, int32_t delta, uint32_t next, bool invert, bool isEq, bool strict)
         {
             CODEGEN_ASSERT(i + 1 < sizecode);
-            const uint32_t aux = proto->code[i + 1];
 
             B.SetInsertPoint(blocks[i]);
             Value* ra = regPtrOf(base, int(a));

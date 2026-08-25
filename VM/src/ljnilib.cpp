@@ -1248,8 +1248,6 @@ static int scoreArgumentMatch(JNIEnv* env, lua_State* L, int argIdx, jclass para
 static jobject convertLuauArgToParam(JNIEnv* env, lua_State* L, int argIdx, jclass paramCls)
 {
     int ltype = lua_type(L, argIdx);
-    jboolean isPrim = env->CallBooleanMethod(paramCls, g_jvm.midClass_isPrimitive);
-
     jstring nameStr = (jstring)env->CallObjectMethod(paramCls, g_jvm.midClass_getName);
     const char* utf = env->GetStringUTFChars(nameStr, nullptr);
     std::string pName = utf ? utf : "";

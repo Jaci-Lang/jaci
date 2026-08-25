@@ -15,7 +15,6 @@ namespace
 constexpr size_t kMinMatch = 4;
 constexpr size_t kHashLog = 13;
 constexpr size_t kHashSize = 1 << kHashLog;
-constexpr size_t kHashMask = kHashSize - 1;
 
 inline uint32_t hash4(const uint8_t* p)
 {

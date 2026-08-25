@@ -322,8 +322,8 @@ std::string LlvmEngine::compileModuleToNativeObject(void* modulePtr, OptLevel le
         return {};
     }
 
-    const auto& bytes = objectBuffer;
-    bool validMagic = bytes.size() >= 4 && ((bytes[0] == 0x7f && bytes[1] == 0x45 && bytes[2] == 0x4c && bytes[3] == 0x46)      // ELF
+    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(objectBuffer.data());
+    bool validMagic = objectBuffer.size() >= 4 && ((bytes[0] == 0x7f && bytes[1] == 0x45 && bytes[2] == 0x4c && bytes[3] == 0x46) // ELF
                                             || (bytes[0] == 0xfe && bytes[1] == 0xed && bytes[2] == 0xfa)                       // MachO
                                             || (bytes[0] == 0xce && bytes[1] == 0xfa && bytes[2] == 0xed)                       // MachO (swapped)
                                             || ((bytes[0] == 0x01 || bytes[0] == 0x02) && bytes[1] == 0x0f)                     // COFF

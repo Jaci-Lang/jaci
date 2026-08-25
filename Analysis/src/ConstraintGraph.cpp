@@ -292,7 +292,7 @@ bool ConstraintGraph::hasUnsolvedDependencies(ConstraintVertex vertex)
     {
         if (auto c = vertex.get_if<const Constraint*>())
         {
-            if (auto ptc = (*c)->c.get_if<DEPRECATED_PrimitiveTypeConstraint>())
+            if ((*c)->c.get_if<DEPRECATED_PrimitiveTypeConstraint>())
                 return deps->size() > 1;
         }
     }

@@ -25,8 +25,6 @@ using namespace llvm::object;
 namespace
 {
 
-constexpr uint32_t kLayoutCodeAlignment = 32; // must match CodeAllocator::kCodeAlignment
-
 uint32_t alignUp(uint32_t value, uint32_t align)
 {
     return align == 0 ? value : (value + (align - 1)) & ~(align - 1);

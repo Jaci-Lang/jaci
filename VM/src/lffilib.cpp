@@ -210,52 +210,6 @@ static FFI_TypeKind resolveTypeKind(lua_State* L, const char* name, size_t* outS
     return FFI_VOID;
 }
 
-static size_t typeKindSize(FFI_TypeKind kind)
-{
-    switch (kind)
-    {
-    case FFI_VOID: return 0;
-    case FFI_BOOL: return sizeof(bool);
-    case FFI_I8:
-    case FFI_U8: return 1;
-    case FFI_I16:
-    case FFI_U16: return 2;
-    case FFI_I32:
-    case FFI_U32: return 4;
-    case FFI_I64:
-    case FFI_U64: return 8;
-    case FFI_F32: return sizeof(float);
-    case FFI_F64: return sizeof(double);
-    case FFI_PTR:
-    case FFI_STR:
-    case FFI_BUF: return sizeof(void*);
-    default: return 0;
-    }
-}
-
-static size_t typeKindAlign(FFI_TypeKind kind)
-{
-    switch (kind)
-    {
-    case FFI_VOID: return 1;
-    case FFI_BOOL: return alignof(bool);
-    case FFI_I8:
-    case FFI_U8: return 1;
-    case FFI_I16:
-    case FFI_U16: return alignof(int16_t);
-    case FFI_I32:
-    case FFI_U32: return alignof(int32_t);
-    case FFI_I64:
-    case FFI_U64: return alignof(int64_t);
-    case FFI_F32: return alignof(float);
-    case FFI_F64: return alignof(double);
-    case FFI_PTR:
-    case FFI_STR:
-    case FFI_BUF: return alignof(void*);
-    default: return 1;
-    }
-}
-
 #if defined(__x86_64__) && !defined(_WIN32)
 static void ffi_invoke_native_x64(
     void* func,

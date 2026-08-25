@@ -197,7 +197,7 @@ static int promise_and_then(lua_State* L)
     }
 
     // Create next chained promise
-    PromiseData* next_p = new_promise(L);
+    new_promise(L);
     lua_pushvalue(L, -1);
     int next_promise_ref = lua_ref(L, -1);
     lua_pop(L, 1);
@@ -1082,7 +1082,6 @@ static int task_promise_create(lua_State* L)
     luaL_checktype(L, 1, LUA_TFUNCTION);
 
     PromiseData* p = new_promise(L);
-    int p_idx = lua_gettop(L);
 
     // Create resolve closure: captures Promise pointer as upvalue
     lua_pushlightuserdatatagged(L, p, 0);
@@ -1155,7 +1154,6 @@ static int async_wrapper_invoker(lua_State* L)
 
     // Create a new Promise to return
     PromiseData* p = new_promise(L);
-    int p_idx = lua_gettop(L);
 
     // Spawn a new coroutine to execute the target function
     lua_State* co = lua_newthread(L);
