@@ -39,6 +39,10 @@ jobs:
         cached: ${{ steps.llvm-cache.outputs.cache-hit }}
         env: false
 
+    - name: Export LLVM tools
+      if: matrix.os.name != 'windows'
+      run: echo "${LLVM_PATH}/bin" >> "$GITHUB_PATH"
+
     - name: Install LLVM development toolchain (Windows)
       if: matrix.os.name == 'windows' && steps.llvm-cache.outputs.cache-hit != 'true'
       shell: pwsh
@@ -95,8 +99,18 @@ jobs:
     - name: Configure CMake (Unix)
       if: matrix.os.name != 'windows'
       run: |
+        if [ "${{ matrix.os.name }}" = "macos" ]; then
+          CC=/usr/bin/clang
+          CXX=/usr/bin/clang++
+        else
+          CC="${LLVM_PATH}/bin/clang"
+          CXX="${LLVM_PATH}/bin/clang++"
+        fi
         cmake -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_COMPILER="$CC" \
+          -DCMAKE_CXX_COMPILER="$CXX" \
+          -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
           -DLLVM_DIR="${LLVM_PATH}/lib/cmake/llvm" \
           -DLUAU_STRIP_BINARIES=ON \
           -DLUAU_ENABLE_LTO=ON \
