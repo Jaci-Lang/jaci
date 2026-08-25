@@ -110,6 +110,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release `
           -DCMAKE_C_COMPILER=cl `
           -DCMAKE_CXX_COMPILER=cl `
+          -DLUAU_STATIC_CRT=ON `
           -DCMAKE_TOOLCHAIN_FILE="$env:JACI_VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
           -DLLVM_DIR="$env:LLVM_PATH/lib/cmake/llvm" `
           -DLUAU_STRIP_BINARIES=ON `

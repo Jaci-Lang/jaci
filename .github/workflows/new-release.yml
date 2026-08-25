@@ -140,6 +140,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=cl \
             -DCMAKE_CXX_COMPILER=cl \
+            -DLUAU_STATIC_CRT=ON \
             -DCMAKE_TOOLCHAIN_FILE="$JACI_VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DCMAKE_CXX_FLAGS_RELEASE="/O2" \
             -DJACI_VERSION="$V" \
