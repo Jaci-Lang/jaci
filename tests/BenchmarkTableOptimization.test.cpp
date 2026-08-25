@@ -95,7 +95,7 @@ TEST_CASE("Benchmark_PolymorphicInlineCacheTuning")
     };
 
     // Tuned: Polymorphic inline cache with fast predicted branch dispatch
-    auto runPicDispatch = [&objA, &objB, &pic]() {
+    auto runPicDispatch = [&objA, &objB]() {
         double sum = 0.0;
         const double a0 = objA.slots[0];
         const double b1 = objB.slots[1];
@@ -123,7 +123,7 @@ TEST_CASE("Benchmark_PackedArrayVectorizationTuning")
     std::vector<double> packedArray(N, 2.5);
 
     // Baseline: Boxed element access with tag checks and indirect loads
-    auto runBoxedArray = [&packedArray, N]() {
+    auto runBoxedArray = [&packedArray]() {
         double sum = 0.0;
         for (size_t i = 0; i < N; ++i)
         {
@@ -139,7 +139,7 @@ TEST_CASE("Benchmark_PackedArrayVectorizationTuning")
     };
 
     // Tuned: SIMD 8-way unrolled vector loop over raw contiguous float array with multi-accumulators
-    auto runPackedArray = [&packedArray, N]() {
+    auto runPackedArray = [&packedArray]() {
         double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
         double sum4 = 0.0, sum5 = 0.0, sum6 = 0.0, sum7 = 0.0;
         const double* ptr = packedArray.data();
@@ -219,6 +219,7 @@ TEST_CASE("Benchmark_StaticTableAssemblyPromotionAndFreezing")
 
     Llvm::TableSpecializer specializer;
     uint32_t staticDictId = specializer.registerStaticDictionary({{"red", 16711680.0}, {"green", 65280.0}, {"blue", 255.0}}, /*isFrozen=*/true);
+    CHECK(specializer.isStaticTable(staticDictId));
 
     // Baseline: Dynamic hash lookup and string key dispatch simulation
     auto runDynamicTableLookup = []() {
@@ -243,7 +244,7 @@ TEST_CASE("Benchmark_StaticTableAssemblyPromotionAndFreezing")
 
     // Tuned: Zero-overhead static data loaded directly from assembly/rodata constant structure
     static const struct StaticPalette { double red; double green; double blue; } kStaticPalette = { 16711680.0, 65280.0, 255.0 };
-    auto runStaticAssemblyPromotion = [&specializer, staticDictId]() {
+    auto runStaticAssemblyPromotion = []() {
         double sum = 0.0;
         const double r = kStaticPalette.red;
         const double g = kStaticPalette.green;

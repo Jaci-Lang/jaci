@@ -28,6 +28,9 @@ TEST_CASE("LlvmPackedArrayAndVectorizationHints")
     Llvm::TableSpecializer specializer;
     uint32_t packedShape = specializer.registerShape({}, Llvm::ArraySpecialization::PackedDouble);
 
+    const Llvm::TableLayoutDescriptor* layout = specializer.getLayout(packedShape);
+    REQUIRE(layout);
+    CHECK_EQ(layout->arraySpec, Llvm::ArraySpecialization::PackedDouble);
     CHECK_EQ(specializer.getArrayElementSize(Llvm::ArraySpecialization::PackedDouble), 8);
     CHECK_EQ(specializer.getArrayElementType(Llvm::ArraySpecialization::PackedDouble).kind, Llvm::TypeKind::Double);
 
