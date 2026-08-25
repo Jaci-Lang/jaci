@@ -303,6 +303,12 @@ void luaC_validate(lua_State* L)
     validategraylist(g, g->gray);
     validategraylist(g, g->grayagain);
 
+    if (g->gcscantable)
+    {
+        LUAU_ASSERT(keepinvariant(g));
+        LUAU_ASSERT(isgray(obj2gco(g->gcscantable)));
+    }
+
     validategco(L, NULL, obj2gco(g->mainthread));
 
     luaM_visitgco(L, L, validategco);

@@ -96,12 +96,16 @@
 
 #define luaC_barriert(L, t, v) \
     { \
+        if ((L)->global->gcscantable == (t)) \
+            luaC_restarttablescan((L), (t)); \
         if (iscollectable(v) && isblack(obj2gco(t)) && iswhite(gcvalue(v))) \
             luaC_barriertable(L, t, gcvalue(v)); \
     }
 
 #define luaC_barrierfast(L, t) \
     { \
+        if ((void*)(L)->global->gcscantable == (void*)(t)) \
+            luaC_restarttablescan((L), (LuaTable*)(t)); \
         if (isblack(obj2gco(t))) \
             luaC_barrierback(L, obj2gco(t), &t->gclist); \
     }
@@ -137,6 +141,7 @@ LUAI_FUNC void luaC_fullgc(lua_State* L);
 LUAI_FUNC void luaC_upvalclosed(lua_State* L, UpVal* uv);
 LUAI_FUNC void luaC_barrierf(lua_State* L, GCObject* o, GCObject* v);
 LUAI_FUNC void luaC_barriertable(lua_State* L, LuaTable* t, GCObject* v);
+LUAI_FUNC void luaC_restarttablescan(lua_State* L, LuaTable* t);
 LUAI_FUNC void luaC_barrierback(lua_State* L, GCObject* o, GCObject** gclist);
 LUAI_FUNC void luaC_validate(lua_State* L);
 LUAI_FUNC void luaC_dump(lua_State* L, void* file, const char* (*categoryName)(lua_State* L, uint8_t memcat));

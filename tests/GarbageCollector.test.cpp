@@ -221,6 +221,243 @@ TEST_CASE("GcTableScanningPreservesLeafObjects")
     lua_pop(L, 2);
 }
 
+TEST_CASE("GcStrongHashTableFastPath")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+
+    std::string script = R"(
+        local plain = {}
+        local metatable = {}
+        local decorated = setmetatable({}, metatable)
+
+        for i = 1, 4096 do
+            plain["plain_" .. i] = { value = i }
+            decorated["decorated_" .. i] = { value = -i }
+        end
+
+        return plain, decorated, metatable
+    )";
+
+    std::string bytecode = Luau::compile(script);
+    int status = luau_load(L, "test_strong_hash_fast_path", bytecode.data(), bytecode.size(), 0);
+    CHECK(status == LUA_OK);
+    status = lua_pcall(L, 0, 3, 0);
+    CHECK(status == LUA_OK);
+
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    CHECK(lua_getmetatable(L, -2) == 1);
+    CHECK(lua_rawequal(L, -1, -2) == 1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, -3, "plain_4096");
+    lua_getfield(L, -1, "value");
+    CHECK(lua_tointeger(L, -1) == 4096);
+    lua_pop(L, 2);
+
+    lua_getfield(L, -2, "decorated_4096");
+    lua_getfield(L, -1, "value");
+    CHECK(lua_tointeger(L, -1) == -4096);
+    lua_pop(L, 5);
+}
+
+TEST_CASE("GcIncrementalStrongTableScanMutation")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+
+    std::string script = R"(
+        local root = table.create(32768)
+        for i = 1, 32768 do
+            root[i] = { value = i }
+        end
+        return root
+    )";
+
+    std::string bytecode = Luau::compile(script);
+    int status = luau_load(L, "test_incremental_table_scan_mutation", bytecode.data(), bytecode.size(), 0);
+    CHECK(status == LUA_OK);
+    status = lua_pcall(L, 0, 1, 0);
+    CHECK(status == LUA_OK);
+
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    for (int step = 0; step < 100000 && !L->global->gcscantable; ++step)
+        lua_gc(L, LUA_GCSTEP, 1);
+
+    REQUIRE(L->global->gcscantable != nullptr);
+    luaC_validate(L);
+
+    lua_newtable(L);
+    lua_pushinteger(L, 111);
+    lua_setfield(L, -2, "sentinel");
+    lua_rawseti(L, -2, 1);
+
+    lua_newtable(L);
+    lua_pushinteger(L, 222);
+    lua_setfield(L, -2, "sentinel");
+    lua_rawseti(L, -2, 65536); // grow and rehash during a partial scan
+
+    lua_newtable(L);
+    CHECK(lua_setmetatable(L, -2) == 1); // restart the continuation with the new metatable
+    luaC_validate(L);
+
+    while (!lua_gc(L, LUA_GCSTEP, 1))
+    {
+    }
+
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    lua_rawgeti(L, -1, 1);
+    lua_getfield(L, -1, "sentinel");
+    CHECK(lua_tointeger(L, -1) == 111);
+    lua_pop(L, 2);
+
+    lua_rawgeti(L, -1, 65536);
+    lua_getfield(L, -1, "sentinel");
+    CHECK(lua_tointeger(L, -1) == 222);
+    lua_pop(L, 2);
+
+    for (int step = 0; step < 100000 && !L->global->gcscantable; ++step)
+        lua_gc(L, LUA_GCSTEP, 1);
+
+    REQUIRE(L->global->gcscantable != nullptr);
+    lua_gc(L, LUA_GCCOLLECT, 0); // cancel a partial scan and restart a complete cycle
+    CHECK(L->global->gcscantable == nullptr);
+    CHECK(L->global->gcstate == GCSpause);
+
+    lua_rawgeti(L, -1, 65536);
+    lua_getfield(L, -1, "sentinel");
+    CHECK(lua_tointeger(L, -1) == 222);
+    lua_pop(L, 3);
+}
+
+TEST_CASE("GcIncrementalTableScanWeakModeChange")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+
+    std::string script = R"(
+        local root = {}
+        for i = 1, 16384 do
+            root["key_" .. i] = { value = i }
+        end
+        return root
+    )";
+
+    std::string bytecode = Luau::compile(script);
+    int status = luau_load(L, "test_incremental_weak_mode_change", bytecode.data(), bytecode.size(), 0);
+    CHECK(status == LUA_OK);
+    status = lua_pcall(L, 0, 1, 0);
+    CHECK(status == LUA_OK);
+
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    for (int step = 0; step < 100000 && !L->global->gcscantable; ++step)
+        lua_gc(L, LUA_GCSTEP, 1);
+
+    REQUIRE(L->global->gcscantable != nullptr);
+    luaC_validate(L);
+
+    lua_newtable(L);
+    lua_pushstring(L, "v");
+    lua_setfield(L, -2, "__mode");
+    CHECK(lua_setmetatable(L, -2) == 1);
+    luaC_validate(L);
+
+    while (!lua_gc(L, LUA_GCSTEP, 1))
+    {
+    }
+
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    lua_pushnil(L);
+    CHECK(lua_next(L, -2) == 0);
+    CHECK(L->global->gcscantable == nullptr);
+    CHECK(L->global->gcstate == GCSpause);
+    luaC_validate(L);
+    lua_pop(L, 1);
+}
+
+TEST_CASE("GcMixedWorkloadStability")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+
+    std::string script = R"(
+        local roots = {}
+        local weakMeta = { __mode = "k" }
+        local weak = setmetatable({}, weakMeta)
+        local modes = { "k", "v", "kv" }
+        local checksum = 0
+
+        for cycle = 1, 80 do
+            weakMeta.__mode = modes[(cycle - 1) % #modes + 1]
+
+            for i = 1, 96 do
+                local key = { cycle, i }
+                local bytes = buffer.create(16)
+                buffer.writeu32(bytes, 0, cycle * 1000 + i)
+
+                local suspended = coroutine.create(function(seed)
+                    local captured = { seed = seed }
+                    coroutine.yield(captured)
+                    return captured.seed * 2
+                end)
+                local ok, captured = coroutine.resume(suspended, cycle + i)
+                assert(ok and captured.seed == cycle + i)
+
+                local value = {
+                    cycle = cycle,
+                    index = i,
+                    bytes = bytes,
+                    direction = vector.create(cycle, i, cycle + i),
+                    suspended = suspended,
+                    closure = function(offset)
+                        return cycle + i + offset
+                    end,
+                }
+
+                roots[i] = value
+                weak[key] = value
+                checksum += value.closure(1)
+            end
+
+            for i = 1, 96, 3 do
+                roots[i] = nil
+            end
+
+            if cycle % 4 == 0 then
+                table.clear(roots)
+            end
+        end
+
+        assert(checksum == 691200)
+        return roots, weak
+    )";
+
+    std::string bytecode = Luau::compile(script);
+    int status = luau_load(L, "test_mixed_gc_stability", bytecode.data(), bytecode.size(), 0);
+    CHECK(status == LUA_OK);
+    status = lua_pcall(L, 0, 2, 0);
+    CHECK(status == LUA_OK);
+
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    CHECK(lua_istable(L, -2));
+    CHECK(lua_istable(L, -1));
+    CHECK(L->global->gcscantable == nullptr);
+    CHECK(L->global->gcstate == GCSpause);
+    luaC_validate(L);
+    lua_pop(L, 2);
+}
+
 TEST_CASE("GcWeakTablesAndUpvalues")
 {
     std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);

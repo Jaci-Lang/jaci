@@ -14,6 +14,7 @@
 #include "lclass.h"
 #include "lvector.h"
 
+#include <algorithm>
 #include <string.h>
 
 LUAU_FASTFLAG(LuauDirectFieldGet)
@@ -353,17 +354,19 @@ static int traversetable(global_State* g, LuaTable* h)
     int weakkey = 0;
     int weakvalue = 0;
     if (h->metatable)
+    {
         markobject(g, cast_to(LuaTable*, h->metatable));
 
-    // is there a weak mode?
-    if (const char* modev = gettablemode(g, h))
-    {
-        weakkey = (strchr(modev, 'k') != NULL);
-        weakvalue = (strchr(modev, 'v') != NULL);
-        if (weakkey || weakvalue)
-        {                         // is really weak?
-            h->gclist = g->weak;  // must be cleared after GC, ...
-            g->weak = obj2gco(h); // ... so put in the appropriate list
+        // is there a weak mode?
+        if (const char* modev = gettablemode(g, h))
+        {
+            weakkey = (strchr(modev, 'k') != NULL);
+            weakvalue = (strchr(modev, 'v') != NULL);
+            if (weakkey || weakvalue)
+            {                         // is really weak?
+                h->gclist = g->weak;  // must be cleared after GC, ...
+                g->weak = obj2gco(h); // ... so put in the appropriate list
+            }
         }
     }
 
@@ -377,19 +380,38 @@ static int traversetable(global_State* g, LuaTable* h)
             markvalue(g, &h->array[i]);
     }
     i = sizenode(h);
-    while (i--)
+    if (!weakkey && !weakvalue)
     {
-        LuaNode* n = gnode(h, i);
-        LUAU_ASSERT(ttype(gkey(n)) != LUA_TDEADKEY || ttisnil(gval(n)));
-        if (ttisnil(gval(n)))
-            removeentry(n); // remove empty entries
-        else
+        while (i--)
         {
-            LUAU_ASSERT(!ttisnil(gkey(n)));
-            if (!weakkey)
+            LuaNode* n = gnode(h, i);
+            LUAU_ASSERT(ttype(gkey(n)) != LUA_TDEADKEY || ttisnil(gval(n)));
+            if (ttisnil(gval(n)))
+                removeentry(n); // remove empty entries
+            else
+            {
+                LUAU_ASSERT(!ttisnil(gkey(n)));
                 markvalue(g, gkey(n));
-            if (!weakvalue)
                 markvalue(g, gval(n));
+            }
+        }
+    }
+    else
+    {
+        while (i--)
+        {
+            LuaNode* n = gnode(h, i);
+            LUAU_ASSERT(ttype(gkey(n)) != LUA_TDEADKEY || ttisnil(gval(n)));
+            if (ttisnil(gval(n)))
+                removeentry(n); // remove empty entries
+            else
+            {
+                LUAU_ASSERT(!ttisnil(gkey(n)));
+                if (!weakkey)
+                    markvalue(g, gkey(n));
+                if (!weakvalue)
+                    markvalue(g, gval(n));
+            }
         }
     }
     return weakkey || weakvalue;
@@ -545,24 +567,133 @@ static void shrinkstackprotected(lua_State* L)
 ** traverse one gray object, turning it to black.
 ** Returns `quantity' traversed.
 */
-static size_t propagatemark(global_State* g)
+static void updatetablescanmode(global_State* g, LuaTable* h)
 {
+    const char* mode = h->metatable ? gettablemode(g, h) : NULL;
+    bool weakkey = mode && strchr(mode, 'k');
+    bool weakvalue = mode && strchr(mode, 'v');
+
+    if (h->metatable != g->gcscanmetatable || weakkey != bool(g->gcscanweakkey) || weakvalue != bool(g->gcscanweakvalue))
+    {
+        g->gcscanmetatable = h->metatable;
+        g->gcscanarray = weakvalue ? 0 : h->sizearray;
+        g->gcscanhash = weakkey && weakvalue ? 0 : (h->node == &luaH_dummynode ? 0 : sizenode(h));
+        g->gcscanweakkey = weakkey;
+        g->gcscanweakvalue = weakvalue;
+        g->gcscanweakactive = (weakvalue && h->sizearray > 0) || (weakkey && weakvalue && h->node != &luaH_dummynode);
+
+        if (h->metatable)
+            markobject(g, cast_to(LuaTable*, h->metatable));
+
+        if ((weakkey || weakvalue) && !g->gcscanlinkedweak)
+        {
+            h->gclist = g->weak;
+            g->weak = obj2gco(h);
+            g->gcscanlinkedweak = 1;
+        }
+    }
+}
+
+static size_t traversetablechunk(global_State* g, size_t limit)
+{
+    LuaTable* h = g->gcscantable;
+    LUAU_ASSERT(h && isgray(obj2gco(h)));
+
+    updatetablescanmode(g, h);
+
+    g->gcscanarray = std::min(g->gcscanarray, h->sizearray);
+    g->gcscanhash = std::min(g->gcscanhash, sizenode(h));
+
+    size_t work = 0;
+    while (g->gcscanarray > 0 && (work < limit || work == 0))
+    {
+        int index = --g->gcscanarray;
+        markvalue(g, &h->array[index]);
+        work += sizeof(TValue);
+    }
+
+    while (g->gcscanarray == 0 && g->gcscanhash > 0 && (work < limit || work == 0))
+    {
+        int index = --g->gcscanhash;
+        LuaNode* n = gnode(h, index);
+        LUAU_ASSERT(ttype(gkey(n)) != LUA_TDEADKEY || ttisnil(gval(n)));
+        if (ttisnil(gval(n)))
+            removeentry(n);
+        else
+        {
+            LUAU_ASSERT(!ttisnil(gkey(n)));
+            g->gcscanweakactive = 1;
+            if (!g->gcscanweakkey)
+                markvalue(g, gkey(n));
+            if (!g->gcscanweakvalue)
+                markvalue(g, gval(n));
+        }
+        work += sizeof(LuaNode);
+    }
+
+    if (g->gcscanarray == 0 && g->gcscanhash == 0)
+    {
+        if (g->gcscanlinkedweak && !g->gcscanweakactive)
+        {
+            LUAU_ASSERT(g->weak == obj2gco(h));
+            g->weak = h->gclist;
+            gray2black(obj2gco(h));
+        }
+        else if (!g->gcscanlinkedweak)
+            gray2black(obj2gco(h));
+        g->gcscantable = NULL;
+        g->gcscanmetatable = NULL;
+        g->gcscanweakkey = 0;
+        g->gcscanweakvalue = 0;
+        g->gcscanlinkedweak = 0;
+        g->gcscanweakactive = 0;
+    }
+
+    // Mode changes can finish a continuation without visiting a slot; charge the state transition itself.
+    return work == 0 ? sizeof(LuaTable) : work;
+}
+
+static size_t propagatemark(global_State* g, size_t limit)
+{
+    if (g->gcscantable)
+        return traversetablechunk(g, limit);
+
     GCObject* o = g->gray;
     LUAU_ASSERT(isgray(o));
-    gray2black(o);
     switch (o->gch.tt)
     {
     case LUA_TTABLE:
     {
         LuaTable* h = gco2h(o);
         g->gray = h->gclist;
+
+        size_t arraysize = sizeof(TValue) * h->sizearray;
+        size_t hashsize = sizeof(LuaNode) * (h->node == &luaH_dummynode ? 0 : sizenode(h));
+        if (sizeof(LuaTable) + arraysize + hashsize > limit)
+        {
+            g->gcscantable = h;
+            g->gcscanmetatable = NULL;
+            g->gcscanarray = h->sizearray;
+            g->gcscanhash = h->node == &luaH_dummynode ? 0 : sizenode(h);
+            g->gcscanweakkey = 0;
+            g->gcscanweakvalue = 0;
+            g->gcscanlinkedweak = 0;
+            g->gcscanweakactive = 0;
+            updatetablescanmode(g, h);
+
+            size_t scanlimit = limit > sizeof(LuaTable) ? limit - sizeof(LuaTable) : 0;
+            return sizeof(LuaTable) + traversetablechunk(g, scanlimit);
+        }
+
+        gray2black(o);
         if (traversetable(g, h)) // table is weak?
             black2gray(o);       // keep it gray
 
-        return sizeof(LuaTable) + sizeof(TValue) * h->sizearray + sizeof(LuaNode) * (h->node == &luaH_dummynode ? 0 : sizenode(h));
+        return sizeof(LuaTable) + arraysize + hashsize;
     }
     case LUA_TFUNCTION:
     {
+        gray2black(o);
         Closure* cl = gco2cl(o);
         g->gray = cl->gclist;
         traverseclosure(g, cl);
@@ -570,6 +701,7 @@ static size_t propagatemark(global_State* g)
     }
     case LUA_TTHREAD:
     {
+        gray2black(o);
         lua_State* th = gco2th(o);
         g->gray = th->gclist;
 
@@ -599,6 +731,7 @@ static size_t propagatemark(global_State* g)
     }
     case LUA_TPROTO:
     {
+        gray2black(o);
         Proto* p = gco2p(o);
         g->gray = p->gclist;
         traverseproto(g, p);
@@ -608,6 +741,7 @@ static size_t propagatemark(global_State* g)
     }
     case LUA_TCLASS:
     {
+        gray2black(o);
         LuauClass* classobject = gco2class(o);
         g->gray = classobject->gclist;
         traverseclass(g, classobject);
@@ -620,6 +754,7 @@ static size_t propagatemark(global_State* g)
     }
     case LUA_TOBJECT:
     {
+        gray2black(o);
         LuauObject* classinst = gco2object(o);
         g->gray = classinst->gclist;
         traverseobject(g, classinst);
@@ -648,9 +783,11 @@ static void embeddermarkref(lua_State* L, int ref)
 static size_t propagateall(global_State* g)
 {
     size_t work = 0;
-    while (g->gray)
+    while (g->gcscantable || g->gray)
     {
-        work += propagatemark(g);
+        size_t step = propagatemark(g, SIZE_MAX);
+        LUAU_ASSERT(step > 0);
+        work += step;
     }
     return work;
 }
@@ -703,15 +840,21 @@ static size_t cleartable(lua_State* L, GCObject* l)
     while (l)
     {
         LuaTable* h = gco2h(l);
+        const char* mode = gettablemode(L->global, h);
+        bool weakkey = mode && strchr(mode, 'k');
+        bool weakvalue = mode && strchr(mode, 'v');
 
         work += sizeof(LuaTable) + sizeof(TValue) * h->sizearray + sizeof(LuaNode) * (h->node == &luaH_dummynode ? 0 : sizenode(h));
 
         int i = h->sizearray;
-        while (i--)
+        if (weakvalue)
         {
-            TValue* o = &h->array[i];
-            if (iscleared(o))   // value was collected?
-                setnilvalue(o); // remove value
+            while (i--)
+            {
+                TValue* o = &h->array[i];
+                if (iscleared(o))   // value was collected?
+                    setnilvalue(o); // remove value
+            }
         }
         i = sizenode(h);
         int activevalues = 0;
@@ -723,7 +866,7 @@ static size_t cleartable(lua_State* L, GCObject* l)
             if (!ttisnil(gval(n)))
             {
                 // can we clear key or value?
-                if (iscleared(gkey(n)) || iscleared(gval(n)))
+                if ((weakkey && iscleared(gkey(n))) || (weakvalue && iscleared(gval(n))))
                 {
                     setnilvalue(gval(n)); // remove value ...
                     removeentry(n);       // remove entry from table
@@ -735,10 +878,10 @@ static size_t cleartable(lua_State* L, GCObject* l)
             }
         }
 
-        if (const char* modev = gettablemode(L->global, h))
+        if (mode)
         {
             // are we allowed to shrink this weak table?
-            if (strchr(modev, 's'))
+            if (strchr(mode, 's'))
             {
                 // shrink at 37.5% occupancy
                 if (activevalues < sizenode(h) * 3 / 8)
@@ -895,6 +1038,7 @@ static void marktaggetmt(global_State* g)
 static void markroot(lua_State* L)
 {
     global_State* g = L->global;
+    LUAU_ASSERT(g->gcscantable == NULL);
     g->gray = NULL;
     g->grayagain = NULL;
     g->weak = NULL;
@@ -1139,12 +1283,14 @@ static size_t gcstep(lua_State* L, size_t limit)
     }
     case GCSpropagate:
     {
-        while (g->gray && cost < limit)
+        while ((g->gcscantable || g->gray) && cost < limit)
         {
-            cost += propagatemark(g);
+            size_t work = propagatemark(g, limit - cost);
+            LUAU_ASSERT(work > 0);
+            cost += work;
         }
 
-        if (!g->gray)
+        if (!g->gcscantable && !g->gray)
         {
 #ifdef LUAI_GCMETRICS
             g->gcmetrics.currcycle.propagatework = g->gcmetrics.currcycle.explicitwork + g->gcmetrics.currcycle.assistwork;
@@ -1160,12 +1306,14 @@ static size_t gcstep(lua_State* L, size_t limit)
     }
     case GCSpropagateagain:
     {
-        while (g->gray && cost < limit)
+        while ((g->gcscantable || g->gray) && cost < limit)
         {
-            cost += propagatemark(g);
+            size_t work = propagatemark(g, limit - cost);
+            LUAU_ASSERT(work > 0);
+            cost += work;
         }
 
-        if (!g->gray) // no more `gray' objects
+        if (!g->gcscantable && !g->gray) // no more `gray' objects
         {
 #ifdef LUAI_GCMETRICS
             g->gcmetrics.currcycle.propagateagainwork =
@@ -1364,6 +1512,14 @@ void luaC_fullgc(lua_State* L)
         g->gray = NULL;
         g->grayagain = NULL;
         g->weak = NULL;
+        g->gcscantable = NULL;
+        g->gcscanmetatable = NULL;
+        g->gcscanarray = 0;
+        g->gcscanhash = 0;
+        g->gcscanweakkey = 0;
+        g->gcscanweakvalue = 0;
+        g->gcscanlinkedweak = 0;
+        g->gcscanweakactive = 0;
         g->gcstate = GCSsweep;
     }
     LUAU_ASSERT(g->gcstate == GCSpause || g->gcstate == GCSsweep);
@@ -1445,6 +1601,15 @@ void luaC_barriertable(lua_State* L, LuaTable* t, GCObject* v)
     black2gray(o); // make table gray (again)
     t->gclist = g->grayagain;
     g->grayagain = o;
+}
+
+void luaC_restarttablescan(lua_State* L, LuaTable* t)
+{
+    global_State* g = L->global;
+    LUAU_ASSERT(g->gcscantable == t);
+    g->gcscanarray = g->gcscanweakvalue ? 0 : t->sizearray;
+    g->gcscanhash = g->gcscanweakkey && g->gcscanweakvalue ? 0 : (t->node == &luaH_dummynode ? 0 : sizenode(t));
+    g->gcscanweakactive = (g->gcscanweakvalue && t->sizearray > 0) || (g->gcscanweakkey && g->gcscanweakvalue && t->node != &luaH_dummynode);
 }
 
 void luaC_barrierback(lua_State* L, GCObject* o, GCObject** gclist)

@@ -200,6 +200,15 @@ typedef struct global_State
     GCObject* grayagain; // list of objects to be traversed atomically
     GCObject* weak;      // list of weak tables (to be cleared)
 
+    struct LuaTable* gcscantable; // table currently traversed in bounded chunks
+    struct LuaTable* gcscanmetatable; // metatable observed when the current scan started
+    int gcscanarray;              // next array slot to traverse
+    int gcscanhash;               // next hash slot to traverse
+    uint8_t gcscanweakkey;        // current scan treats hash keys as weak
+    uint8_t gcscanweakvalue;      // current scan treats values as weak
+    uint8_t gcscanlinkedweak;     // current table is already linked into the weak list
+    uint8_t gcscanweakactive;     // current weak table contains a non-empty entry
+
     size_t GCthreshold;                       // when totalbytes >= GCthreshold, run GC step
     size_t totalbytes;                        // number of bytes currently allocated
 

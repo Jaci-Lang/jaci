@@ -228,6 +228,14 @@ lua_State* lua_newstate(lua_Alloc f, void* ud)
     g->gray = NULL;
     g->grayagain = NULL;
     g->weak = NULL;
+    g->gcscantable = NULL;
+    g->gcscanmetatable = NULL;
+    g->gcscanarray = 0;
+    g->gcscanhash = 0;
+    g->gcscanweakkey = 0;
+    g->gcscanweakvalue = 0;
+    g->gcscanlinkedweak = 0;
+    g->gcscanweakactive = 0;
     g->totalbytes = sizeof(LG);
     g->gcgoal = LUAI_GCGOAL;
     g->gcstepmul = LUAI_GCSTEPMUL;
