@@ -53,21 +53,17 @@ struct LlvmEngine::Impl
     std::string tripleStr;
     DataLayout dataLayout{""};
 
-    // one-time process initialization: full target registration is required
-    // for object emission (the minimal native-target registration omits the
-    // MC emission machinery on some distro LLVM builds)
+    // Register the host target and its MC object-emission support once.
     void initTargets()
     {
         std::call_once(
             targetInitFlag,
             []
             {
-                InitializeAllTargetInfos();
-                InitializeAllTargets();
-                InitializeAllTargetMCs();
-                InitializeAllAsmPrinters();
-                InitializeAllAsmParsers();
-                InitializeAllDisassemblers();
+                InitializeNativeTarget();
+                InitializeNativeTargetAsmPrinter();
+                InitializeNativeTargetAsmParser();
+                InitializeNativeTargetDisassembler();
             }
         );
         targetInitialized = true;
