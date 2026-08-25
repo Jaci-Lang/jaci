@@ -31,6 +31,11 @@ jobs:
           - name: GCC
             cc: gcc
             cxx: g++
+        exclude:
+          - os: {name: macos, version: macos-latest}
+            compiler: {name: GCC, cc: gcc, cxx: g++}
+          - os: {name: macos-arm, version: macos-14}
+            compiler: {name: GCC, cc: gcc, cxx: g++}
     name: ${{matrix.os.name}} with ${{matrix.compiler.name}}
     runs-on: ${{matrix.os.version}}
     steps:
@@ -50,6 +55,10 @@ jobs:
         directory: ${{ runner.temp }}/llvm-${{ env.LLVM_VERSION }}
         cached: ${{ steps.llvm-cache.outputs.cache-hit }}
         env: false
+
+    - name: Export LLVM compiler
+      if: matrix.compiler.name == 'Clang'
+      run: echo "${LLVM_PATH}/bin" >> "$GITHUB_PATH"
 
     - name: Setup Compiler Cache
       uses: hendrikmuhs/ccache-action@v1.2
