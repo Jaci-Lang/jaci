@@ -14,6 +14,8 @@ TEST_CASE("HirDataStructuresAndSSA")
     uint32_t b0 = function.createBlock("entry");
     uint32_t b1 = function.createBlock("exit");
 
+    CHECK_EQ(b0, 0);
+    CHECK_EQ(b1, 1);
     CHECK_EQ(function.blocks.size(), 2);
     CHECK_EQ(function.blocks[0].name, "entry");
     CHECK_EQ(function.blocks[1].name, "exit");
