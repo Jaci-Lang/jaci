@@ -4,6 +4,7 @@
 
 #if LUAU_USE_LLVM
 
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/ObjectFile.h"
@@ -29,35 +30,6 @@ uint32_t alignUp(uint32_t value, uint32_t align)
 {
     return align == 0 ? value : (value + (align - 1)) & ~(align - 1);
 }
-
-// x86-64 relocation type values
-namespace x64
-{
-constexpr uint64_t k64 = 1;
-constexpr uint64_t kPC32 = 2;
-constexpr uint64_t kPLT32 = 4;
-constexpr uint64_t kGOTPCREL = 9;
-constexpr uint64_t k32 = 10;
-constexpr uint64_t k32S = 11;
-constexpr uint64_t kPC64 = 24;
-constexpr uint64_t kGOTPCRELX = 41;
-constexpr uint64_t kREXGOTPCRELX = 42;
-constexpr uint64_t kRELATIVE = 0x401;
-} // namespace x64
-
-// AArch64 relocation type values
-namespace a64
-{
-constexpr uint64_t kCALL26 = 256;
-constexpr uint64_t kABS64 = 257;
-constexpr uint64_t kPREL32 = 258;
-constexpr uint64_t kPREL64 = 259;
-constexpr uint64_t kABS32 = 260;
-constexpr uint64_t kADDABSLO12NC = 266;
-constexpr uint64_t kADRPRELPGHI21 = 275;
-constexpr uint64_t kADRPRELPGHI21NC = 276;
-constexpr uint64_t kRELATIVE = 511;
-} // namespace a64
 
 enum class RelocArch
 {
@@ -346,28 +318,28 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
             {
                 switch (type)
                 {
-                    case x64::k64:
+                    case ELF::R_X86_64_64:
                         r.kind = RelocKind::Abs64;
                         break;
-                    case x64::k32:
+                    case ELF::R_X86_64_32:
                         r.kind = RelocKind::Abs32;
                         break;
-                    case x64::k32S:
+                    case ELF::R_X86_64_32S:
                         r.kind = RelocKind::Abs32S;
                         break;
-                    case x64::kPC32:
-                    case x64::kPLT32:
+                    case ELF::R_X86_64_PC32:
+                    case ELF::R_X86_64_PLT32:
                         r.kind = RelocKind::Pc32;
                         break;
-                    case x64::kPC64:
+                    case ELF::R_X86_64_PC64:
                         r.kind = RelocKind::Prel64;
                         break;
-                    case x64::kRELATIVE:
+                    case ELF::R_X86_64_RELATIVE:
                         r.kind = RelocKind::Relative;
                         break;
-                    case x64::kGOTPCREL:
-                    case x64::kGOTPCRELX:
-                    case x64::kREXGOTPCRELX:
+                    case ELF::R_X86_64_GOTPCREL:
+                    case ELF::R_X86_64_GOTPCRELX:
+                    case ELF::R_X86_64_REX_GOTPCRELX:
                         out.error = "GOT relocations are not supported (object must be static no-PIC)";
                         return false;
                     default:
@@ -379,29 +351,29 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
             {
                 switch (type)
                 {
-                    case a64::kABS64:
+                    case ELF::R_AARCH64_ABS64:
                         r.kind = RelocKind::Abs64;
                         break;
-                    case a64::kABS32:
+                    case ELF::R_AARCH64_ABS32:
                         r.kind = RelocKind::Abs32;
                         break;
-                    case a64::kPREL32:
+                    case ELF::R_AARCH64_PREL32:
                         r.kind = RelocKind::Prel32;
                         break;
-                    case a64::kPREL64:
+                    case ELF::R_AARCH64_PREL64:
                         r.kind = RelocKind::Prel64;
                         break;
-                    case a64::kCALL26:
+                    case ELF::R_AARCH64_CALL26:
                         r.kind = RelocKind::Call26;
                         break;
-                    case a64::kADRPRELPGHI21:
-                    case a64::kADRPRELPGHI21NC:
+                    case ELF::R_AARCH64_ADR_PREL_PG_HI21:
+                    case ELF::R_AARCH64_ADR_PREL_PG_HI21_NC:
                         r.kind = RelocKind::AdrPrelPgHi21;
                         break;
-                    case a64::kADDABSLO12NC:
+                    case ELF::R_AARCH64_ADD_ABS_LO12_NC:
                         r.kind = RelocKind::AddAbsLo12Nc;
                         break;
-                    case a64::kRELATIVE:
+                    case ELF::R_AARCH64_RELATIVE:
                         r.kind = RelocKind::Relative;
                         break;
                     default:
