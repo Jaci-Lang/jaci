@@ -50,26 +50,6 @@ static const char* red()
 {
     return enabled() ? "\033[1;31m" : "";
 }
-static const char* green()
-{
-    return enabled() ? "\033[1;32m" : "";
-}
-static const char* yellow()
-{
-    return enabled() ? "\033[1;33m" : "";
-}
-static const char* cyan()
-{
-    return enabled() ? "\033[1;36m" : "";
-}
-static const char* bold()
-{
-    return enabled() ? "\033[1m" : "";
-}
-static const char* dim()
-{
-    return enabled() ? "\033[2m" : "";
-}
 static const char* reset()
 {
     return enabled() ? "\033[0m" : "";
