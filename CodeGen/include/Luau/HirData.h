@@ -328,6 +328,7 @@ enum class ValueKind : uint8_t
 struct ConstantValue
 {
     TypeKind kind = TypeKind::Nil;
+    bool isInt64 = false;
     union
     {
         bool b;
@@ -355,6 +356,7 @@ struct ConstantValue
     }
     explicit ConstantValue(int64_t i64)
         : kind(TypeKind::Integer)
+        , isInt64(true)
     {
         val.i64 = i64;
     }

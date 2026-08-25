@@ -43,17 +43,17 @@ TEST_CASE("HirConstantFoldingAndRangePropagation")
     uint32_t entry = builder.createBlock("entry");
     builder.setInsertionBlock(entry);
 
-    Hir::Value c10 = builder.emitConstInt(10);
+    Hir::Value c10 = builder.emitConstInt(-10);
     Hir::Value c25 = builder.emitConstInt(25);
     Hir::Value addInst = builder.emitAdd(c10, c25, Hir::Type(Hir::TypeKind::Integer));
 
     Hir::Function& fn = builder.getFunction();
     Hir::optimizeHir(fn);
 
-    // Instruction should have folded to ConstInt(35)
+    // Instruction should have folded to ConstInt(15), preserving int32_t sign.
     CHECK_EQ(fn.instructions[addInst.index].cmd, Hir::Cmd::ConstInt);
-    CHECK_EQ(fn.instructions[addInst.index].range.min, 35);
-    CHECK_EQ(fn.instructions[addInst.index].range.max, 35);
+    CHECK_EQ(fn.instructions[addInst.index].range.min, 15);
+    CHECK_EQ(fn.instructions[addInst.index].range.max, 15);
 }
 
 TEST_CASE("HirControlFlowAndAnalysis")

@@ -53,8 +53,8 @@ bool HirOptimizer::foldInstruction(uint32_t instIdx)
             {
                 if (ca->kind == TypeKind::Integer && cb->kind == TypeKind::Integer)
                 {
-                    int64_t va = ca->val.i64 != 0 ? ca->val.i64 : ca->val.i;
-                    int64_t vb = cb->val.i64 != 0 ? cb->val.i64 : cb->val.i;
+                    int64_t va = ca->isInt64 ? ca->val.i64 : ca->val.i;
+                    int64_t vb = cb->isInt64 ? cb->val.i64 : cb->val.i;
                     int64_t res = 0;
 
                     if (inst.cmd == Cmd::Add)
