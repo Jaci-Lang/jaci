@@ -199,8 +199,13 @@ if(LLVM_FOUND)
         if(LLVM_MONOLITHIC_LIBRARY)
             target_link_libraries(Luau.CodeGen PRIVATE ${LLVM_MONOLITHIC_LIBRARY})
         else()
-            set(LLVM_COMPONENT_LIBS ${LLVM_AVAILABLE_LIBS})
-            list(FILTER LLVM_COMPONENT_LIBS EXCLUDE REGEX "^LLVM-C$")
+            llvm_map_components_to_libnames(LLVM_COMPONENT_LIBS
+                Core
+                IRReader
+                Passes
+                Object
+                native
+            )
             target_link_libraries(Luau.CodeGen PRIVATE ${LLVM_COMPONENT_LIBS})
         endif()
     endif()
