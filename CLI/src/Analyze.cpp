@@ -2,6 +2,7 @@
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Config.h"
 #include "Luau/Frontend.h"
+#include "Luau/CliPresentation.h"
 #include "Luau/LuauConfig.h"
 #include "Luau/ModuleResolver.h"
 #include "Luau/PrettyPrinter.h"
@@ -21,6 +22,7 @@
 #include "lualib.h"
 
 #include <condition_variable>
+#include <climits>
 #include <functional>
 #include <mutex>
 #include <queue>
@@ -131,19 +133,29 @@ static bool reportModuleResult(Luau::Frontend& frontend, const Luau::ModuleName&
 
 static void displayHelp(const char* argv0)
 {
-    printf("Usage: %s [--mode] [options] [file list]\n", argv0);
-    printf("\n");
-    printf("Available modes:\n");
-    printf("  omitted: typecheck and lint input files\n");
-    printf("  --annotate: typecheck input files and output source with type annotations\n");
-    printf("\n");
-    printf("Available options:\n");
-    printf("  --formatter=plain: report analysis errors in Luacheck-compatible format\n");
-    printf("  --formatter=gnu: report analysis errors in GNU-compatible format\n");
-    printf("  --mode=strict: default to strict mode when typechecking\n");
-    printf("  --solver={new|old}: selects which typechecker to use (defaults to the new solver)\n");
-    printf("  --timetrace: record compiler time tracing information into trace.json\n");
-    printf("  --lsp: start Language Server Protocol (LSP) mode over stdio\n");
+    argv0 = Luau::Cli::executableName(argv0);
+    Luau::Cli::title(stdout, "Jaci Analyze", "typecheck and lint Luau source");
+
+    Luau::Cli::heading(stdout, "Usage");
+    char usage[1024];
+    snprintf(usage, sizeof(usage), "%s [options] <file or directory ...>", argv0);
+    Luau::Cli::usage(stdout, usage);
+
+    Luau::Cli::heading(stdout, "Analysis");
+    Luau::Cli::option(stdout, "--mode=strict", "Treat files without a mode directive as strict.");
+    Luau::Cli::option(stdout, "--annotate", "Print source with inferred type annotations.");
+    Luau::Cli::option(stdout, "-j<threads>", "Set the number of analysis worker threads.");
+
+    Luau::Cli::heading(stdout, "Output");
+    Luau::Cli::option(stdout, "--formatter=plain", "Use Luacheck-compatible diagnostics.");
+    Luau::Cli::option(stdout, "--formatter=gnu", "Use GNU-compatible diagnostics.");
+    Luau::Cli::option(stdout, "--timetrace", "Write compiler timing data to trace.json.");
+
+    Luau::Cli::heading(stdout, "Advanced");
+    Luau::Cli::option(stdout, "--solver=<new|old>", "Select the type solver. Default: new.");
+    Luau::Cli::option(stdout, "--lsp", "Serve the Language Server Protocol over standard input/output.");
+    Luau::Cli::option(stdout, "--color=<mode>", "Set color output: auto, always, or never.");
+    Luau::Cli::option(stdout, "-h, --help", "Print this help.");
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -399,12 +411,6 @@ int main(int argc, char** argv)
 
     setLuauFlagsDefault();
 
-    if (argc >= 2 && strcmp(argv[1], "--help") == 0)
-    {
-        displayHelp(argv[0]);
-        return 0;
-    }
-
     ReportFormat format = ReportFormat::Default;
     Luau::Mode mode = Luau::Mode::Nonstrict;
     bool annotate = false;
@@ -414,10 +420,15 @@ int main(int argc, char** argv)
 
     for (int i = 1; i < argc; ++i)
     {
-        if (argv[i][0] != '-')
+        if (argv[i][0] != '-' || strcmp(argv[i], "-") == 0)
             continue;
 
-        if (strcmp(argv[i], "--formatter=plain") == 0)
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
+        {
+            displayHelp(argv[0]);
+            return 0;
+        }
+        else if (strcmp(argv[i], "--formatter=plain") == 0)
             format = ReportFormat::Luacheck;
         else if (strcmp(argv[i], "--formatter=gnu") == 0)
             format = ReportFormat::Gnu;
@@ -430,13 +441,42 @@ int main(int argc, char** argv)
         else if (strncmp(argv[i], "--fflags=", 9) == 0)
             setLuauFlags(argv[i] + 9);
         else if (strncmp(argv[i], "-j", 2) == 0)
-            threadCount = int(strtol(argv[i] + 2, nullptr, 10));
+        {
+            char* end = nullptr;
+            long value = strtol(argv[i] + 2, &end, 10);
+            if (!argv[i][2] || !end || *end || value <= 0 || value > INT_MAX)
+            {
+                Luau::Cli::error(stderr, "invalid worker thread count");
+                Luau::Cli::hint(stderr, "use -j followed by a positive number, such as -j4");
+                return 1;
+            }
+            threadCount = int(value);
+        }
         else if (strncmp(argv[i], "--logbase=", 10) == 0)
             basePath = std::string{argv[i] + 10};
         else if (strcmp(argv[i], "--solver=old") == 0)
             solverMode = Luau::SolverMode::Old;
+        else if (strcmp(argv[i], "--solver=new") == 0)
+            solverMode = Luau::SolverMode::New;
         else if (strcmp(argv[i], "--lsp") == 0)
             return Luau::runLspServer();
+        else if (strncmp(argv[i], "--color=", 8) == 0)
+        {
+            if (!Luau::Cli::setColorMode(argv[i] + 8))
+            {
+                Luau::Cli::error(stderr, "invalid color mode");
+                Luau::Cli::hint(stderr, "use --color=auto, --color=always, or --color=never");
+                return 1;
+            }
+        }
+        else
+        {
+            char message[256];
+            snprintf(message, sizeof(message), "unknown option '%s'", argv[i]);
+            Luau::Cli::error(stderr, message);
+            Luau::Cli::hint(stderr, "run 'luau-analyze --help' to list supported options");
+            return 1;
+        }
     }
 
 #if !defined(LUAU_ENABLE_TIME_TRACE)
@@ -483,6 +523,14 @@ int main(int argc, char** argv)
 #endif
 
     std::vector<std::string> files = getSourceFiles(argc, argv);
+
+    const bool showProgress = format == ReportFormat::Default && !annotate;
+    if (showProgress)
+    {
+        char detail[128];
+        snprintf(detail, sizeof(detail), "%zu source file%s", files.size(), files.size() == 1 ? "" : "s");
+        Luau::Cli::status(stderr, "Checking", detail);
+    }
 
     for (const std::string& path : files)
         frontend.queueModuleCheck(path);
@@ -537,6 +585,21 @@ int main(int argc, char** argv)
 
         for (const auto& pair : configResolver.configErrors)
             fprintf(stderr, "%s: %s\n", pair.first.c_str(), pair.second.c_str());
+    }
+
+    if (showProgress)
+    {
+        char detail[128];
+        if (failed)
+        {
+            snprintf(detail, sizeof(detail), "%d module%s reported errors", failed, failed == 1 ? "" : "s");
+            Luau::Cli::error(stderr, detail);
+        }
+        else
+        {
+            snprintf(detail, sizeof(detail), "%zu module%s checked", checkedModules.size(), checkedModules.size() == 1 ? "" : "s");
+            Luau::Cli::success(stderr, detail);
+        }
     }
 
     if (format == ReportFormat::Luacheck)

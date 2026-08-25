@@ -44,6 +44,17 @@ endif()
 
 project(Luau LANGUAGES CXX C)
 
+set(JACI_LOGO_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/JaciLogoData.h")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/assets/ascii.txt -DOUTPUT=${JACI_LOGO_HEADER}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateJaciLogo.cmake
+    RESULT_VARIABLE JACI_LOGO_RESULT
+)
+if(NOT JACI_LOGO_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to embed assets/ascii.txt")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/ascii.txt")
+
 if (LUAU_BUILD_SHARED)
     add_library(Luau.Common SHARED)
     add_library(Luau.CLI.lib SHARED)
@@ -89,6 +100,7 @@ if(LUAU_BUILD_CLI)
     set_target_properties(Luau.Bytecode.CLI PROPERTIES OUTPUT_NAME luau-bytecode)
 
     target_compile_definitions(Luau.Repl.CLI PRIVATE JACI_VERSION="${JACI_VERSION}")
+    target_include_directories(Luau.Repl.CLI PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 endif()
 
 if(LUAU_BUILD_TESTS)
@@ -96,6 +108,7 @@ if(LUAU_BUILD_TESTS)
     add_executable(Luau.Conformance)
     add_executable(Luau.CLI.Test)
     add_executable(t_native_interop_test)
+    target_include_directories(Luau.CLI.Test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 endif()
 
 if(LUAU_BUILD_WEB)

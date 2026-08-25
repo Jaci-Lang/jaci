@@ -499,6 +499,7 @@ target_sources(isocline PRIVATE
 # Common sources shared between all CLI apps
 target_sources(Luau.CLI.lib PRIVATE
     CLI/include/Luau/AnalyzeRequirer.h
+    CLI/include/Luau/CliPresentation.h
     CLI/include/Luau/FileUtils.h
     CLI/include/Luau/Flags.h
     CLI/include/Luau/JsonRpc.h

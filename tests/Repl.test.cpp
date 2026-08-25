@@ -4,13 +4,16 @@
 
 #include "Luau/Repl.h"
 #include "ScopedFlags.h"
+#include "JaciLogoData.h"
 
 #include "doctest.h"
 
 #include <iostream>
+#include <initializer_list>
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 LUAU_FASTFLAG(LuauIntegerType2)
@@ -154,6 +157,98 @@ TEST_CASE_FIXTURE(ReplFixture, "MultipleArguments")
 {
     runCode(L, "return 3, 'three'");
     CHECK(getCapturedOutput() == "3\t\"three\"");
+}
+
+TEST_SUITE_END();
+
+static bool hasHighlight(const std::string& source, ReplHighlightKind kind, std::string_view text)
+{
+    for (const ReplHighlightSpan& span : getReplHighlightSpans(source))
+        if (span.kind == kind && std::string_view(source).substr(span.start, span.length) == text)
+            return true;
+    return false;
+}
+
+TEST_SUITE_BEGIN("ReplHighlighting");
+
+TEST_CASE("HighlightsLuauCodeByTokenKind")
+{
+    const std::string source = R"(
+local function greet(name: string)
+    -- Welcome the user
+    return print("hello", 42 + 1)
+end
+)";
+
+    CHECK(hasHighlight(source, ReplHighlightKind::Keyword, "local"));
+    CHECK(hasHighlight(source, ReplHighlightKind::Keyword, "function"));
+    CHECK(hasHighlight(source, ReplHighlightKind::Function, "greet"));
+    CHECK(hasHighlight(source, ReplHighlightKind::Type, "string"));
+    CHECK(hasHighlight(source, ReplHighlightKind::Comment, "-- Welcome the user"));
+    CHECK(hasHighlight(source, ReplHighlightKind::Function, "print"));
+    CHECK(hasHighlight(source, ReplHighlightKind::String, "\"hello\""));
+    CHECK(hasHighlight(source, ReplHighlightKind::Number, "42"));
+    CHECK(hasHighlight(source, ReplHighlightKind::Operator, "+"));
+}
+
+TEST_CASE("HighlightsBuiltinsAndIncompleteInput")
+{
+    const std::string source = "local writer = print\nlocal value = \"unfinished";
+
+    CHECK(hasHighlight(source, ReplHighlightKind::Builtin, "print"));
+    CHECK(hasHighlight(source, ReplHighlightKind::Error, "\"unfinished"));
+}
+
+TEST_SUITE_END();
+
+static int runCli(std::initializer_list<const char*> arguments)
+{
+    std::vector<std::string> storage(arguments.begin(), arguments.end());
+    std::vector<char*> argv;
+    argv.reserve(storage.size());
+    for (std::string& argument : storage)
+        argv.push_back(argument.data());
+    return replMain(int(argv.size()), argv.data());
+}
+
+TEST_SUITE_BEGIN("CliCommands");
+
+TEST_CASE("EmbedsCanonicalJaciLogo")
+{
+    std::string_view logo = JaciAsciiLogo;
+    constexpr std::string_view prefix = "[size=9px][font=monospace]";
+    CHECK(logo.substr(0, prefix.size()) == prefix);
+    CHECK(logo.find("[color=#") != std::string_view::npos);
+    CHECK(logo.find('\n') != std::string_view::npos);
+}
+
+TEST_CASE("CommandHelpIsAvailable")
+{
+    CHECK(runCli({"luau", "--help"}) == 0);
+    CHECK(runCli({"luau", "run", "--help"}) == 0);
+    CHECK(runCli({"luau", "build", "--help"}) == 0);
+    CHECK(runCli({"luau", "help", "repl"}) == 0);
+}
+
+TEST_CASE("CommandsRequireClearInputs")
+{
+    CHECK(runCli({"luau", "run"}) == 1);
+    CHECK(runCli({"luau", "build"}) == 1);
+    CHECK(runCli({"luau", "build", "one.luau", "two.luau"}) == 1);
+}
+
+TEST_CASE("CommandsRejectOptionsFromOtherActions")
+{
+    CHECK(runCli({"luau", "run", "--output", "app"}) == 1);
+    CHECK(runCli({"luau", "build", "--coverage", "app.luau"}) == 1);
+    CHECK(runCli({"luau", "repl", "--eval", "return 1"}) == 1);
+}
+
+TEST_CASE("NumericOptionsRejectMalformedValues")
+{
+    CHECK(runCli({"luau", "run", "-O"}) == 1);
+    CHECK(runCli({"luau", "run", "-g9"}) == 1);
+    CHECK(runCli({"luau", "run", "--profile=fast", "app.luau"}) == 1);
 }
 
 TEST_SUITE_END();
