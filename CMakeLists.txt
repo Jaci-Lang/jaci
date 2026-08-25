@@ -191,9 +191,18 @@ if(LLVM_FOUND)
     if(TARGET LLVM)
         target_link_libraries(Luau.CodeGen PRIVATE LLVM)
     else()
-        set(LLVM_COMPONENT_LIBS ${LLVM_AVAILABLE_LIBS})
-        list(FILTER LLVM_COMPONENT_LIBS EXCLUDE REGEX "^LLVM-C$")
-        target_link_libraries(Luau.CodeGen PRIVATE ${LLVM_COMPONENT_LIBS})
+        find_library(LLVM_MONOLITHIC_LIBRARY
+            NAMES LLVM-${LLVM_VERSION_MAJOR} LLVM
+            HINTS ${LLVM_LIBRARY_DIRS}
+            NO_DEFAULT_PATH
+        )
+        if(LLVM_MONOLITHIC_LIBRARY)
+            target_link_libraries(Luau.CodeGen PRIVATE ${LLVM_MONOLITHIC_LIBRARY})
+        else()
+            set(LLVM_COMPONENT_LIBS ${LLVM_AVAILABLE_LIBS})
+            list(FILTER LLVM_COMPONENT_LIBS EXCLUDE REGEX "^LLVM-C$")
+            target_link_libraries(Luau.CodeGen PRIVATE ${LLVM_COMPONENT_LIBS})
+        endif()
     endif()
 elseif(LUAU_USE_LLVM STREQUAL "ON")
     message(FATAL_ERROR "LUAU_USE_LLVM=ON but no LLVM development package was found")
