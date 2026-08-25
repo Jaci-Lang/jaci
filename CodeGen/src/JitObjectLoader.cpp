@@ -451,7 +451,7 @@ void applyJitRelocations(const JitObjectLayout& layout, uint8_t* codeStart, size
             {
                 uint32_t insn;
                 std::memcpy(&insn, site, 4);
-                insn = (insn & ~0xFFFu) | uint32_t((symbolValue + uint64_t(r.addend)) & 0xFFFu);
+                insn = (insn & ~(0xFFFu << 10)) | uint32_t(((symbolValue + uint64_t(r.addend)) & 0xFFFu) << 10);
                 std::memcpy(site, &insn, 4);
                 break;
             }
