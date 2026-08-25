@@ -41,32 +41,54 @@ namespace CodeGen
 namespace
 {
 
-#if !defined(_WIN32)
-size_t getPageSize()
+enum class PageProtection
 {
-    long page = sysconf(_SC_PAGESIZE);
-    return page > 0 ? size_t(page) : size_t(4096);
-}
+    ReadOnly,
+    ReadWrite,
+    ReadExecute,
+};
 
-void protectRange(void* mem, size_t size, int prot)
-{
-    mprotect(mem, size, prot);
-}
-#else
 size_t getPageSize()
 {
+#if defined(_WIN32)
     SYSTEM_INFO info;
     GetSystemInfo(&info);
     return size_t(info.dwPageSize);
+#else
+    long page = sysconf(_SC_PAGESIZE);
+    return page > 0 ? size_t(page) : size_t(4096);
+#endif
 }
 
-void protectRange(void* mem, size_t size, int prot)
+void protectRange(void* mem, size_t size, PageProtection protection)
 {
-    DWORD winProt = prot & PROT_EXEC ? (prot & PROT_WRITE ? PAGE_EXECUTE_READWRITE : PAGE_EXECUTE_READ) : (prot & PROT_WRITE ? PAGE_READWRITE : PAGE_READONLY);
+#if defined(_WIN32)
+    DWORD winProtection = PAGE_READONLY;
+    switch (protection)
+    {
+    case PageProtection::ReadOnly:
+        winProtection = PAGE_READONLY;
+        break;
+    case PageProtection::ReadWrite:
+        winProtection = PAGE_READWRITE;
+        break;
+    case PageProtection::ReadExecute:
+        winProtection = PAGE_EXECUTE_READ;
+        break;
+    }
+
     DWORD old;
-    VirtualProtect(mem, size, winProt, &old);
-}
+    VirtualProtect(mem, size, winProtection, &old);
+#else
+    int posixProtection = PROT_READ;
+    if (protection == PageProtection::ReadWrite)
+        posixProtection |= PROT_WRITE;
+    else if (protection == PageProtection::ReadExecute)
+        posixProtection |= PROT_EXEC;
+
+    mprotect(mem, size, posixProtection);
 #endif
+}
 
 } // namespace
 
@@ -84,7 +106,8 @@ LlvmJitCompileResult compileLlvmProtos(const std::vector<Proto*>& protos, Llvm::
     static std::mutex compileMutex;
     std::lock_guard<std::mutex> lock(compileMutex);
 
-    static Llvm::LlvmEngine* engine = [] -> Llvm::LlvmEngine* {
+    static Llvm::LlvmEngine* engine = []() -> Llvm::LlvmEngine*
+    {
         auto* e = new Llvm::LlvmEngine();
         if (!e->initialize())
         {
@@ -182,7 +205,7 @@ void finalizeLlvmAllocation(const CodeAllocationData& allocation, size_t dataSiz
 
     // Open a temporary writable window over the allocation pages and apply
     // the deferred relocations with the final code/data addresses.
-    protectRange(reinterpret_cast<void*>(firstPage), lastPage - firstPage, PROT_READ | PROT_WRITE);
+    protectRange(reinterpret_cast<void*>(firstPage), lastPage - firstPage, PageProtection::ReadWrite);
 
     Jit::applyJitRelocations(layout, allocation.codeStart, dataSize);
 
@@ -194,8 +217,8 @@ void finalizeLlvmAllocation(const CodeAllocationData& allocation, size_t dataSiz
     {
         // Pages entirely inside the data region become read-only when data
         // protection is enabled; everything else is read+execute.
-        int prot = (protectData && page + pageSize <= codeStart) ? PROT_READ : (PROT_READ | PROT_EXEC);
-        protectRange(reinterpret_cast<void*>(page), pageSize, prot);
+        PageProtection protection = (protectData && page + pageSize <= codeStart) ? PageProtection::ReadOnly : PageProtection::ReadExecute;
+        protectRange(reinterpret_cast<void*>(page), pageSize, protection);
     }
 
     // Register the .eh_frame regions so C++ exceptions can unwind through the

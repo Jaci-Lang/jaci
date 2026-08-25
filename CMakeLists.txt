@@ -181,7 +181,7 @@ endif()
 if(LLVM_FOUND)
     message(STATUS "LLVM JIT backend: using LLVM ${LLVM_PACKAGE_VERSION}")
     target_compile_definitions(Luau.CodeGen PUBLIC LUAU_USE_LLVM=1)
-    target_include_directories(Luau.CodeGen PRIVATE ${LLVM_INCLUDE_DIRS})
+    target_include_directories(Luau.CodeGen SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
     # Prefer the monolithic shared library (the per-component static archives
     # are not always usable on distro packages).
     if(TARGET LLVM)

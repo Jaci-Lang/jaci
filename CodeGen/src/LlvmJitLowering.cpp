@@ -42,17 +42,17 @@ using llvm::ConstantFP;
 using llvm::Function;
 using llvm::FunctionCallee;
 using llvm::FunctionType;
-using llvm::GlobalVariable;
 using llvm::GlobalValue;
+using llvm::GlobalVariable;
 using llvm::IRBuilder;
 using llvm::LLVMContext;
 using llvm::Module;
+using llvm::raw_string_ostream;
 using llvm::SwitchInst;
 using llvm::Type;
 using llvm::Value;
 using llvm::verifyFunction;
 using llvm::verifyModule;
-using llvm::raw_string_ostream;
 
 // AUX word of a two-word instruction (second source register / constant index)
 uint32_t auxOf(const Proto* proto, uint32_t i)
@@ -186,7 +186,8 @@ public:
         , offClosureStackSize(offsetof(Closure, stacksize))
         , offClosureEnv(offsetof(Closure, env))
         , offClosureProto(offsetof(Closure, l.p))
-    {}
+    {
+    }
 
     bool lowerModule(Module& module, const std::vector<const Proto*>& protos, std::string& error)
     {
@@ -213,7 +214,8 @@ private:
 
     uint64_t offLStateGlobal, offLStateCi, offLStateBase, offLStateTop, offLStateStackLast, offLStateEndCi, offLStateOpenUpval;
     uint64_t offCiBase, offCiFunc, offCiTop, offCiSavedPc, offCiNResults, offCiFlags;
-    uint64_t offProtoCode, offProtoK, offProtoP, offProtoNups, offProtoMaxStackSize, offProtoNumParams, offProtoIsVararg, offProtoExecData, offProtoExecTarget, offProtoFunId, offProtoCodeEntry, offProtoDebugInsn;
+    uint64_t offProtoCode, offProtoK, offProtoP, offProtoNups, offProtoMaxStackSize, offProtoNumParams, offProtoIsVararg, offProtoExecData,
+        offProtoExecTarget, offProtoFunId, offProtoCodeEntry, offProtoDebugInsn;
     uint64_t offGlobalCb, offGlobalTotalBytes, offGlobalGcThreshold;
     uint64_t offCbInterrupt;
     uint64_t offTableSizeArray, offTableReadonly, offTableSafeEnv, offTableMetatable, offTableArray, offTableNode, offTableNodeMask8, offNodeKey;
@@ -376,11 +378,8 @@ private:
         Value* code = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoCode)), "code");
         Value* savedPc = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiSavedPc)), "savedpc");
 
-        Value* idx = B.CreateSDiv(
-            B.CreateSub(B.CreatePtrToInt(savedPc, i64Ty), B.CreatePtrToInt(code, i64Ty)),
-            B.getInt64(sizeof(Instruction)),
-            "idx"
-        );
+        Value* idx =
+            B.CreateSDiv(B.CreateSub(B.CreatePtrToInt(savedPc, i64Ty), B.CreatePtrToInt(code, i64Ty)), B.getInt64(sizeof(Instruction)), "idx");
         Value* inRange = B.CreateICmpSLT(idx, B.getInt64(sizecode), "inrange");
 
         BasicBlock* dispatch = BasicBlock::Create(B.getContext(), "dispatch", fn);
@@ -492,14 +491,14 @@ private:
                 break;
             case BinOp::IDiv:
             {
-                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(::floor)), ptrTy);
+                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(::floor))), ptrTy);
                 r = B.CreateCall(dblFn1Ty(), flFn, {B.CreateFDiv(nb, nc)});
                 break;
             }
             case BinOp::Mod:
             {
                 // luai_nummod: a - floor(a / b) * b
-                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(::floor)), ptrTy);
+                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(::floor))), ptrTy);
                 Value* fl = B.CreateCall(dblFn1Ty(), flFn, {B.CreateFDiv(nb, nc)});
                 r = B.CreateFSub(nb, B.CreateFMul(fl, nc));
                 break;
@@ -507,7 +506,8 @@ private:
             default:
             {
                 // Pow: libm pow, exactly as the VM (luai_numpow)
-                Value* pwFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(::pow)), ptrTy);
+                Value* pwFn =
+                    ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double, double)>(::pow))), ptrTy);
                 r = B.CreateCall(dblFn2Ty(), pwFn, {nb, nc});
                 break;
             }
@@ -557,20 +557,21 @@ private:
                 break;
             case LOP_IDIVK:
             {
-                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(::floor)), ptrTy);
+                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(::floor))), ptrTy);
                 r = B.CreateCall(dblFn1Ty(), flFn, {B.CreateFDiv(nr, nk)});
                 break;
             }
             case LOP_MODK:
             {
-                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(::floor)), ptrTy);
+                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(::floor))), ptrTy);
                 Value* fl = B.CreateCall(dblFn1Ty(), flFn, {B.CreateFDiv(nr, nk)});
                 r = B.CreateFSub(nr, B.CreateFMul(fl, nk));
                 break;
             }
             case LOP_POWK:
             {
-                Value* pwFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(::pow)), ptrTy);
+                Value* pwFn =
+                    ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double, double)>(::pow))), ptrTy);
                 r = B.CreateCall(dblFn2Ty(), pwFn, {nr, nk});
                 break;
             }
@@ -697,22 +698,14 @@ private:
             {
                 Value* constants = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoK)), "k");
                 Value* constant = toPtr(addrOf(constants, uint64_t(LUAU_INSN_AUX_KV(aux)) * sizeof(TValue)));
-                matches = B.CreateAnd(
-                    B.CreateICmpEQ(tag, B.getInt32(LUA_TNUMBER)),
-                    B.CreateFCmpOEQ(loadNum(ra), loadNum(constant)),
-                    "eqnum"
-                );
+                matches = B.CreateAnd(B.CreateICmpEQ(tag, B.getInt32(LUA_TNUMBER)), B.CreateFCmpOEQ(loadNum(ra), loadNum(constant)), "eqnum");
                 break;
             }
             case LOP_JUMPXEQKS:
             {
                 Value* constants = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoK)), "k");
                 Value* constant = toPtr(addrOf(constants, uint64_t(LUAU_INSN_AUX_KV(aux)) * sizeof(TValue)));
-                matches = B.CreateAnd(
-                    B.CreateICmpEQ(tag, B.getInt32(LUA_TSTRING)),
-                    B.CreateICmpEQ(loadVal(ra), loadVal(constant)),
-                    "eqstr"
-                );
+                matches = B.CreateAnd(B.CreateICmpEQ(tag, B.getInt32(LUA_TSTRING)), B.CreateICmpEQ(loadVal(ra), loadVal(constant)), "eqstr");
                 break;
             }
             default:
@@ -745,11 +738,8 @@ private:
             constexpr uint64_t keyTagWord = offsetof(TKey, extra) + sizeof(((TKey*)nullptr)->extra);
             Value* packedKeyTag = B.CreateLoad(i32Ty, toPtr(addrOf(key, keyTagWord)), "keytagword");
             Value* keyTag = B.CreateAnd(packedKeyTag, B.getInt32(0xf), "keytag");
-            Value* keyMatches = B.CreateAnd(
-                B.CreateICmpEQ(keyTag, B.getInt32(LUA_TSTRING)),
-                B.CreateICmpEQ(loadVal(key), loadVal(constant)),
-                "keymatch"
-            );
+            Value* keyMatches =
+                B.CreateAnd(B.CreateICmpEQ(keyTag, B.getInt32(LUA_TSTRING)), B.CreateICmpEQ(loadVal(key), loadVal(constant)), "keymatch");
             Value* valuePresent = B.CreateICmpNE(loadTT(node), B.getInt32(LUA_TNIL), "present");
             BasicBlock* hit = BasicBlock::Create(B.getContext(), "cachehit", fn);
             B.CreateCondBr(B.CreateAnd(keyMatches, valuePresent), hit, fallback);
@@ -781,13 +771,7 @@ private:
             B.SetInsertPoint(tableBlock);
             Value* constants = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoK)), "k");
             Value* constant = toPtr(addrOf(constants, uint64_t(auxOf(proto, i)) * sizeof(TValue)));
-            lowerCachedStringGet(
-                i,
-                next,
-                toPtr(loadVal(tableValue)),
-                regPtrOf(base, int(LUAU_INSN_A(proto->code[i]))),
-                constant
-            );
+            lowerCachedStringGet(i, next, toPtr(loadVal(tableValue)), regPtrOf(base, int(LUAU_INSN_A(proto->code[i]))), constant);
         };
 
         // Cached string writes can stay native only for primitive values;
@@ -802,11 +786,8 @@ private:
             constexpr uint64_t keyTagWord = offsetof(TKey, extra) + sizeof(((TKey*)nullptr)->extra);
             Value* packedKeyTag = B.CreateLoad(i32Ty, toPtr(addrOf(key, keyTagWord)), "keytagword");
             Value* keyTag = B.CreateAnd(packedKeyTag, B.getInt32(0xf), "keytag");
-            Value* keyMatches = B.CreateAnd(
-                B.CreateICmpEQ(keyTag, B.getInt32(LUA_TSTRING)),
-                B.CreateICmpEQ(loadVal(key), loadVal(constant)),
-                "keymatch"
-            );
+            Value* keyMatches =
+                B.CreateAnd(B.CreateICmpEQ(keyTag, B.getInt32(LUA_TSTRING)), B.CreateICmpEQ(loadVal(key), loadVal(constant)), "keymatch");
             Value* valuePresent = B.CreateICmpNE(loadTT(node), B.getInt32(LUA_TNIL), "present");
             Value* writable = B.CreateICmpEQ(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(table, offTableReadonly))), B.getInt8(0), "writable");
             Value* primitive = B.CreateICmpULT(loadTT(source), B.getInt32(LUA_TSTRING), "primitive");
@@ -841,13 +822,7 @@ private:
             B.SetInsertPoint(tableBlock);
             Value* constants = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoK)), "k");
             Value* constant = toPtr(addrOf(constants, uint64_t(auxOf(proto, i)) * sizeof(TValue)));
-            lowerCachedStringSet(
-                i,
-                next,
-                toPtr(loadVal(tableValue)),
-                regPtrOf(base, int(LUAU_INSN_A(proto->code[i]))),
-                constant
-            );
+            lowerCachedStringSet(i, next, toPtr(loadVal(tableValue)), regPtrOf(base, int(LUAU_INSN_A(proto->code[i]))), constant);
         };
 
         // NAMECALL uses the same predicted string slot as GETTABLEKS, then
@@ -872,11 +847,8 @@ private:
             constexpr uint64_t keyTagWord = offsetof(TKey, extra) + sizeof(((TKey*)nullptr)->extra);
             Value* packedKeyTag = B.CreateLoad(i32Ty, toPtr(addrOf(key, keyTagWord)), "keytagword");
             Value* keyTag = B.CreateAnd(packedKeyTag, B.getInt32(0xf), "keytag");
-            Value* keyMatches = B.CreateAnd(
-                B.CreateICmpEQ(keyTag, B.getInt32(LUA_TSTRING)),
-                B.CreateICmpEQ(loadVal(key), loadVal(constant)),
-                "keymatch"
-            );
+            Value* keyMatches =
+                B.CreateAnd(B.CreateICmpEQ(keyTag, B.getInt32(LUA_TSTRING)), B.CreateICmpEQ(loadVal(key), loadVal(constant)), "keymatch");
             Value* present = B.CreateICmpNE(loadTT(node), B.getInt32(LUA_TNIL), "present");
             BasicBlock* hit = BasicBlock::Create(B.getContext(), "namecallhit", fn);
             B.CreateCondBr(B.CreateAnd(keyMatches, present), hit, fallback);
@@ -942,9 +914,7 @@ private:
             B.SetInsertPoint(keyBlock);
             Value* key = loadNum(keyValue);
             Value* inIntRange = B.CreateAnd(
-                B.CreateFCmpOGE(key, ConstantFP::get(dblTy, 1.0)),
-                B.CreateFCmpOLE(key, ConstantFP::get(dblTy, double(INT_MAX))),
-                "intrange"
+                B.CreateFCmpOGE(key, ConstantFP::get(dblTy, 1.0)), B.CreateFCmpOLE(key, ConstantFP::get(dblTy, double(INT_MAX))), "intrange"
             );
             BasicBlock* indexBlock = BasicBlock::Create(B.getContext(), "index", fn);
             B.CreateCondBr(inIntRange, indexBlock, fallback);
@@ -1029,9 +999,7 @@ private:
             B.SetInsertPoint(keyBlock);
             Value* key = loadNum(keyValue);
             Value* inIntRange = B.CreateAnd(
-                B.CreateFCmpOGE(key, ConstantFP::get(dblTy, 1.0)),
-                B.CreateFCmpOLE(key, ConstantFP::get(dblTy, double(INT_MAX))),
-                "intrange"
+                B.CreateFCmpOGE(key, ConstantFP::get(dblTy, 1.0)), B.CreateFCmpOLE(key, ConstantFP::get(dblTy, double(INT_MAX))), "intrange"
             );
             BasicBlock* indexBlock = BasicBlock::Create(B.getContext(), "index", fn);
             B.CreateCondBr(inIntRange, indexBlock, fallback);
@@ -1046,9 +1014,7 @@ private:
             Value* writable = B.CreateICmpEQ(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(table, offTableReadonly))), B.getInt8(0), "writable");
             Value* primitive = B.CreateICmpULT(loadTT(source), B.getInt32(LUA_TSTRING), "primitive");
             Value* plainTable = B.CreateAnd(
-                B.CreateAnd(B.CreateAnd(exactInteger, inBounds), B.CreateIsNull(metatable)),
-                B.CreateAnd(writable, primitive),
-                "plainarray"
+                B.CreateAnd(B.CreateAnd(exactInteger, inBounds), B.CreateIsNull(metatable)), B.CreateAnd(writable, primitive), "plainarray"
             );
 
             BasicBlock* fastBlock = BasicBlock::Create(B.getContext(), "fast", fn);
@@ -1094,7 +1060,8 @@ private:
             B.SetInsertPoint(values);
             Value* allPrimitive = B.getInt1(true);
             for (int slot = 0; slot < count; ++slot)
-                allPrimitive = B.CreateAnd(allPrimitive, B.CreateICmpULT(loadTT(regPtrOf(base, int(LUAU_INSN_B(insn)) + slot)), B.getInt32(LUA_TSTRING)));
+                allPrimitive =
+                    B.CreateAnd(allPrimitive, B.CreateICmpULT(loadTT(regPtrOf(base, int(LUAU_INSN_B(insn)) + slot)), B.getInt32(LUA_TSTRING)));
             BasicBlock* fast = BasicBlock::Create(B.getContext(), "setlist_fast", fn);
             B.CreateCondBr(allPrimitive, fast, slow);
 
@@ -1267,11 +1234,8 @@ private:
             B.SetInsertPoint(blocks[i]);
             Value* ciNow = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateCi)), "ci");
             Value* requested = B.CreateLoad(i32Ty, toPtr(addrOf(ciNow, offCiNResults)), "nresults");
-            Value* supportedResults = B.CreateAnd(
-                B.CreateICmpSGE(requested, B.getInt32(0)),
-                B.CreateICmpSLE(requested, B.getInt32(resultCount)),
-                "supportedresults"
-            );
+            Value* supportedResults =
+                B.CreateAnd(B.CreateICmpSGE(requested, B.getInt32(0)), B.CreateICmpSLE(requested, B.getInt32(resultCount)), "supportedresults");
 
             BasicBlock* fastBlock = BasicBlock::Create(B.getContext(), "returnfast", fn);
             B.CreateCondBr(supportedResults, fastBlock, fallback);
@@ -1356,10 +1320,8 @@ private:
             Value* ciNow = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateCi)), "ci");
             Value* function = B.CreateLoad(ptrTy, toPtr(addrOf(ciNow, offCiFunc)), "func");
             Value* numparams = B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(p, offProtoNumParams)), "numparams");
-            Value* frameWords = B.CreateUDiv(
-                B.CreateSub(B.CreatePtrToInt(base, i64Ty), B.CreatePtrToInt(function, i64Ty)),
-                B.getInt64(sizeof(TValue))
-            );
+            Value* frameWords =
+                B.CreateUDiv(B.CreateSub(B.CreatePtrToInt(base, i64Ty), B.CreatePtrToInt(function, i64Ty)), B.getInt64(sizeof(TValue)));
             Value* varargCount = B.CreateSub(B.CreateSub(frameWords, B.CreateZExt(numparams, i64Ty)), B.getInt64(1), "varargcount");
 
             BasicBlock* current = B.GetInsertBlock();
@@ -1470,7 +1432,9 @@ private:
             B.CreateStore(childProto, toPtr(addrOf(childCi, offsetof(CallInfo, p))));
             B.CreateStore(childCode, toPtr(addrOf(childCi, offCiSavedPc)));
             B.CreateStore(requestedResults, toPtr(addrOf(childCi, offCiNResults)));
-            B.CreateStore(B.CreateSelect(compiled, B.getInt32(LUA_CALLINFO_NATIVE), B.getInt32(0), "nativeflags"), toPtr(addrOf(childCi, offCiFlags)));
+            B.CreateStore(
+                B.CreateSelect(compiled, B.getInt32(LUA_CALLINFO_NATIVE), B.getInt32(0), "nativeflags"), toPtr(addrOf(childCi, offCiFlags))
+            );
 
             Value* parentResume = toPtr(addrOf(code, uint64_t(next) * sizeof(Instruction)));
             B.CreateStore(parentResume, toPtr(addrOf(parentCi, offCiSavedPc)));
@@ -1491,9 +1455,8 @@ private:
 
             B.SetInsertPoint(blocks[i]);
             Value* function = regPtrOf(base, int(LUAU_INSN_A(proto->code[i])));
-            Value* argTop = argumentCount == LUA_MULTRET
-                ? B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateTop)), "argtop")
-                : toPtr(addrOf(function, uint64_t(1 + argumentCount) * sizeof(TValue)));
+            Value* argTop = argumentCount == LUA_MULTRET ? B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateTop)), "argtop")
+                                                         : toPtr(addrOf(function, uint64_t(1 + argumentCount) * sizeof(TValue)));
             Value* parentCi = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateCi)), "parentci");
             Value* parentResume = toPtr(addrOf(code, uint64_t(next) * sizeof(Instruction)));
             B.CreateStore(parentResume, toPtr(addrOf(parentCi, offCiSavedPc)));
@@ -1564,18 +1527,13 @@ private:
             Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "env");
 
             Value* safeEnv = B.CreateAnd(
-                B.CreateIsNotNull(env),
-                B.CreateICmpNE(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(env, offTableSafeEnv))), B.getInt8(0)),
-                "safeenv"
+                B.CreateIsNotNull(env), B.CreateICmpNE(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(env, offTableSafeEnv))), B.getInt8(0)), "safeenv"
             );
             Value* eligible = B.CreateAnd(
                 safeEnv,
                 B.CreateAnd(
                     B.CreateICmpEQ(loadTT(table), B.getInt32(LUA_TTABLE)),
-                    B.CreateAnd(
-                        B.CreateICmpEQ(loadTT(index), B.getInt32(LUA_TNUMBER)),
-                        B.CreateFCmpOEQ(loadNum(index), ConstantFP::get(dblTy, 0.0))
-                    )
+                    B.CreateAnd(B.CreateICmpEQ(loadTT(index), B.getInt32(LUA_TNUMBER)), B.CreateFCmpOEQ(loadNum(index), ConstantFP::get(dblTy, 0.0)))
                 ),
                 "inext"
             );
@@ -1607,16 +1565,11 @@ private:
             Value* closure = toPtr(loadVal(function));
             Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "env");
             Value* safeEnv = B.CreateAnd(
-                B.CreateIsNotNull(env),
-                B.CreateICmpNE(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(env, offTableSafeEnv))), B.getInt8(0)),
-                "safeenv"
+                B.CreateIsNotNull(env), B.CreateICmpNE(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(env, offTableSafeEnv))), B.getInt8(0)), "safeenv"
             );
             Value* eligible = B.CreateAnd(
                 safeEnv,
-                B.CreateAnd(
-                    B.CreateICmpEQ(loadTT(table), B.getInt32(LUA_TTABLE)),
-                    B.CreateICmpEQ(loadTT(index), B.getInt32(LUA_TNIL))
-                ),
+                B.CreateAnd(B.CreateICmpEQ(loadTT(table), B.getInt32(LUA_TTABLE)), B.CreateICmpEQ(loadTT(index), B.getInt32(LUA_TNIL))),
                 "next"
             );
 
@@ -2119,9 +2072,7 @@ private:
                 Value* closure = toPtr(loadVal(function));
                 Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "env");
                 Value* safe = B.CreateAnd(
-                    B.CreateIsNotNull(env),
-                    B.CreateICmpNE(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(env, offTableSafeEnv))), B.getInt8(0)),
-                    "safeenv"
+                    B.CreateIsNotNull(env), B.CreateICmpNE(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(env, offTableSafeEnv))), B.getInt8(0)), "safeenv"
                 );
                 Value* cached = B.CreateICmpNE(loadTT(imported), B.getInt32(LUA_TNIL), "cachedimport");
                 BasicBlock* fast = BasicBlock::Create(B.getContext(), "import", fn);
@@ -2602,7 +2553,6 @@ private:
 
         return true;
     }
-
 };
 
 } // namespace

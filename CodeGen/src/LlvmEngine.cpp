@@ -14,6 +14,7 @@
 
 #include "JitObjectLoader.h"
 
+#include "llvm/Config/llvm-config.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
@@ -50,21 +51,25 @@ struct LlvmEngine::Impl
 
     std::unique_ptr<TargetMachine> tm;
     std::string tripleStr;
-    DataLayout dataLayout;
+    DataLayout dataLayout{""};
 
     // one-time process initialization: full target registration is required
     // for object emission (the minimal native-target registration omits the
     // MC emission machinery on some distro LLVM builds)
     void initTargets()
     {
-        std::call_once(targetInitFlag, [] {
-            InitializeAllTargetInfos();
-            InitializeAllTargets();
-            InitializeAllTargetMCs();
-            InitializeAllAsmPrinters();
-            InitializeAllAsmParsers();
-            InitializeAllDisassemblers();
-        });
+        std::call_once(
+            targetInitFlag,
+            []
+            {
+                InitializeAllTargetInfos();
+                InitializeAllTargets();
+                InitializeAllTargetMCs();
+                InitializeAllAsmPrinters();
+                InitializeAllAsmParsers();
+                InitializeAllDisassemblers();
+            }
+        );
         targetInitialized = true;
     }
 
@@ -72,14 +77,14 @@ struct LlvmEngine::Impl
     {
         switch (level)
         {
-            case OptLevel::O0:
-                return OptimizationLevel::O0;
-            case OptLevel::O1:
-                return OptimizationLevel::O1;
-            case OptLevel::O2:
-                return OptimizationLevel::O2;
-            case OptLevel::O3:
-                return OptimizationLevel::O3;
+        case OptLevel::O0:
+            return OptimizationLevel::O0;
+        case OptLevel::O1:
+            return OptimizationLevel::O1;
+        case OptLevel::O2:
+            return OptimizationLevel::O2;
+        case OptLevel::O3:
+            return OptimizationLevel::O3;
         }
         return OptimizationLevel::O2;
     }
@@ -151,7 +156,12 @@ bool LlvmEngine::initialize()
     std::string tripleStr = sys::getProcessTriple();
     pImpl->tripleStr = tripleStr;
 
-    const Target* target = TargetRegistry::lookupTarget(Triple(tripleStr), lastErrorMessage);
+#if LLVM_VERSION_MAJOR >= 21
+    Triple targetTriple(tripleStr);
+    const Target* target = TargetRegistry::lookupTarget(targetTriple, lastErrorMessage);
+#else
+    const Target* target = TargetRegistry::lookupTarget(tripleStr, lastErrorMessage);
+#endif
     if (!target)
     {
         if (lastErrorMessage.empty())
@@ -160,7 +170,18 @@ bool LlvmEngine::initialize()
     }
 
     pImpl->tm.reset(target->createTargetMachine(
-        Triple(tripleStr), "generic", /*features=*/"", TargetOptions(), Reloc::Model::Static, CodeModel::Large, CodeGenOptLevel::Default, /*JIT=*/false
+#if LLVM_VERSION_MAJOR >= 21
+        targetTriple,
+#else
+        tripleStr,
+#endif
+        "generic",
+        /*features=*/"",
+        TargetOptions(),
+        Reloc::Model::Static,
+        CodeModel::Large,
+        CodeGenOptLevel::Default,
+        /*JIT=*/false
     ));
     if (!pImpl->tm)
     {
@@ -197,7 +218,11 @@ void* LlvmEngine::createModuleFromIrText(const std::string& irText)
         return nullptr;
     }
 
+#if LLVM_VERSION_MAJOR >= 21
     module->setTargetTriple(Triple(pImpl->tripleStr));
+#else
+    module->setTargetTriple(pImpl->tripleStr);
+#endif
     module->setDataLayout(pImpl->dataLayout);
 
     {
@@ -298,12 +323,11 @@ std::string LlvmEngine::compileModuleToNativeObject(void* modulePtr, OptLevel le
     }
 
     const auto& bytes = objectBuffer;
-    bool validMagic = bytes.size() >= 4
-        && ((bytes[0] == 0x7f && bytes[1] == 0x45 && bytes[2] == 0x4c && bytes[3] == 0x46) // ELF
-            || (bytes[0] == 0xfe && bytes[1] == 0xed && bytes[2] == 0xfa)                // MachO
-            || (bytes[0] == 0xce && bytes[1] == 0xfa && bytes[2] == 0xed)                // MachO (swapped)
-            || ((bytes[0] == 0x01 || bytes[0] == 0x02) && bytes[1] == 0x0f)              // COFF
-            || (bytes[0] == 0x42 && bytes[1] == 0x43 && bytes[2] == 0xc0 && bytes[3] == 0xde)); // bitcode
+    bool validMagic = bytes.size() >= 4 && ((bytes[0] == 0x7f && bytes[1] == 0x45 && bytes[2] == 0x4c && bytes[3] == 0x46)      // ELF
+                                            || (bytes[0] == 0xfe && bytes[1] == 0xed && bytes[2] == 0xfa)                       // MachO
+                                            || (bytes[0] == 0xce && bytes[1] == 0xfa && bytes[2] == 0xed)                       // MachO (swapped)
+                                            || ((bytes[0] == 0x01 || bytes[0] == 0x02) && bytes[1] == 0x0f)                     // COFF
+                                            || (bytes[0] == 0x42 && bytes[1] == 0x43 && bytes[2] == 0xc0 && bytes[3] == 0xde)); // bitcode
 
     if (!validMagic)
     {
@@ -405,7 +429,11 @@ void* LlvmEngine::createModuleForLowering()
     moduleHandle->context = std::make_unique<LLVMContext>();
 
     auto module = std::make_unique<Module>("luau_jit", *moduleHandle->context);
+#if LLVM_VERSION_MAJOR >= 21
     module->setTargetTriple(Triple(pImpl->tripleStr));
+#else
+    module->setTargetTriple(pImpl->tripleStr);
+#endif
     module->setDataLayout(pImpl->dataLayout);
 
     moduleHandle->module = std::move(module);
@@ -447,9 +475,7 @@ void* LlvmEngine::createModuleFromIrText(const std::string&)
     return nullptr;
 }
 
-void LlvmEngine::releaseModule(void*)
-{
-}
+void LlvmEngine::releaseModule(void*) {}
 
 std::string LlvmEngine::compileModuleToNativeObject(void*, OptLevel)
 {
@@ -461,9 +487,7 @@ void* LlvmEngine::compileFunction(const std::string&, const std::string&, OptLev
     return nullptr;
 }
 
-void LlvmEngine::releaseExecutable(void*)
-{
-}
+void LlvmEngine::releaseExecutable(void*) {}
 
 void* LlvmEngine::createModuleForLowering()
 {
@@ -539,8 +563,8 @@ BenchmarkResult LlvmEngine::comparePerformance(
     }
 
     std::stringstream ss;
-    ss << "[" << benchmarkName << "] Assembly: " << std::fixed << std::setprecision(3) << result.assemblyTimeMs
-       << " ms | LLVM: " << result.llvmTimeMs << " ms | Speedup: " << result.speedupRatio << "x";
+    ss << "[" << benchmarkName << "] Assembly: " << std::fixed << std::setprecision(3) << result.assemblyTimeMs << " ms | LLVM: " << result.llvmTimeMs
+       << " ms | Speedup: " << result.speedupRatio << "x";
     result.summary = ss.str();
 
     return result;
