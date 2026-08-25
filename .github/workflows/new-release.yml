@@ -72,7 +72,7 @@ jobs:
         if: matrix.os.name == 'windows'
         shell: pwsh
         run: |
-          $llvmPath = "${{ runner.temp }}/llvm-${{ env.LLVM_VERSION }}"
+          $llvmPath = "${{ runner.temp }}/llvm-${{ env.LLVM_VERSION }}" -replace '\\', '/'
           if (-not (Test-Path "$llvmPath/lib/cmake/llvm/LLVMConfig.cmake")) {
             throw "LLVMConfig.cmake is missing from $llvmPath"
           }
