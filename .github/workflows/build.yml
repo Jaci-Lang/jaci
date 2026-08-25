@@ -182,8 +182,8 @@ jobs:
       shell: bash
       run: |
         build/Luau.Conformance.exe
-        build/Luau.Conformance.exe --codegen
-        build/Luau.Conformance.exe --codegen -O2
+        build/Luau.Conformance.exe --codegen --reporters=boost
+        build/Luau.Conformance.exe --codegen -O2 --reporters=boost
 
     - name: Run CLI Sanity Checks
       shell: bash
