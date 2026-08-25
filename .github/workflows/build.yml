@@ -56,8 +56,7 @@ jobs:
         cached: ${{ steps.llvm-cache.outputs.cache-hit }}
         env: false
 
-    - name: Export LLVM compiler
-      if: matrix.compiler.name == 'Clang'
+    - name: Export LLVM tools
       run: echo "${LLVM_PATH}/bin" >> "$GITHUB_PATH"
 
     - name: Setup Compiler Cache
@@ -75,6 +74,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DCMAKE_C_COMPILER=${{matrix.compiler.cc}} \
           -DCMAKE_CXX_COMPILER=${{matrix.compiler.cxx}} \
+          -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
           -DLLVM_DIR="${LLVM_PATH}/lib/cmake/llvm" \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
