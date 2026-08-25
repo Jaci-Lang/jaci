@@ -3497,9 +3497,14 @@ TEST_CASE("Interrupt")
     lua_CompileOptions copts = defaultOptions();
     copts.optimizationLevel = 1; // disable loop unrolling to get fixed expected hit results
 
+    Luau::CodeGen::CompilationOptions codegenOptions = defaultCodegenOptions();
+#if LUAU_USE_LLVM
+    codegenOptions.flags |= Luau::CodeGen::CodeGen_UseLlvm;
+#endif
+
     static int index;
 
-    StateRef globalState = runConformance("interrupt.luau", nullptr, nullptr, nullptr, &copts);
+    StateRef globalState = runConformance("interrupt.luau", nullptr, nullptr, nullptr, &copts, false, &codegenOptions);
 
     lua_State* L = globalState.get();
 

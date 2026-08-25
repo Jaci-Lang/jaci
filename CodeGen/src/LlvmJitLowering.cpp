@@ -389,11 +389,14 @@ private:
         B.CreateStore(idx, fbSlot);
         B.CreateCondBr(inRange, debugCheck, exitNoop);
 
-        // Debugger breakpoints patch live bytecode after compilation.  Keep
-        // the whole invocation in the VM whenever that patch table exists.
+        // Debugger breakpoints patch live bytecode after compilation, and an
+        // interrupt callback requires the VM's exact instruction boundaries.
+        // Keep the whole invocation in the VM while either is active.
         B.SetInsertPoint(debugCheck);
         Value* debugInstructions = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoDebugInsn)), "debuginsn");
-        B.CreateCondBr(B.CreateIsNull(debugInstructions), dispatch, fallback);
+        Value* entryGlobal = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateGlobal)), "entryglobal");
+        Value* interrupt = B.CreateLoad(ptrTy, toPtr(addrOf(entryGlobal, offGlobalCb + offCbInterrupt)), "interrupt");
+        B.CreateCondBr(B.CreateAnd(B.CreateIsNull(debugInstructions), B.CreateIsNull(interrupt)), dispatch, fallback);
 
         // one resume block per bytecode word
         std::vector<BasicBlock*> blocks(sizecode);
