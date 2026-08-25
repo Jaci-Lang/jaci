@@ -78,7 +78,7 @@ jobs:
       shell: pwsh
       run: |
         $vcpkg = (Get-Command vcpkg.exe).Source
-        & $vcpkg install libxml2:x64-windows
+        & $vcpkg install "libxml2[core]:x64-windows"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         "JACI_VCPKG_ROOT=$(Split-Path $vcpkg)" >> $env:GITHUB_ENV
 
