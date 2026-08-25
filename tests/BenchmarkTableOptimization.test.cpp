@@ -125,7 +125,7 @@ TEST_CASE("Benchmark_PackedArrayVectorizationTuning")
     // Baseline: Boxed element access with tag checks and indirect loads
     auto runBoxedArray = [&packedArray]() {
         double sum = 0.0;
-        for (size_t i = 0; i < N; ++i)
+        for (size_t i = 0; i < packedArray.size(); ++i)
         {
             // Tag check and value unboxing
             int tag = 3;
@@ -144,7 +144,7 @@ TEST_CASE("Benchmark_PackedArrayVectorizationTuning")
         double sum4 = 0.0, sum5 = 0.0, sum6 = 0.0, sum7 = 0.0;
         const double* ptr = packedArray.data();
         size_t i = 0;
-        for (; i + 8 <= N; i += 8)
+        for (; i + 8 <= packedArray.size(); i += 8)
         {
             sum0 += ptr[i + 0] * 1.5;
             sum1 += ptr[i + 1] * 1.5;
@@ -156,7 +156,7 @@ TEST_CASE("Benchmark_PackedArrayVectorizationTuning")
             sum7 += ptr[i + 7] * 1.5;
         }
         double sum = ((sum0 + sum1) + (sum2 + sum3)) + ((sum4 + sum5) + (sum6 + sum7));
-        for (; i < N; ++i)
+        for (; i < packedArray.size(); ++i)
         {
             sum += ptr[i] * 1.5;
         }
