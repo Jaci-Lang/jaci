@@ -132,6 +132,14 @@ jobs:
     - name: Setup MSVC Developer Command Prompt
       uses: ilammy/msvc-dev-cmd@v1
 
+    - name: Install LLVM dependencies
+      shell: pwsh
+      run: |
+        $vcpkg = (Get-Command vcpkg.exe).Source
+        & $vcpkg install libxml2:x64-windows
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        "JACI_VCPKG_ROOT=$(Split-Path $vcpkg)" >> $env:GITHUB_ENV
+
     - name: Setup Compiler Cache
       uses: hendrikmuhs/ccache-action@v1.2
       with:
@@ -144,6 +152,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release `
           -DCMAKE_C_COMPILER=cl `
           -DCMAKE_CXX_COMPILER=cl `
+          -DCMAKE_TOOLCHAIN_FILE="$env:JACI_VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
           -DCMAKE_C_COMPILER_LAUNCHER=sccache `
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
           -DLLVM_DIR="$env:LLVM_PATH/lib/cmake/llvm" `

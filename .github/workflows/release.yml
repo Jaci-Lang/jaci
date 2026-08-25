@@ -73,6 +73,15 @@ jobs:
       if: matrix.os.name == 'windows'
       uses: ilammy/msvc-dev-cmd@v1
 
+    - name: Install LLVM dependencies (Windows)
+      if: matrix.os.name == 'windows'
+      shell: pwsh
+      run: |
+        $vcpkg = (Get-Command vcpkg.exe).Source
+        & $vcpkg install libxml2:x64-windows
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        "JACI_VCPKG_ROOT=$(Split-Path $vcpkg)" >> $env:GITHUB_ENV
+
     - name: Configure CMake (Unix)
       if: matrix.os.name != 'windows'
       run: |
@@ -91,6 +100,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release `
           -DCMAKE_C_COMPILER=cl `
           -DCMAKE_CXX_COMPILER=cl `
+          -DCMAKE_TOOLCHAIN_FILE="$env:JACI_VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
           -DLLVM_DIR="$env:LLVM_PATH/lib/cmake/llvm" `
           -DLUAU_STRIP_BINARIES=ON `
           -DLUAU_ENABLE_LTO=ON `
