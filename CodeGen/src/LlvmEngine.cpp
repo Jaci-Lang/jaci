@@ -153,11 +153,13 @@ bool LlvmEngine::initialize()
 
     pImpl->initTargets();
 
-    std::string tripleStr = sys::getProcessTriple();
+    Triple targetTriple(sys::getProcessTriple());
+    targetTriple.setObjectFormat(Triple::ELF);
+
+    std::string tripleStr = targetTriple.str();
     pImpl->tripleStr = tripleStr;
 
 #if LLVM_VERSION_MAJOR >= 21
-    Triple targetTriple(tripleStr);
     const Target* target = TargetRegistry::lookupTarget(targetTriple, lastErrorMessage);
 #else
     const Target* target = TargetRegistry::lookupTarget(tripleStr, lastErrorMessage);
@@ -312,7 +314,7 @@ std::string LlvmEngine::compileModuleToNativeObject(void* modulePtr, OptLevel le
     // Some LLVM builds report a failure from the legacy pass manager even
     // when a complete object is emitted, so validate the actual bytes rather
     // than trusting the return value. A real emission produces a non-empty
-    // buffer whose leading bytes identify a known object format; JitObjectLoader
+    // buffer whose leading bytes identify an ELF object; JitObjectLoader
     // performs the full structural validation downstream.
     pm.run(module);
 
@@ -323,11 +325,7 @@ std::string LlvmEngine::compileModuleToNativeObject(void* modulePtr, OptLevel le
     }
 
     const unsigned char* bytes = reinterpret_cast<const unsigned char*>(objectBuffer.data());
-    bool validMagic = objectBuffer.size() >= 4 && ((bytes[0] == 0x7f && bytes[1] == 0x45 && bytes[2] == 0x4c && bytes[3] == 0x46) // ELF
-                                            || (bytes[0] == 0xfe && bytes[1] == 0xed && bytes[2] == 0xfa)                       // MachO
-                                            || (bytes[0] == 0xce && bytes[1] == 0xfa && bytes[2] == 0xed)                       // MachO (swapped)
-                                            || ((bytes[0] == 0x01 || bytes[0] == 0x02) && bytes[1] == 0x0f)                     // COFF
-                                            || (bytes[0] == 0x42 && bytes[1] == 0x43 && bytes[2] == 0xc0 && bytes[3] == 0xde)); // bitcode
+    bool validMagic = objectBuffer.size() >= 4 && bytes[0] == 0x7f && bytes[1] == 0x45 && bytes[2] == 0x4c && bytes[3] == 0x46;
 
     if (!validMagic)
     {
