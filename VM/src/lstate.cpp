@@ -230,6 +230,8 @@ lua_State* lua_newstate(lua_Alloc f, void* ud)
     g->weak = NULL;
     g->gcscantable = NULL;
     g->gcscanmetatable = NULL;
+    g->gcscanarraydata = NULL;
+    g->gcscannodedata = NULL;
     g->gcscanarray = 0;
     g->gcscanhash = 0;
     g->gcscanweakkey = 0;

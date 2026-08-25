@@ -202,6 +202,8 @@ typedef struct global_State
 
     struct LuaTable* gcscantable; // table currently traversed in bounded chunks
     struct LuaTable* gcscanmetatable; // metatable observed when the current scan started
+    const void* gcscanarraydata;      // array storage observed when the current scan started
+    const void* gcscannodedata;       // hash storage observed when the current scan started
     int gcscanarray;              // next array slot to traverse
     int gcscanhash;               // next hash slot to traverse
     uint8_t gcscanweakkey;        // current scan treats hash keys as weak

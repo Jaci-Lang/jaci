@@ -576,6 +576,8 @@ static void updatetablescanmode(global_State* g, LuaTable* h)
     if (h->metatable != g->gcscanmetatable || weakkey != bool(g->gcscanweakkey) || weakvalue != bool(g->gcscanweakvalue))
     {
         g->gcscanmetatable = h->metatable;
+        g->gcscanarraydata = h->array;
+        g->gcscannodedata = h->node;
         g->gcscanarray = weakvalue ? 0 : h->sizearray;
         g->gcscanhash = weakkey && weakvalue ? 0 : (h->node == &luaH_dummynode ? 0 : sizenode(h));
         g->gcscanweakkey = weakkey;
@@ -643,6 +645,8 @@ static size_t traversetablechunk(global_State* g, size_t limit)
             gray2black(obj2gco(h));
         g->gcscantable = NULL;
         g->gcscanmetatable = NULL;
+        g->gcscanarraydata = NULL;
+        g->gcscannodedata = NULL;
         g->gcscanweakkey = 0;
         g->gcscanweakvalue = 0;
         g->gcscanlinkedweak = 0;
@@ -673,6 +677,8 @@ static size_t propagatemark(global_State* g, size_t limit)
         {
             g->gcscantable = h;
             g->gcscanmetatable = NULL;
+            g->gcscanarraydata = h->array;
+            g->gcscannodedata = h->node;
             g->gcscanarray = h->sizearray;
             g->gcscanhash = h->node == &luaH_dummynode ? 0 : sizenode(h);
             g->gcscanweakkey = 0;
@@ -1514,6 +1520,8 @@ void luaC_fullgc(lua_State* L)
         g->weak = NULL;
         g->gcscantable = NULL;
         g->gcscanmetatable = NULL;
+        g->gcscanarraydata = NULL;
+        g->gcscannodedata = NULL;
         g->gcscanarray = 0;
         g->gcscanhash = 0;
         g->gcscanweakkey = 0;
@@ -1607,9 +1615,25 @@ void luaC_restarttablescan(lua_State* L, LuaTable* t)
 {
     global_State* g = L->global;
     LUAU_ASSERT(g->gcscantable == t);
+    g->gcscanarraydata = t->array;
+    g->gcscannodedata = t->node;
     g->gcscanarray = g->gcscanweakvalue ? 0 : t->sizearray;
     g->gcscanhash = g->gcscanweakkey && g->gcscanweakvalue ? 0 : (t->node == &luaH_dummynode ? 0 : sizenode(t));
     g->gcscanweakactive = (g->gcscanweakvalue && t->sizearray > 0) || (g->gcscanweakkey && g->gcscanweakvalue && t->node != &luaH_dummynode);
+}
+
+void luaC_barriertablescan(lua_State* L, LuaTable* t, const TValue* v)
+{
+    global_State* g = L->global;
+    LUAU_ASSERT(g->gcscantable == t);
+
+    // Revisit the table only when a resize can move unvisited entries behind the scan cursor.
+    if (g->gcscanarraydata != t->array || g->gcscannodedata != t->node)
+        luaC_restarttablescan(L, t);
+
+    // Keep the cursor for ordinary overwrites and mark the new edge directly.
+    if (iscollectable(v) && iswhite(gcvalue(v)))
+        reallymarkobject(g, gcvalue(v));
 }
 
 void luaC_barrierback(lua_State* L, GCObject* o, GCObject** gclist)

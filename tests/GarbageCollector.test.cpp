@@ -290,11 +290,14 @@ TEST_CASE("GcIncrementalStrongTableScanMutation")
 
     REQUIRE(L->global->gcscantable != nullptr);
     luaC_validate(L);
+    int scanarray = L->global->gcscanarray;
 
     lua_newtable(L);
     lua_pushinteger(L, 111);
     lua_setfield(L, -2, "sentinel");
     lua_rawseti(L, -2, 1);
+    REQUIRE(L->global->gcscantable != nullptr);
+    CHECK(L->global->gcscanarray <= scanarray); // Keep the scan cursor instead of restarting it.
 
     lua_newtable(L);
     lua_pushinteger(L, 222);
