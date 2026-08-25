@@ -85,6 +85,12 @@ jobs:
     - name: Build Targets
       run: cmake --build build --target Luau.UnitTest Luau.Conformance Luau.Repl.CLI Luau.Analyze.CLI Luau.Compile.CLI -j $(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
+    - name: Restore macOS runtime libraries
+      if: runner.os == 'macOS'
+      run: |
+        echo "DYLD_LIBRARY_PATH=" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=" >> "$GITHUB_ENV"
+
     - name: Run Unit Tests
       run: |
         ./build/Luau.UnitTest
