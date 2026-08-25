@@ -132,6 +132,15 @@ jobs:
     - name: Setup MSVC Developer Command Prompt
       uses: ilammy/msvc-dev-cmd@v1
 
+    - name: Fix LLVM DIA SDK path
+      shell: pwsh
+      run: |
+        $diaGuid = "$env:VSINSTALLDIR/DIA SDK/lib/amd64/diaguids.lib" -replace '\\', '/'
+        if (-not (Test-Path $diaGuid)) { throw "diaguids.lib is missing from the active Visual Studio installation" }
+        $exports = "$env:LLVM_PATH/lib/cmake/llvm/LLVMExports.cmake"
+        $content = Get-Content -Raw $exports
+        $content -replace '[A-Za-z]:/[^";]*/DIA SDK/lib/amd64/diaguids\.lib', $diaGuid | Set-Content -NoNewline $exports
+
     - name: Install LLVM dependencies
       shell: pwsh
       run: |
