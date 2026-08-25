@@ -1946,7 +1946,7 @@ static void populateRTTI(lua_State* L, Luau::TypeId type)
     {
         lua_pushstring(L, "any");
     }
-    else if (auto i = Luau::get<Luau::IntersectionType>(type))
+    else if (Luau::get<Luau::IntersectionType>(type))
     {
         lua_pushstring(L, "function");
     }
