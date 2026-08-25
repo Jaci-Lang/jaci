@@ -42,6 +42,7 @@ TEST_CASE("MirRepresentationTypesAndGuards")
 
     Mir::Function& fn = mbuilder.getFunction();
 
+    CHECK_EQ(fn.instructions[vFlt.index].cmd, Mir::Cmd::ConstFloat64);
     CHECK_EQ(fn.instructions[gTag.index].cmd, Mir::Cmd::GuardTag);
     CHECK_EQ(fn.instructions[gBounds.index].cmd, Mir::Cmd::GuardBounds);
 }
