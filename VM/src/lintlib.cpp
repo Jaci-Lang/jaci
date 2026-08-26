@@ -16,6 +16,21 @@ LUAU_FASTFLAGVARIABLE(LuauIntegerLibrary)
 
 #define mask64(w) (0xFFFFFFFFFFFFFFFFULL >> (64 - (w)))
 
+static int64_t checkbitoperand(lua_State* L, int index)
+{
+    if (lua_isinteger64(L, index))
+        return lua_tointeger64(L, index, nullptr);
+
+    if (lua_type(L, index) == LUA_TNUMBER)
+    {
+        double value = lua_tonumber(L, index);
+        if (std::isfinite(value) && std::trunc(value) == value && value >= -9223372036854775808.0 && value < 9223372036854775808.0)
+            return int64_t(value);
+    }
+
+    luaL_argerror(L, index, "integer or integral number expected");
+}
+
 static int int64_create(lua_State* L)
 {
     double x = luaL_checknumber(L, 1);
@@ -236,7 +251,7 @@ static int int64_band(lua_State* L)
 
     for (int i = 1; i <= n; i++)
     {
-        uint64_t x = (uint64_t)luaL_checkinteger64(L, i);
+        uint64_t x = (uint64_t)checkbitoperand(L, i);
         tres &= x;
     }
 
@@ -252,7 +267,7 @@ static int int64_bor(lua_State* L)
 
     for (int i = 1; i <= n; i++)
     {
-        uint64_t x = (uint64_t)luaL_checkinteger64(L, i);
+        uint64_t x = (uint64_t)checkbitoperand(L, i);
         tres |= x;
     }
 
@@ -263,7 +278,7 @@ static int int64_bor(lua_State* L)
 
 static int int64_bnot(lua_State* L)
 {
-    uint64_t a = luaL_checkinteger64(L, 1);
+    uint64_t a = checkbitoperand(L, 1);
 
     lua_pushinteger64(L, ~a);
 
@@ -277,7 +292,7 @@ static int int64_bxor(lua_State* L)
 
     for (int i = 1; i <= n; i++)
     {
-        uint64_t x = (uint64_t)luaL_checkinteger64(L, i);
+        uint64_t x = (uint64_t)checkbitoperand(L, i);
         tres ^= x;
     }
 
@@ -368,8 +383,8 @@ static int int64_uge(lua_State* L)
 
 static int int64_lshift(lua_State* L)
 {
-    uint64_t n = luaL_checkinteger64(L, 1);
-    int64_t i = luaL_checkinteger64(L, 2);
+    uint64_t n = checkbitoperand(L, 1);
+    int64_t i = checkbitoperand(L, 2);
 
     if ((i >= -63) && (i <= 63))
         lua_pushinteger64(L, (i < 0) ? (n >> (-i)) : (n << i));
@@ -381,8 +396,8 @@ static int int64_lshift(lua_State* L)
 
 static int int64_rshift(lua_State* L)
 {
-    uint64_t n = luaL_checkinteger64(L, 1);
-    int64_t i = luaL_checkinteger64(L, 2);
+    uint64_t n = checkbitoperand(L, 1);
+    int64_t i = checkbitoperand(L, 2);
 
     if ((i >= -63) && (i <= 63))
         lua_pushinteger64(L, (i < 0) ? (n << (-i)) : (n >> i));

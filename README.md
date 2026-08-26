@@ -33,6 +33,7 @@ Upstream Luau restricts access to system resources. Jaci/Luau removes these rest
 - **`json`**: Native JSON encode and decode with cycle detection and custom formatting options.
 - **`hash`**: High-performance built-in CRC32, FNV-1a, MD5, SHA-1, and SHA-256 digests on strings and buffers.
 - **`integer`**: 64-bit integer arithmetic and bitwise utilities.
+- **Native bitwise syntax**: Use `&`, `|`, binary `~` (XOR), unary `~` (NOT), `<<`, and `>>` with exact 64-bit integer results.
 
 ### 4. Selective Upstream Synchronization
 Jaci/Luau tracks upstream `luau-lang/luau` to adopt improvements in the compiler, type checker, and VM optimizations. A weekly automated CI pipeline imports upstream changes via Pull Requests. These are selectively curated to ensure they meet general-purpose criteria without reintroducing sandbox constraints.

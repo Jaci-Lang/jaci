@@ -487,6 +487,18 @@ AstStat* Parser::parseStat()
     // we need to disambiguate a few cases, primarily assignment (lvalue = ...) vs statements-that-are calls
     AstExpr* expr = parsePrimaryExpr(/* asStatement= */ true);
 
+    bool usesAs = lexer.current().type == Lexeme::Name && strcmp(lexer.current().name, "as") == 0;
+    if (lexer.current().type == Lexeme::DoubleColon || usesAs)
+    {
+        Position opPosition = lexer.current().location.begin;
+        nextLexeme();
+        AstType* annotation = parseType();
+        AstExprTypeAssertion* assertion = allocator.alloc<AstExprTypeAssertion>(Location(start, annotation->location), expr, annotation);
+        if (options.storeCstData)
+            cstNodeMap[assertion] = allocator.alloc<CstExprTypeAssertion>(opPosition, usesAs);
+        return allocator.alloc<AstStatExpr>(assertion->location, assertion);
+    }
+
     if (expr->is<AstExprCall>())
         return allocator.alloc<AstStatExpr>(expr->location, expr);
 
@@ -1840,11 +1852,13 @@ AstStat* Parser::parseDeclaration(const Location& start, const AstArray<AstAttr*
     // global variable declaration whose name is `class`, not as a malformed class declaration. This allows
     // us to support a global table like string/math/bit32 called `class`. CLI-203833 tracks the work to actually
     // remove support for `declare class X [extends Y]` syntax.
-    else if (FFlag::LuauDisallowExternClassInTypeDefinitions
-                 ? AstName(lexer.current().name) == "extern"
-                 : (AstName(lexer.current().name) == "class" &&
-                    (FFlag::LuauAllowGlobalDeclarationToBeCalledClass ? lexer.lookahead().type != ':' : true)) ||
-                       AstName(lexer.current().name) == "extern")
+    else if (
+        FFlag::LuauDisallowExternClassInTypeDefinitions
+            ? AstName(lexer.current().name) == "extern"
+            : (AstName(lexer.current().name) == "class" &&
+               (FFlag::LuauAllowGlobalDeclarationToBeCalledClass ? lexer.lookahead().type != ':' : true)) ||
+                  AstName(lexer.current().name) == "extern"
+    )
     {
         bool foundExtern = false;
         if (AstName(lexer.current().name) == "extern")
@@ -2174,8 +2188,10 @@ AstStat* Parser::parseExportValue(
 
         return exportLocalStat(parseLocal(start, constKeywordLocation.begin, {nullptr, 0}, true), constKeywordLocation);
     }
-    else if (FFlag::DebugLuauUserDefinedClasses && lexer.current().type == Lexeme::Name &&
-             (AstName(lexer.current().name) == "class" || AstName(lexer.current().name) == "open"))
+    else if (
+        FFlag::DebugLuauUserDefinedClasses && lexer.current().type == Lexeme::Name &&
+        (AstName(lexer.current().name) == "class" || AstName(lexer.current().name) == "open")
+    )
     {
         bool open = AstName(lexer.current().name) == "open";
 
@@ -2845,7 +2861,10 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
                 }
             }
         }
-        else if (props.empty() && !indexer && !((lexer.current().type == Lexeme::Name || lexer.current().type == Lexeme::ReservedAwait) && lexer.lookahead().type == ':'))
+        else if (
+            props.empty() && !indexer &&
+            !((lexer.current().type == Lexeme::Name || lexer.current().type == Lexeme::ReservedAwait) && lexer.lookahead().type == ':')
+        )
         {
             AstType* type = parseType();
 
@@ -3470,6 +3489,8 @@ std::optional<AstExprUnary::Op> Parser::parseUnaryOp(const Lexeme& l)
         return AstExprUnary::Op::Minus;
     else if (l.type == '#')
         return AstExprUnary::Op::Len;
+    else if (l.type == '~')
+        return AstExprUnary::Op::BitNot;
     else if (l.type == Lexeme::ReservedAwait)
         return AstExprUnary::Op::Await;
     else
@@ -3498,6 +3519,10 @@ std::optional<AstExprBinary::Op> Parser::parseBinaryOp(const Lexeme& l)
         return AstExprBinary::CompareNe;
     else if (l.type == Lexeme::Equal)
         return AstExprBinary::CompareEq;
+    else if (l.type == '<' && l.location.end == lexer.lookahead().location.begin && lexer.lookahead().type == '<')
+        return AstExprBinary::ShiftLeft;
+    else if (l.type == '>' && l.location.end == lexer.lookahead().location.begin && lexer.lookahead().type == '>')
+        return AstExprBinary::ShiftRight;
     else if (l.type == '<')
         return AstExprBinary::CompareLt;
     else if (l.type == Lexeme::LessEqual)
@@ -3506,6 +3531,12 @@ std::optional<AstExprBinary::Op> Parser::parseBinaryOp(const Lexeme& l)
         return AstExprBinary::CompareGt;
     else if (l.type == Lexeme::GreaterEqual)
         return AstExprBinary::CompareGe;
+    else if (l.type == '&' && !(lexer.lookahead().type == '&' && l.location.end == lexer.lookahead().location.begin))
+        return AstExprBinary::BitAnd;
+    else if (l.type == '|' && !(lexer.lookahead().type == '|' && l.location.end == lexer.lookahead().location.begin))
+        return AstExprBinary::BitOr;
+    else if (l.type == '~')
+        return AstExprBinary::BitXor;
     else if (l.type == Lexeme::ReservedAnd)
         return AstExprBinary::And;
     else if (l.type == Lexeme::ReservedOr)
@@ -3580,8 +3611,9 @@ std::optional<AstExprBinary::Op> Parser::checkBinaryConfusables(const BinaryOpPr
         report(Location(start, next.location), "Unexpected '||'; did you mean 'or'?");
         return AstExprBinary::Or;
     }
-    else if (curr.type == '!' && next.type == '=' && curr.location.end == next.location.begin &&
-             binaryPriority[AstExprBinary::CompareNe].left > limit)
+    else if (
+        curr.type == '!' && next.type == '=' && curr.location.end == next.location.begin && binaryPriority[AstExprBinary::CompareNe].left > limit
+    )
     {
         nextLexeme();
         report(Location(start, next.location), "Unexpected '!='; did you mean '~='?");
@@ -3596,22 +3628,27 @@ std::optional<AstExprBinary::Op> Parser::checkBinaryConfusables(const BinaryOpPr
 AstExpr* Parser::parseExpr(unsigned int limit)
 {
     static const BinaryOpPriority binaryPriority[] = {
-        {6, 6},  // '+'
-        {6, 6},  // '-'
-        {7, 7},  // '*'
-        {7, 7},  // '/'
-        {7, 7},  // '//'
-        {7, 7},  // `%'
-        {10, 9}, // power (right associative)
-        {5, 4},  // concat (right associative)
-        {3, 3},  // inequality
-        {3, 3},  // equality
-        {3, 3},  // '<'
-        {3, 3},  // '<='
-        {3, 3},  // '>'
-        {3, 3},  // '>='
-        {2, 2},  // logical and
-        {1, 1}   // logical or
+        {9, 9},   // '+'
+        {9, 9},   // '-'
+        {10, 10}, // '*'
+        {10, 10}, // '/'
+        {10, 10}, // '//'
+        {10, 10}, // `%'
+        {13, 12}, // power (right associative)
+        {8, 7},   // concat (right associative)
+        {3, 3},   // inequality
+        {3, 3},   // equality
+        {3, 3},   // '<'
+        {3, 3},   // '<='
+        {3, 3},   // '>'
+        {3, 3},   // '>='
+        {6, 6},   // bitwise and
+        {4, 4},   // bitwise or
+        {5, 5},   // bitwise xor
+        {7, 7},   // shift left
+        {7, 7},   // shift right
+        {2, 2},   // logical and
+        {1, 1}    // logical or
     };
 
     static_assert(sizeof(binaryPriority) / sizeof(binaryPriority[0]) == size_t(AstExprBinary::Op__Count), "binaryPriority needs an entry per op");
@@ -3621,7 +3658,7 @@ AstExpr* Parser::parseExpr(unsigned int limit)
     // this handles recursive calls to parseSubExpr/parseExpr
     incrementRecursionCounter("expression");
 
-    const unsigned int unaryPriority = 8;
+    const unsigned int unaryPriority = 11;
 
     Location start = lexer.current().location;
 
@@ -3658,6 +3695,9 @@ AstExpr* Parser::parseExpr(unsigned int limit)
     {
         Position opPosition = lexer.current().location.begin;
         nextLexeme();
+
+        if (*op == AstExprBinary::ShiftLeft || *op == AstExprBinary::ShiftRight)
+            nextLexeme();
 
         // read sub-expression with higher priority
         AstExpr* next = parseExpr(binaryPriority[*op].right);
@@ -3746,6 +3786,53 @@ AstExpr* Parser::parsePrefixExpr()
     }
 }
 
+static bool isExplicitTypeInstantiationStart(Lexer& lexer)
+{
+    if (lexer.current().type != '<')
+        return false;
+
+    Lexeme second = lexer.lookahead();
+    if (second.type != '<' || lexer.current().location.end != second.location.begin)
+        return false;
+
+    Lexer probe = lexer;
+    probe.next(); // second '<'
+    probe.next(); // first type token
+    unsigned int nestedAngles = 0;
+
+    while (probe.current().type != Lexeme::Eof)
+    {
+        if (probe.current().type == '<')
+        {
+            nestedAngles++;
+        }
+        else if (probe.current().type == '>')
+        {
+            Lexeme next = probe.lookahead();
+            if (nestedAngles == 0 && (next.type == '(' || next.type == '{' || next.type == Lexeme::RawString || next.type == Lexeme::QuotedString))
+                return true; // incomplete explicit instantiation with one missing '>'
+
+            if (nestedAngles == 0 && next.type == '>' && probe.current().location.end == next.location.begin)
+            {
+                probe.next();
+                Location closeLocation = probe.current().location;
+                Lexeme after = probe.next();
+                return after.location.begin.line > closeLocation.end.line || after.type == '(' || after.type == '{' ||
+                       after.type == Lexeme::RawString || after.type == Lexeme::QuotedString ||
+                       after.type == Lexeme::Eof || after.type == ')' || after.type == ']' || after.type == '}' || after.type == ',' ||
+                       after.type == ';';
+            }
+
+            if (nestedAngles > 0)
+                nestedAngles--;
+        }
+
+        probe.next();
+    }
+
+    return false;
+}
+
 // primaryexp -> prefixexp { `.' NAME | `[' exp `]' | `:' NAME funcargs | funcargs }
 AstExpr* Parser::parsePrimaryExpr(bool asStatement)
 {
@@ -3789,7 +3876,7 @@ AstExpr* Parser::parsePrimaryExpr(bool asStatement)
         {
             expr = parseFunctionArgs(expr, false);
         }
-        else if (lexer.current().type == '<' && lexer.lookahead().type == '<')
+        else if (expr->location.end == lexer.current().location.begin && isExplicitTypeInstantiationStart(lexer))
         {
             expr = parseExplicitTypeInstantiationExpr(start, *expr);
         }
@@ -3837,7 +3924,7 @@ AstExpr* Parser::parseMethodCall(Position start, AstExpr* expr)
     AstArray<AstTypeOrPack> typeArguments;
     CstTypeInstantiation* cstTypeArguments = options.storeCstData ? allocator.alloc<CstTypeInstantiation>() : nullptr;
 
-    if (lexer.current().type == '<' && lexer.lookahead().type == '<')
+    if (func->location.end == lexer.current().location.begin && isExplicitTypeInstantiationStart(lexer))
     {
         typeArguments = parseTypeInstantiationExpr(cstTypeArguments);
     }
@@ -3862,20 +3949,21 @@ AstExpr* Parser::parseMethodCall(Position start, AstExpr* expr)
     return expr;
 }
 
-// asexp -> simpleexp [`::' Type]
+// asexp -> simpleexp [(`::' | `as') Type]
 AstExpr* Parser::parseAssertionExpr()
 {
     Location start = lexer.current().location;
     AstExpr* expr = parseSimpleExpr();
 
-    if (lexer.current().type == Lexeme::DoubleColon)
+    bool usesAs = lexer.current().type == Lexeme::Name && strcmp(lexer.current().name, "as") == 0;
+    if (lexer.current().type == Lexeme::DoubleColon || usesAs)
     {
         Position opPosition = lexer.current().location.begin;
         nextLexeme();
         AstType* annotation = parseType();
         AstExprTypeAssertion* node = allocator.alloc<AstExprTypeAssertion>(Location(start, annotation->location), expr, annotation);
         if (options.storeCstData)
-            cstNodeMap[node] = allocator.alloc<CstExprTypeAssertion>(opPosition);
+            cstNodeMap[node] = allocator.alloc<CstExprTypeAssertion>(opPosition, usesAs);
         return node;
     }
     else
@@ -4065,8 +4153,10 @@ AstExpr* Parser::parseSimpleExpr()
     {
         return parseNumber();
     }
-    else if (lexer.current().type == Lexeme::RawString || lexer.current().type == Lexeme::QuotedString ||
-             lexer.current().type == Lexeme::InterpStringSimple)
+    else if (
+        lexer.current().type == Lexeme::RawString || lexer.current().type == Lexeme::QuotedString ||
+        lexer.current().type == Lexeme::InterpStringSimple
+    )
     {
         return parseString();
     }
@@ -4450,7 +4540,7 @@ Parser::Name Parser::parseName(const char* context)
 
 Parser::Name Parser::parseIndexName(const char* context, const Position& previous)
 {
-    if (lexer.current().type == Lexeme::Name || lexer.current().type == Lexeme::ReservedAwait)
+    if (lexer.current().type == Lexeme::Name || lexer.current().type == Lexeme::ReservedAwait || lexer.current().type == Lexeme::ReservedThen)
     {
         Name result(AstName(lexer.current().name), lexer.current().location);
         nextLexeme();

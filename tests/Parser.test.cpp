@@ -697,6 +697,56 @@ TEST_CASE_FIXTURE(Fixture, "type_assertion_expression")
     )");
 }
 
+TEST_CASE_FIXTURE(Fixture, "as_type_assertion_expression")
+{
+    AstStatBlock* block = parse("local value = source as any");
+    REQUIRE(block->body.size == 1);
+    AstStatLocal* local = block->body.data[0]->as<AstStatLocal>();
+    REQUIRE(local);
+    CHECK(local->values.data[0]->is<AstExprTypeAssertion>());
+}
+
+TEST_CASE_FIXTURE(Fixture, "type_assertions_are_allowed_as_statements")
+{
+    AstStatBlock* block = parse("source as any\nsource :: any");
+    REQUIRE(block->body.size == 2);
+    CHECK(block->body.data[0]->as<AstStatExpr>()->expr->is<AstExprTypeAssertion>());
+    CHECK(block->body.data[1]->as<AstStatExpr>()->expr->is<AstExprTypeAssertion>());
+}
+
+TEST_CASE_FIXTURE(Fixture, "reserved_then_is_allowed_as_a_member_name")
+{
+    (void)parse("object:then(); return object.then");
+}
+
+TEST_CASE_FIXTURE(Fixture, "bitwise_operator_precedence")
+{
+    AstStatBlock* block = parse("return 1 | 2 ~ 3 & 4 << 5 + 1");
+    AstStatReturn* result = block->body.data[0]->as<AstStatReturn>();
+    REQUIRE(result);
+
+    AstExprBinary* bitOr = result->list.data[0]->as<AstExprBinary>();
+    REQUIRE(bitOr);
+    CHECK(bitOr->op == AstExprBinary::BitOr);
+    AstExprBinary* bitXor = bitOr->right->as<AstExprBinary>();
+    REQUIRE(bitXor);
+    CHECK(bitXor->op == AstExprBinary::BitXor);
+    AstExprBinary* bitAnd = bitXor->right->as<AstExprBinary>();
+    REQUIRE(bitAnd);
+    CHECK(bitAnd->op == AstExprBinary::BitAnd);
+    AstExprBinary* shift = bitAnd->right->as<AstExprBinary>();
+    REQUIRE(shift);
+    CHECK(shift->op == AstExprBinary::ShiftLeft);
+    CHECK(shift->right->as<AstExprBinary>()->op == AstExprBinary::Add);
+
+    block = parse("return left<<right");
+    result = block->body.data[0]->as<AstStatReturn>();
+    REQUIRE(result);
+    CHECK(result->list.data[0]->as<AstExprBinary>()->op == AstExprBinary::ShiftLeft);
+
+    (void)parse("return functionCall<<number>>(5)");
+}
+
 // The bug that motivated this test was an infinite loop.
 // TODO: Set a timer and crash if the timeout is exceeded.
 TEST_CASE_FIXTURE(Fixture, "last_line_does_not_have_to_be_blank")

@@ -18,6 +18,24 @@ namespace Compile
 
 constexpr size_t kConstantFoldStringLimit = 4096;
 
+static bool constantToInteger(int64_t& result, const Constant& value)
+{
+    if (value.type == Constant::Type_Integer)
+    {
+        result = value.valueInteger64;
+        return true;
+    }
+
+    if (value.type == Constant::Type_Number && std::isfinite(value.valueNumber) && std::trunc(value.valueNumber) == value.valueNumber &&
+        value.valueNumber >= -9223372036854775808.0 && value.valueNumber < 9223372036854775808.0)
+    {
+        result = int64_t(value.valueNumber);
+        return true;
+    }
+
+    return false;
+}
+
 static bool constantsEqual(const Constant& la, const Constant& ra)
 {
     LUAU_ASSERT(la.type != Constant::Type_Unknown && ra.type != Constant::Type_Unknown);
@@ -102,6 +120,17 @@ static void foldUnary(Constant& result, AstExprUnary::Op op, const Constant& arg
         }
         break;
 
+    case AstExprUnary::Op::BitNot:
+    {
+        int64_t value = 0;
+        if (FFlag::LuauIntegerType2 && constantToInteger(value, arg))
+        {
+            result.type = Constant::Type_Integer;
+            result.valueInteger64 = ~value;
+        }
+        break;
+    }
+
     case AstExprUnary::Op::Await:
         break;
 
@@ -114,6 +143,36 @@ static void foldBinary(Constant& result, AstExprBinary::Op op, const Constant& l
 {
     switch (op)
     {
+    case AstExprBinary::BitAnd:
+    case AstExprBinary::BitOr:
+    case AstExprBinary::BitXor:
+    case AstExprBinary::ShiftLeft:
+    case AstExprBinary::ShiftRight:
+    {
+        int64_t left = 0;
+        int64_t right = 0;
+        if (!FFlag::LuauIntegerType2 || !constantToInteger(left, la) || !constantToInteger(right, ra))
+            break;
+
+        uint64_t value = 0;
+        if (op == AstExprBinary::BitAnd)
+            value = uint64_t(left) & uint64_t(right);
+        else if (op == AstExprBinary::BitOr)
+            value = uint64_t(left) | uint64_t(right);
+        else if (op == AstExprBinary::BitXor)
+            value = uint64_t(left) ^ uint64_t(right);
+        else if (right <= -64 || right >= 64)
+            value = 0;
+        else if (op == AstExprBinary::ShiftLeft)
+            value = right < 0 ? uint64_t(left) >> unsigned(-right) : uint64_t(left) << unsigned(right);
+        else
+            value = right < 0 ? uint64_t(left) << unsigned(-right) : uint64_t(left) >> unsigned(right);
+
+        result.type = Constant::Type_Integer;
+        result.valueInteger64 = int64_t(value);
+        break;
+    }
+
     case AstExprBinary::Add:
         if (la.type == Constant::Type_Number && ra.type == Constant::Type_Number)
         {
@@ -1185,7 +1244,7 @@ struct ConstantVisitor : AstVisitor
             // (aka call or varargs or await), we either don't know anything about these vars, or we know they're nil
             AstExpr* last = node->values.size ? node->values.data[node->values.size - 1] : nullptr;
             bool multRet = last && (last->is<AstExprCall>() || last->is<AstExprVarargs>() ||
-                (last->is<AstExprUnary>() && last->as<AstExprUnary>()->op == AstExprUnary::Op::Await));
+                                    (last->is<AstExprUnary>() && last->as<AstExprUnary>()->op == AstExprUnary::Op::Await));
 
             if (!multRet)
             {

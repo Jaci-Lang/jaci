@@ -1348,6 +1348,11 @@ TEST_CASE("Strings")
     runConformance("strings.luau");
 }
 
+TEST_CASE("PatternLiteralHyphen")
+{
+    runConformance("pattern_hyphen.luau");
+}
+
 TEST_CASE("StringInterp")
 {
     runConformance("stringinterp.luau");

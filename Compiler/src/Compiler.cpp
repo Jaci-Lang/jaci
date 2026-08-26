@@ -2226,6 +2226,18 @@ struct Compiler
             return;
         }
 
+        if (expr->op == AstExprUnary::Op::BitNot)
+        {
+            AstExprGlobal integerGlobal(expr->location, names.getOrAdd("integer"));
+            AstName methodName = names.getOrAdd("bnot");
+            AstExprIndexName function(expr->location, &integerGlobal, methodName, expr->location, expr->location.begin, '.');
+            AstExpr* arguments[] = {expr->expr};
+            AstExprCall call(expr->location, &function, AstArray<AstExpr*>{arguments, 1}, false, {}, expr->location);
+            uint8_t regs = allocReg(expr, 2u);
+            compileExprFastcallN(&call, target, 1, false, false, regs, LBF_INTEGER_BNOT);
+            return;
+        }
+
         // Special case for integer constants, like -1000000000i
         AstExprConstantInteger* cint = expr->expr->as<AstExprConstantInteger>();
         if (FFlag::LuauIntegerType2 && (expr->op == AstExprUnary::Op::Minus) && (cint != nullptr))
@@ -2263,6 +2275,32 @@ struct Compiler
 
         switch (expr->op)
         {
+        case AstExprBinary::BitAnd:
+        case AstExprBinary::BitOr:
+        case AstExprBinary::BitXor:
+        case AstExprBinary::ShiftLeft:
+        case AstExprBinary::ShiftRight:
+        {
+            const char* method = expr->op == AstExprBinary::BitAnd      ? "band"
+                                 : expr->op == AstExprBinary::BitOr     ? "bor"
+                                 : expr->op == AstExprBinary::BitXor    ? "bxor"
+                                 : expr->op == AstExprBinary::ShiftLeft ? "lshift"
+                                                                        : "rshift";
+            int builtin = expr->op == AstExprBinary::BitAnd      ? LBF_INTEGER_BAND
+                          : expr->op == AstExprBinary::BitOr     ? LBF_INTEGER_BOR
+                          : expr->op == AstExprBinary::BitXor    ? LBF_INTEGER_BXOR
+                          : expr->op == AstExprBinary::ShiftLeft ? LBF_INTEGER_LSHIFT
+                                                                 : LBF_INTEGER_RSHIFT;
+            AstExprGlobal integerGlobal(expr->location, names.getOrAdd("integer"));
+            AstName methodName = names.getOrAdd(method);
+            AstExprIndexName function(expr->location, &integerGlobal, methodName, expr->location, expr->location.begin, '.');
+            AstExpr* arguments[] = {expr->left, expr->right};
+            AstExprCall call(expr->location, &function, AstArray<AstExpr*>{arguments, 2}, false, {}, expr->location);
+            uint8_t regs = allocReg(expr, 3u);
+            compileExprFastcallN(&call, target, 1, false, false, regs, builtin);
+            break;
+        }
+
         case AstExprBinary::Add:
         case AstExprBinary::Sub:
         case AstExprBinary::Mul:

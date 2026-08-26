@@ -3275,6 +3275,8 @@ Inference ConstraintGenerator::check(const ScopePtr& scope, AstExprUnary* unary)
         TypeId resultType = createTypeFunctionInstance(builtinTypes->typeFunctions->unmFunc, {operandType}, {}, scope, unary->location);
         return Inference{resultType, std::move(refinement)};
     }
+    case AstExprUnary::Op::BitNot:
+        return Inference{builtinTypes->integerType, std::move(refinement)};
     case AstExprUnary::Op::Await:
     {
         return Inference{builtinTypes->anyType, std::move(refinement)};
@@ -3302,6 +3304,12 @@ Inference ConstraintGenerator::checkAstExprBinary(
 
     switch (op)
     {
+    case AstExprBinary::Op::BitAnd:
+    case AstExprBinary::Op::BitOr:
+    case AstExprBinary::Op::BitXor:
+    case AstExprBinary::Op::ShiftLeft:
+    case AstExprBinary::Op::ShiftRight:
+        return Inference{builtinTypes->integerType, std::move(refinement)};
     case AstExprBinary::Op::Add:
     {
         TypeId resultType = createTypeFunctionInstance(builtinTypes->typeFunctions->addFunc, {leftType, rightType}, {}, scope, location);

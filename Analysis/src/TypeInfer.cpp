@@ -2571,6 +2571,12 @@ WithPredicate<TypeId> TypeChecker::checkExpr(const ScopePtr& scope, const AstExp
 
         return WithPredicate{numberType};
     }
+    case AstExprUnary::Op::BitNot:
+    {
+        TypeId numericInteger = addType(UnionType{{numberType, integerType}});
+        reportErrors(tryUnify(operandType, numericInteger, scope, expr.location));
+        return WithPredicate{integerType};
+    }
     case AstExprUnary::Op::Await:
         return WithPredicate{anyType};
     default:
@@ -3143,6 +3149,17 @@ TypeId TypeChecker::checkBinaryOperation(
 
     switch (expr.op)
     {
+    case AstExprBinary::BitAnd:
+    case AstExprBinary::BitOr:
+    case AstExprBinary::BitXor:
+    case AstExprBinary::ShiftLeft:
+    case AstExprBinary::ShiftRight:
+    {
+        TypeId numericInteger = addType(UnionType{{numberType, integerType}});
+        reportErrors(tryUnify(lhsType, numericInteger, scope, expr.left->location));
+        reportErrors(tryUnify(rhsType, numericInteger, scope, expr.right->location));
+        return integerType;
+    }
     case AstExprBinary::Concat:
         reportErrors(tryUnify(lhsType, addType(UnionType{{stringType, numberType}}), scope, expr.left->location));
         reportErrors(tryUnify(rhsType, addType(UnionType{{stringType, numberType}}), scope, expr.right->location));

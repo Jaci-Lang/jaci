@@ -90,4 +90,26 @@ TEST_CASE("UniversalRequireEndToEndExecution")
     system(("rm -rf " + testDir).c_str());
 }
 
+TEST_CASE("UniversalRequirePropagatesCompileErrors")
+{
+    std::string testDir = "/tmp/jaci_e2e_require_compile_error";
+    system(("mkdir -p " + testDir).c_str());
+
+    std::ofstream badModule(testDir + "/bad.luau");
+    badModule << "local = broken\n";
+    badModule.close();
+
+    std::ofstream mainFile(testDir + "/main.luau");
+    mainFile << "local ok, err = pcall(require, './bad')\n"
+                "assert(not ok)\n"
+                "assert(type(err) == 'string' and string.find(err, 'compiling module', 1, true))\n";
+    mainFile.close();
+
+    std::string runner = "./build/luau " + testDir + "/main.luau";
+    int ret = system(runner.c_str());
+    CHECK(ret == 0);
+
+    system(("rm -rf " + testDir).c_str());
+}
+
 TEST_SUITE_END();

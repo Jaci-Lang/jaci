@@ -2,6 +2,21 @@
 -- This file is based on Lua 5.x tests -- https://github.com/lua/lua/tree/master/testes
 print("testing bitwise operations")
 
+-- Jaci 64-bit operator syntax accepts integer values and integral doubles.
+assert(tostring(1 << 40) == "1099511627776")
+assert(tostring((1 << 40) >> 8) == "4294967296")
+assert(tostring(0xff00 | 0x00ff) == "65535")
+assert(tostring(0xff00 & 0x0ff0) == "3840")
+assert(tostring(0xaa ~ 0xff) == "85")
+assert(tostring(~0) == "-1")
+assert(tostring(8 >> -2) == "32")
+
+local function operatorInputs(a, b)
+    return (a << b) | 3
+end
+
+assert(tostring(operatorInputs(1, 40)) == "1099511627779")
+
 local function noinline(x, ...) local s, r = pcall(function(y) return y end, x) return r end
 
 assert(bit32.band() == bit32.bnot(0))

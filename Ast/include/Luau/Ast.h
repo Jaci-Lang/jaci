@@ -595,6 +595,7 @@ public:
         Not,
         Minus,
         Len,
+        BitNot,
         Await
     };
 
@@ -629,6 +630,11 @@ public:
         CompareLe,
         CompareGt,
         CompareGe,
+        BitAnd,
+        BitOr,
+        BitXor,
+        ShiftLeft,
+        ShiftRight,
         And,
         Or,
 

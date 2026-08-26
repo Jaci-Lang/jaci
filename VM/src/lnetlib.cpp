@@ -3,6 +3,7 @@
 
 #include "lualib.h"
 #include "lcommon.h"
+#include "ltasklib.h"
 
 #include <string>
 #include <vector>
@@ -109,9 +110,15 @@ struct Listener {
 struct WebSocket {
     socket_t sock;
     std::string url;
+    std::vector<uint8_t> receive_buffer;
     bool is_open;
     bool is_server;
 };
+
+static void websocket_dtor(void* userdata)
+{
+    static_cast<WebSocket*>(userdata)->~WebSocket();
+}
 
 static Socket* check_socket(lua_State* L, int idx) {
     return (Socket*)luaL_checkudata(L, idx, SOCKET_MT);
@@ -655,6 +662,170 @@ static int ws_receive(lua_State* L)
     }
 }
 
+enum class WebSocketReadStatus
+{
+    Data,
+    WouldBlock,
+    Closed,
+};
+
+static WebSocketReadStatus ws_read_available(WebSocket* ws)
+{
+    uint8_t chunk[16384];
+    bool readAny = false;
+
+#if defined(_WIN32)
+    u_long nonblocking = 1;
+    if (ioctlsocket(ws->sock, FIONBIO, &nonblocking) != 0)
+        return WebSocketReadStatus::Closed;
+#endif
+
+    while (true)
+    {
+#if defined(_WIN32)
+        int received = recv(ws->sock, reinterpret_cast<char*>(chunk), int(sizeof(chunk)), 0);
+#else
+        int received = recv(ws->sock, chunk, sizeof(chunk), MSG_DONTWAIT);
+#endif
+        if (received > 0)
+        {
+            ws->receive_buffer.insert(ws->receive_buffer.end(), chunk, chunk + received);
+            readAny = true;
+            continue;
+        }
+
+        if (received == 0)
+        {
+#if defined(_WIN32)
+            u_long blocking = 0;
+            ioctlsocket(ws->sock, FIONBIO, &blocking);
+#endif
+            return readAny ? WebSocketReadStatus::Data : WebSocketReadStatus::Closed;
+        }
+
+#if defined(_WIN32)
+        int error = WSAGetLastError();
+        u_long blocking = 0;
+        ioctlsocket(ws->sock, FIONBIO, &blocking);
+        if (error == WSAEWOULDBLOCK)
+            return readAny ? WebSocketReadStatus::Data : WebSocketReadStatus::WouldBlock;
+#else
+        if (errno == EINTR)
+            continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return readAny ? WebSocketReadStatus::Data : WebSocketReadStatus::WouldBlock;
+#endif
+        return WebSocketReadStatus::Closed;
+    }
+}
+
+static int ws_receive_async(lua_State* L)
+{
+    WebSocket* ws = check_websocket(L, 1);
+    if (!ws->is_open || ws->sock == SOCKET_INVALID)
+    {
+        lua_pushnil(L);
+        lua_pushliteral(L, "closed");
+        return 2;
+    }
+
+    while (true)
+    {
+        WebSocketReadStatus status = ws_read_available(ws);
+        if (status == WebSocketReadStatus::Closed)
+        {
+            ws->is_open = false;
+            CLOSESOCKET(ws->sock);
+            ws->sock = SOCKET_INVALID;
+            lua_pushnil(L);
+            lua_pushliteral(L, "connection closed");
+            return 2;
+        }
+
+        const std::vector<uint8_t>& buffer = ws->receive_buffer;
+        if (buffer.size() < 2)
+            return lua_task_wait_readable(L, uintptr_t(ws->sock));
+
+        uint8_t opcode = buffer[0] & 0x0f;
+        bool hasMask = (buffer[1] & 0x80) != 0;
+        uint64_t payloadLength = buffer[1] & 0x7f;
+        size_t offset = 2;
+
+        if (payloadLength == 126)
+        {
+            if (buffer.size() < offset + 2)
+                return lua_task_wait_readable(L, uintptr_t(ws->sock));
+            payloadLength = (uint64_t(buffer[offset]) << 8) | buffer[offset + 1];
+            offset += 2;
+        }
+        else if (payloadLength == 127)
+        {
+            if (buffer.size() < offset + 8)
+                return lua_task_wait_readable(L, uintptr_t(ws->sock));
+            payloadLength = 0;
+            for (size_t i = 0; i < 8; ++i)
+                payloadLength = (payloadLength << 8) | buffer[offset + i];
+            offset += 8;
+        }
+
+        if (payloadLength > 16 * 1024 * 1024)
+            luaL_error(L, "WebSocket frame exceeds 16 MiB");
+
+        uint8_t mask[4] = {0, 0, 0, 0};
+        if (hasMask)
+        {
+            if (buffer.size() < offset + 4)
+                return lua_task_wait_readable(L, uintptr_t(ws->sock));
+            std::copy(buffer.begin() + offset, buffer.begin() + offset + 4, mask);
+            offset += 4;
+        }
+
+        if (payloadLength > SIZE_MAX - offset || buffer.size() < offset + size_t(payloadLength))
+            return lua_task_wait_readable(L, uintptr_t(ws->sock));
+
+        std::vector<uint8_t> payload(buffer.begin() + offset, buffer.begin() + offset + size_t(payloadLength));
+        if (hasMask)
+            for (size_t i = 0; i < payload.size(); ++i)
+                payload[i] ^= mask[i % 4];
+
+        ws->receive_buffer.erase(ws->receive_buffer.begin(), ws->receive_buffer.begin() + offset + size_t(payloadLength));
+
+        if (opcode == 0x08)
+        {
+            ws->is_open = false;
+            CLOSESOCKET(ws->sock);
+            ws->sock = SOCKET_INVALID;
+            lua_pushnil(L);
+            lua_pushliteral(L, "closed");
+            return 2;
+        }
+        else if (opcode == 0x09)
+        {
+            ws_send_frame(ws->sock, 0x0a, payload.data(), payload.size(), !ws->is_server);
+        }
+        else if (opcode == 0x0a)
+        {
+            continue;
+        }
+        else if (opcode == 0x01 || opcode == 0x02)
+        {
+            lua_pushlstring(L, reinterpret_cast<const char*>(payload.data()), payload.size());
+            lua_pushboolean(L, opcode == 0x02);
+            return 2;
+        }
+    }
+}
+
+static int ws_receive_async_continuation(lua_State* L, int)
+{
+    return ws_receive_async(L);
+}
+
+static int ws_receive_scheduled(lua_State* L)
+{
+    return lua_isyieldable(L) ? ws_receive_async(L) : ws_receive(L);
+}
+
 static int ws_ping(lua_State* L)
 {
     WebSocket* ws = check_websocket(L, 1);
@@ -729,8 +900,8 @@ static int ws_tostring(lua_State* L)
 
 static const luaL_Reg websocket_methods[] = {
     {"send", ws_send},
-    {"receive", ws_receive},
-    {"recv", ws_receive},
+    {"receiveBlocking", ws_receive},
+    {"recvBlocking", ws_receive},
     {"ping", ws_ping},
     {"pong", ws_pong},
     {"close", ws_close},
@@ -1105,7 +1276,7 @@ static int net_websocket_connect(lua_State* L)
         luaL_error(L, "websocket handshake rejected by server");
     }
 
-    WebSocket* ws = (WebSocket*)lua_newuserdata(L, sizeof(WebSocket));
+    WebSocket* ws = (WebSocket*)lua_newuserdatadtor(L, sizeof(WebSocket), websocket_dtor);
     new (ws) WebSocket();
     ws->sock = sock;
     ws->url = url_str;
@@ -1484,6 +1655,14 @@ int luaopen_net(lua_State* L) {
     lua_pushvalue(L, -1);
     lua_setfield(L, -2, "__index");
     luaL_register(L, NULL, websocket_methods);
+    lua_pushcclosurek(L, ws_receive_scheduled, "receive", 0, ws_receive_async_continuation);
+    lua_setfield(L, -2, "receive");
+    lua_pushcclosurek(L, ws_receive_scheduled, "recv", 0, ws_receive_async_continuation);
+    lua_setfield(L, -2, "recv");
+    lua_pushcclosurek(L, ws_receive_async, "receiveAsync", 0, ws_receive_async_continuation);
+    lua_setfield(L, -2, "receiveAsync");
+    lua_pushcclosurek(L, ws_receive_async, "recvAsync", 0, ws_receive_async_continuation);
+    lua_setfield(L, -2, "recvAsync");
     lua_pop(L, 1);
 
     luaL_register(L, "net", netlib);

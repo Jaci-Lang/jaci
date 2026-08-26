@@ -747,6 +747,9 @@ struct Printer
             case AstExprUnary::Op::Len:
                 writer.symbol("#");
                 break;
+            case AstExprUnary::Op::BitNot:
+                writer.symbol("~");
+                break;
             case AstExprUnary::Op::Await:
                 writer.keyword("await");
                 writer.space();
@@ -773,7 +776,14 @@ struct Printer
                 case AstExprBinary::Pow:
                 case AstExprBinary::CompareLt:
                 case AstExprBinary::CompareGt:
+                case AstExprBinary::BitAnd:
+                case AstExprBinary::BitOr:
+                case AstExprBinary::BitXor:
                     writer.maybeSpace(a->right->location.begin, 2);
+                    break;
+                case AstExprBinary::ShiftLeft:
+                case AstExprBinary::ShiftRight:
+                    writer.maybeSpace(a->right->location.begin, 3);
                     break;
                 case AstExprBinary::Concat:
                 case AstExprBinary::CompareNe:
@@ -802,7 +812,16 @@ struct Printer
             if (writeTypes)
             {
                 if (const auto* cstNode = lookupCstNode<CstExprTypeAssertion>(a))
+                {
                     advance(cstNode->opPosition);
+                    if (cstNode->usesAs)
+                    {
+                        writer.keyword("as");
+                        writer.space();
+                        visualizeTypeAnnotation(*a->annotation);
+                        return;
+                    }
+                }
                 else
                     writer.maybeSpace(a->annotation->location.begin, 2);
                 writer.symbol("::");

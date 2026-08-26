@@ -390,6 +390,11 @@ static const char* min_expand(MatchState* ms, const char* s, const char* p, cons
     }
 }
 
+static bool is_literal_word_hyphen(MatchState* ms, const char* p, const char* ep)
+{
+    return *ep == '-' && ep == p + 1 && ep + 1 < ms->p_end && isalnum(uchar(*p)) && isalnum(uchar(ep[1]));
+}
+
 static const char* start_capture(MatchState* ms, const char* s, const char* p, int what)
 {
     const char* res;
@@ -528,7 +533,7 @@ init: // using goto's to optimize tail recursion
             // does not match at least once?
             if (!singlematch(ms, s, p, ep))
             {
-                if (*ep == '*' || *ep == '?' || *ep == '-')
+                if (*ep == '*' || *ep == '?' || (*ep == '-' && !is_literal_word_hyphen(ms, p, ep)))
                 { // accept empty?
                     p = ep + 1;
                     goto init; // return match(ms, s, ep + 1);
@@ -559,7 +564,14 @@ init: // using goto's to optimize tail recursion
                     s = max_expand(ms, s, p, ep);
                     break;
                 case '-': // 0 or more repetitions (minimum)
-                    s = min_expand(ms, s, p, ep);
+                    if (is_literal_word_hyphen(ms, p, ep))
+                    {
+                        s++;
+                        p = ep;
+                        goto init;
+                    }
+                    else
+                        s = min_expand(ms, s, p, ep);
                     break;
                 default: // no suffix
                     s++;

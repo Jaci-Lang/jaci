@@ -88,9 +88,10 @@ CstExprOp::CstExprOp(Position opPosition)
 {
 }
 
-CstExprTypeAssertion::CstExprTypeAssertion(Position opPosition)
+CstExprTypeAssertion::CstExprTypeAssertion(Position opPosition, bool usesAs)
     : CstNode(CstClassIndex())
     , opPosition(opPosition)
+    , usesAs(usesAs)
 {
 }
 

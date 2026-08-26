@@ -311,6 +311,11 @@ static int load(lua_State* L, void* ctx, const char* path, const char* chunkname
             luaL_error(L, "error while running module: %s", lua_tostring(ML, -1));
         }
     }
+    else
+    {
+        const char* error = lua_isstring(ML, -1) ? lua_tostring(ML, -1) : "unknown compile error";
+        luaL_error(L, "error while compiling module: %s", error);
+    }
 
     // add ML result to L stack
     lua_xmove(ML, L, 1);
@@ -370,5 +375,3 @@ ReplRequirer::ReplRequirer(
     , countersTrack(countersTrack)
 {
 }
-
-

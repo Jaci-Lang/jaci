@@ -1999,18 +1999,40 @@ static int luauF_integerudiv(lua_State* L, StkId res, TValue* arg0, int nresults
     return -1;
 }
 
+static bool getbitoperand(const TValue* value, int64_t& result)
+{
+    if (ttisinteger(value))
+    {
+        result = lvalue(value);
+        return true;
+    }
+
+    if (ttisnumber(value))
+    {
+        double number = nvalue(value);
+        if (isfinite(number) && trunc(number) == number && number >= -9223372036854775808.0 && number < 9223372036854775808.0)
+        {
+            result = int64_t(number);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static int luauF_integerband(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
 {
-    if (nparams >= 1 && nresults <= 1 && ttisinteger(arg0))
+    int64_t operand;
+    if (nparams >= 1 && nresults <= 1 && getbitoperand(arg0, operand))
     {
-        uint64_t r = (uint64_t)lvalue(arg0);
+        uint64_t r = uint64_t(operand);
 
         for (int i = 2; i <= nparams; ++i)
         {
-            if (!ttisinteger(args + (i - 2)))
+            if (!getbitoperand(args + (i - 2), operand))
                 return -1;
 
-            r &= (uint64_t)lvalue(args + (i - 2));
+            r &= uint64_t(operand);
         }
 
         setlvalue(res, r);
@@ -2022,16 +2044,17 @@ static int luauF_integerband(lua_State* L, StkId res, TValue* arg0, int nresults
 
 static int luauF_integerbor(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
 {
-    if (nparams >= 1 && nresults <= 1 && ttisinteger(arg0))
+    int64_t operand;
+    if (nparams >= 1 && nresults <= 1 && getbitoperand(arg0, operand))
     {
-        uint64_t r = (uint64_t)lvalue(arg0);
+        uint64_t r = uint64_t(operand);
 
         for (int i = 2; i <= nparams; ++i)
         {
-            if (!ttisinteger(args + (i - 2)))
+            if (!getbitoperand(args + (i - 2), operand))
                 return -1;
 
-            r |= (uint64_t)lvalue(args + (i - 2));
+            r |= uint64_t(operand);
         }
 
         setlvalue(res, r);
@@ -2043,16 +2066,17 @@ static int luauF_integerbor(lua_State* L, StkId res, TValue* arg0, int nresults,
 
 static int luauF_integerbxor(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
 {
-    if (nparams >= 1 && nresults <= 1 && ttisinteger(arg0))
+    int64_t operand;
+    if (nparams >= 1 && nresults <= 1 && getbitoperand(arg0, operand))
     {
-        uint64_t r = (uint64_t)lvalue(arg0);
+        uint64_t r = uint64_t(operand);
 
         for (int i = 2; i <= nparams; ++i)
         {
-            if (!ttisinteger(args + (i - 2)))
+            if (!getbitoperand(args + (i - 2), operand))
                 return -1;
 
-            r ^= (uint64_t)lvalue(args + (i - 2));
+            r ^= uint64_t(operand);
         }
 
         setlvalue(res, r);
@@ -2064,9 +2088,10 @@ static int luauF_integerbxor(lua_State* L, StkId res, TValue* arg0, int nresults
 
 static int luauF_integerbnot(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
 {
-    if (nparams >= 1 && nresults <= 1 && ttisinteger(arg0))
+    int64_t operand;
+    if (nparams >= 1 && nresults <= 1 && getbitoperand(arg0, operand))
     {
-        setlvalue(res, ~(uint64_t)lvalue(arg0));
+        setlvalue(res, ~uint64_t(operand));
         return 1;
     }
 
@@ -2388,10 +2413,12 @@ static int luauF_integerrrotate(lua_State* L, StkId res, TValue* arg0, int nresu
 
 static int luauF_integerlshift(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
 {
-    if (nparams >= 2 && nresults <= 1 && ttisinteger(arg0) && ttisinteger(args))
+    int64_t left;
+    int64_t right;
+    if (nparams >= 2 && nresults <= 1 && getbitoperand(arg0, left) && getbitoperand(args, right))
     {
-        uint64_t n = (uint64_t)lvalue(arg0);
-        int64_t i = lvalue(args);
+        uint64_t n = uint64_t(left);
+        int64_t i = right;
 
         setlvalue(res, ((i >= -63) && (i <= 63)) ? ((i < 0) ? (n >> (-i)) : (n << i)) : 0);
 
@@ -2429,10 +2456,12 @@ static int luauF_integerarshift(lua_State* L, StkId res, TValue* arg0, int nresu
 
 static int luauF_integerrshift(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
 {
-    if (nparams >= 2 && nresults <= 1 && ttisinteger(arg0) && ttisinteger(args))
+    int64_t left;
+    int64_t right;
+    if (nparams >= 2 && nresults <= 1 && getbitoperand(arg0, left) && getbitoperand(args, right))
     {
-        uint64_t n = (uint64_t)lvalue(arg0);
-        int64_t i = lvalue(args);
+        uint64_t n = uint64_t(left);
+        int64_t i = right;
 
         setlvalue(res, ((i >= -63) && (i <= 63)) ? ((i < 0) ? (n << (-i)) : (n >> i)) : 0);
 

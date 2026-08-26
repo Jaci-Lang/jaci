@@ -109,4 +109,16 @@ TEST_CASE_FIXTURE(JsonFixture, "JsonDecodeBasic")
     CHECK(err == "");
 }
 
+TEST_CASE_FIXTURE(JsonFixture, "JsonPreservesLargeIntegerIdentifiers")
+{
+    std::string err = run(R"(
+        local snowflake = json.decode("1234567890123456789")
+        assert(type(snowflake) == "integer")
+        assert(tostring(snowflake) == "1234567890123456789")
+        assert(json.encode(snowflake) == "1234567890123456789")
+        assert(type(json.decode("9007199254740991")) == "number")
+    )");
+    CHECK(err == "");
+}
+
 TEST_SUITE_END();

@@ -230,9 +230,10 @@ class CstExprTypeAssertion : public CstNode
 public:
     LUAU_CST_RTTI(CstExprTypeAssertion)
 
-    explicit CstExprTypeAssertion(Position opPosition);
+    explicit CstExprTypeAssertion(Position opPosition, bool usesAs = false);
 
     Position opPosition;
+    bool usesAs;
 };
 
 class CstExprIfElse : public CstNode

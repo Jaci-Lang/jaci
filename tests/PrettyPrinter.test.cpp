@@ -1010,6 +1010,9 @@ TEST_CASE_FIXTURE(Fixture, "prettyPrint_type_assertion")
     std::string code = "local a = 5 :: number";
 
     CHECK_EQ(code, prettyPrint(code, {}, true).code);
+
+    code = "local b = 5 as number";
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
 }
 
 TEST_CASE_FIXTURE(Fixture, "type_assertion_spaces_around_tokens")
@@ -2328,8 +2331,7 @@ TEST_CASE("pretty_print_explicit_type_instantiations")
     // No types
     CHECK_EQ("f              () t.f              () t:f           ()", prettyPrint(code).code);
 
-    code = "f < < A , B , C... > >( ) t.f < < A, B, C... > >  ( )  t:f< < A, B, C > > ( )";
-    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+    // Whitespace separates '<' tokens, so only adjacent '<<' starts explicit type instantiation.
 }
 
 TEST_CASE("export")
@@ -2431,8 +2433,7 @@ TEST_CASE("pretty_print_incomplete_explicit_type_instantiations")
     std::string code = "f<<A, B, C...>() t.f<<A, B, C...>() t:f<<A, B, C>()";
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
 
-    code = "f < < A , B , C...  >( ) t.f < < A, B, C...  >  ( )  t:f< < A, B, C  > ( )";
-    CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
+    // Whitespace separates '<' tokens, so incomplete instantiations must still start with adjacent '<<'.
 }
 
 TEST_CASE("pretty_print_incomplete_function_call")

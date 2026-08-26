@@ -1,6 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 // Copyright (c) 2026 Júlia Klee
 #include "lreactor.h"
+#include "ltasklib.h"
 
 #include "lualib.h"
 #include "lcommon.h"
@@ -1408,6 +1409,12 @@ static int task_poll_read(lua_State* L)
 {
     jaci_socket_t fd = get_socket_or_fd(L, 1);
     double timeout_sec = luaL_optnumber(L, 2, 0.0);
+    return lua_task_wait_readable(L, uintptr_t(fd), timeout_sec);
+}
+
+int lua_task_wait_readable(lua_State* L, uintptr_t descriptor, double timeout_sec)
+{
+    jaci_socket_t fd = static_cast<jaci_socket_t>(descriptor);
     uint64_t timeout_ns = static_cast<uint64_t>(timeout_sec * 1e9);
 
     lua_pushthread(L);

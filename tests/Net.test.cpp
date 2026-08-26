@@ -8,7 +8,7 @@
 #include <memory>
 #include <string>
 #include <thread>
-#include <atomic>
+#include <chrono>
 #include <cstring>
 
 #if defined(_WIN32)
@@ -94,29 +94,28 @@ TEST_CASE("TcpClientAndServerLoopback")
 
 TEST_CASE("WebSocketClientServerIntegration")
 {
-    std::atomic<int> bound_port{0};
-    std::atomic<bool> server_ready{false};
+    socket_t server = socket(AF_INET, SOCK_STREAM, 0);
+    REQUIRE(server != SOCKET_INVALID);
+    int opt = 1;
+    REQUIRE(setsockopt(server, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt)) == 0);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    REQUIRE(bind(server, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+    REQUIRE(listen(server, 1) == 0);
 
-    std::thread server_thread([&]() {
-        socket_t s = socket(AF_INET, SOCK_STREAM, 0);
-        int opt = 1;
-        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = 0;
-        bind(s, (struct sockaddr*)&addr, sizeof(addr));
-        listen(s, 1);
+    socklen_t len = sizeof(addr);
+    REQUIRE(getsockname(server, (struct sockaddr*)&addr, &len) == 0);
+    int boundPort = ntohs(addr.sin_port);
+    REQUIRE(boundPort > 0);
 
-        socklen_t len = sizeof(addr);
-        getsockname(s, (struct sockaddr*)&addr, &len);
-        bound_port = ntohs(addr.sin_port);
-        server_ready = true;
+    std::thread server_thread([server]() {
 
         struct sockaddr_in caddr;
         socklen_t clen = sizeof(caddr);
-        socket_t cs = accept(s, (struct sockaddr*)&caddr, &clen);
+        socket_t cs = accept(server, (struct sockaddr*)&caddr, &clen);
         if (cs != SOCKET_INVALID)
         {
             char buf[1024];
@@ -135,6 +134,8 @@ TEST_CASE("WebSocketClientServerIntegration")
                     std::vector<char> pbuf(plen);
                     recv(cs, pbuf.data(), plen, 0);
 
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
                     std::string s_reply = "pong_from_server";
                     std::string s_frame;
                     s_frame.push_back((char)0x81);
@@ -145,25 +146,29 @@ TEST_CASE("WebSocketClientServerIntegration")
             }
             CLOSESOCKET(cs);
         }
-        CLOSESOCKET(s);
+        CLOSESOCKET(server);
     });
-
-    while (!server_ready) { std::this_thread::yield(); }
 
     std::unique_ptr<lua_State, void (*)(lua_State*)> globalState(luaL_newstate(), lua_close);
     lua_State* L = globalState.get();
     setupState(L);
 
-    std::string script = "local ws = net.websocket('ws://127.0.0.1:" + std::to_string(bound_port.load()) + "/test')\n"
+    std::string script = "local ws = net.websocket('ws://127.0.0.1:" + std::to_string(boundPort) + "/test')\n"
                          "assert(ws ~= nil and ws:isOpen())\n"
                          "ws:send('ping_from_client')\n"
-                         "local reply, isBin = ws:receive()\n"
+                         "local reply, isBin\n"
+                         "local heartbeatRan = false\n"
+                         "task.delay(0.01, function() heartbeatRan = true end)\n"
+                         "task.spawn(function() reply, isBin = ws:receive() end)\n"
+                         "task.run()\n"
+                         "assert(heartbeatRan)\n"
                          "assert(reply == 'pong_from_server')\n"
                          "assert(isBin == false)\n"
                          "ws:close()\n";
 
     std::string err = runCode(L, script);
     server_thread.join();
+    INFO(err);
     CHECK(err.empty());
 }
 

@@ -8,6 +8,8 @@
 #include <vector>
 #include <sstream>
 #include <cctype>
+#include <cerrno>
+#include <cstdlib>
 
 #ifndef LUA_JSONLIBNAME
 #define LUA_JSONLIBNAME "json"
@@ -54,6 +56,10 @@ struct EncodeState {
                     snprintf(buf, sizeof(buf), "%.14g", n);
                 }
                 out += buf;
+                break;
+            }
+            case LUA_TINTEGER: {
+                out += std::to_string(lua_tointeger64(L, idx, nullptr));
                 break;
             }
             case LUA_TSTRING:
@@ -130,7 +136,8 @@ struct EncodeState {
                         is_array = true;
                         lua_pushnil(L);
                         while (lua_next(L, idx) != 0) {
-                            if (lua_type(L, -2) != LUA_TNUMBER) {
+                            int keyType = lua_type(L, -2);
+                            if (keyType != LUA_TNUMBER && keyType != LUA_TINTEGER) {
                                 is_array = false;
                                 lua_pop(L, 2);
                                 break;
@@ -315,6 +322,7 @@ struct DecodeState {
 
     bool parse_number() {
         const char* start = p;
+        bool integral = true;
         if (*p == '-') p++;
         if (p >= end || !isdigit((unsigned char)*p)) {
             error = "invalid number format";
@@ -322,6 +330,7 @@ struct DecodeState {
         }
         while (p < end && isdigit((unsigned char)*p)) p++;
         if (p < end && *p == '.') {
+            integral = false;
             p++;
             if (p >= end || !isdigit((unsigned char)*p)) {
                 error = "invalid fractional number";
@@ -330,6 +339,7 @@ struct DecodeState {
             while (p < end && isdigit((unsigned char)*p)) p++;
         }
         if (p < end && (*p == 'e' || *p == 'E')) {
+            integral = false;
             p++;
             if (p < end && (*p == '+' || *p == '-')) p++;
             if (p >= end || !isdigit((unsigned char)*p)) {
@@ -340,6 +350,16 @@ struct DecodeState {
         }
 
         std::string num_str(start, p - start);
+        if (integral) {
+            errno = 0;
+            char* integerEnd = nullptr;
+            long long integerValue = strtoll(num_str.c_str(), &integerEnd, 10);
+            if (errno != ERANGE && integerEnd == num_str.c_str() + num_str.size() &&
+                (integerValue > 9007199254740991LL || integerValue < -9007199254740991LL)) {
+                lua_pushinteger64(L, int64_t(integerValue));
+                return true;
+            }
+        }
         char* endptr = nullptr;
         double n = strtod(num_str.c_str(), &endptr);
         lua_pushnumber(L, n);

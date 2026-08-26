@@ -1098,8 +1098,10 @@ void TypeChecker2::visit(AstStatForIn* forInStatement)
     {
         reportError(OptionalValueAccess{iteratorTy}, forInStatement->values.data[0]->location);
     }
-    else if (std::optional<TypeId> iterMmTy =
-                 findMetatableEntry(builtinTypes, module->errors, iteratorTy, "__iter", forInStatement->values.data[0]->location))
+    else if (
+        std::optional<TypeId> iterMmTy =
+            findMetatableEntry(builtinTypes, module->errors, iteratorTy, "__iter", forInStatement->values.data[0]->location)
+    )
     {
         Instantiation instantiation{TxnLog::empty(), &arena, builtinTypes, TypeLevel{}, scope};
 
@@ -2247,6 +2249,11 @@ void TypeChecker2::visit(AstExprUnary* expr)
         else
             testIsSubtype(operandType, builtinTypes->numberType, expr->location);
     }
+    else if (expr->op == AstExprUnary::Op::BitNot)
+    {
+        const TypeId numericInteger = module->internalTypes->addType(UnionType{{builtinTypes->numberType, builtinTypes->integerType}});
+        testIsSubtype(operandType, numericInteger, expr->location);
+    }
     else if (expr->op == AstExprUnary::Op::Not)
     {
     }
@@ -2278,8 +2285,9 @@ static bool isOkToCompare(
         return true;
 
     // Comparison with never is always ok.
-    else if (NormalizationResult::True != normalizer.isInhabited(normLeft.get()) ||
-             NormalizationResult::True != normalizer.isInhabited(normRight.get()))
+    else if (
+        NormalizationResult::True != normalizer.isInhabited(normLeft.get()) || NormalizationResult::True != normalizer.isInhabited(normRight.get())
+    )
         return true;
 
     // Comparisons between different string singleton typeArguments is allowed even
@@ -2571,6 +2579,17 @@ TypeId TypeChecker2::visit(AstExprBinary* expr, AstNode* overrideKey)
 
     switch (expr->op)
     {
+    case AstExprBinary::Op::BitAnd:
+    case AstExprBinary::Op::BitOr:
+    case AstExprBinary::Op::BitXor:
+    case AstExprBinary::Op::ShiftLeft:
+    case AstExprBinary::Op::ShiftRight:
+    {
+        const TypeId numericInteger = module->internalTypes->addType(UnionType{{builtinTypes->numberType, builtinTypes->integerType}});
+        testIsSubtype(leftType, numericInteger, expr->left->location);
+        testIsSubtype(rightType, numericInteger, expr->right->location);
+        return builtinTypes->integerType;
+    }
     case AstExprBinary::Op::Add:
     case AstExprBinary::Op::Sub:
     case AstExprBinary::Op::Mul:

@@ -10,7 +10,8 @@ Implement a self-contained, zero-dependency networking library in `lnetlib.cpp`:
 - **WebSocket Client & Protocol (RFC 6455)**:
   - `net.websocket(url, options)` and `net.websocketConnect(url)` handling standard HTTP 101 Switching Protocols upgrade handshakes.
   - Automatic frame masking/unmasking, control frame handling (ping/pong/close), text (0x1) and binary (0x2) payload frames.
-  - Methods: `ws:send(data, [isBinary])`, `ws:receive([timeout])`, `ws:ping([data])`, `ws:pong([data])`, `ws:close([code], [reason])`, `ws:isOpen()`, `ws:url()`.
+  - Methods: `ws:send(data, [isBinary])`, scheduler-aware `ws:receive()`/`ws:recv()`, explicit `ws:receiveAsync()`/`ws:recvAsync()`, blocking `ws:receiveBlocking()`/`ws:recvBlocking()`, `ws:ping([data])`, `ws:pong([data])`, `ws:close([code], [reason])`, `ws:isOpen()`, `ws:url()`.
+  - Buffer asynchronous frames incrementally, cap payloads at 16 MiB, and suspend on reactor readability instead of blocking the VM.
 - **HTTP Client**:
   - `net.request({ url, method, headers, body, timeout })`, with convenience functions `net.get`, `net.post`, `net.put`, `net.delete`, `net.patch`, `net.head`.
   - HTTP/1.1 chunked transfer encoding and status parsing.
@@ -25,6 +26,7 @@ Implement a self-contained, zero-dependency networking library in `lnetlib.cpp`:
 
 - Direct native network communication without external C library dependencies or curl.
 - Built-in support for real-time WebSocket applications and microservices.
+- Timers and heartbeat coroutines continue while coroutine-based `receive()` waits for network data. Main-thread calls retain blocking compatibility.
 
 ## Copyright
 

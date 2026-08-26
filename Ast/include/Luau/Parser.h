@@ -306,7 +306,7 @@ private:
     AstType* parseTypeSuffix(AstType* type, const Location& begin);
 
     static std::optional<AstExprUnary::Op> parseUnaryOp(const Lexeme& l);
-    static std::optional<AstExprBinary::Op> parseBinaryOp(const Lexeme& l);
+    std::optional<AstExprBinary::Op> parseBinaryOp(const Lexeme& l);
     static std::optional<AstExprBinary::Op> parseCompoundOp(const Lexeme& l);
 
     struct BinaryOpPriority

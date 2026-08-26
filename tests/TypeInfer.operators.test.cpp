@@ -1733,4 +1733,25 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "negating_a_non_literal_integer_is_an_error")
     LUAU_REQUIRE_ERROR_COUNT(4, result);
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "bitwise_operators_accept_integral_numbers_and_return_integer")
+{
+    ScopedFastFlag sff{FFlag::LuauIntegerType2, true};
+
+    CheckResult result = check(R"(
+        --!strict
+        local shift = 1 << 40
+        local mask = (0xff00 | 0xff) & 0xffff
+        local xor = 0xaa ~ 0xff
+        local inverse = ~0
+        local right = shift >> 8
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK("integer" == toString(requireType("shift")));
+    CHECK("integer" == toString(requireType("mask")));
+    CHECK("integer" == toString(requireType("xor")));
+    CHECK("integer" == toString(requireType("inverse")));
+    CHECK("integer" == toString(requireType("right")));
+}
+
 TEST_SUITE_END();

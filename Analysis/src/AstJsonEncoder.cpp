@@ -607,6 +607,8 @@ struct AstJsonEncoder : public AstVisitor
             return writeString("Minus");
         case AstExprUnary::Op::Len:
             return writeString("Len");
+        case AstExprUnary::Op::BitNot:
+            return writeString("BitNot");
         case AstExprUnary::Op::Await:
             return writeString("Await");
         }
@@ -657,6 +659,16 @@ struct AstJsonEncoder : public AstVisitor
             return writeString("CompareGt");
         case AstExprBinary::CompareGe:
             return writeString("CompareGe");
+        case AstExprBinary::BitAnd:
+            return writeString("BitAnd");
+        case AstExprBinary::BitOr:
+            return writeString("BitOr");
+        case AstExprBinary::BitXor:
+            return writeString("BitXor");
+        case AstExprBinary::ShiftLeft:
+            return writeString("ShiftLeft");
+        case AstExprBinary::ShiftRight:
+            return writeString("ShiftRight");
         case AstExprBinary::And:
             return writeString("And");
         case AstExprBinary::Or:

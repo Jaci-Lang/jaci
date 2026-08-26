@@ -429,6 +429,8 @@ std::string toString(AstExprUnary::Op op)
         return "not";
     case AstExprUnary::Op::Len:
         return "#";
+    case AstExprUnary::Op::BitNot:
+        return "~";
     case AstExprUnary::Op::Await:
         return "await";
     default:
@@ -486,6 +488,16 @@ std::string toString(AstExprBinary::Op op)
         return ">";
     case AstExprBinary::CompareGe:
         return ">=";
+    case AstExprBinary::BitAnd:
+        return "&";
+    case AstExprBinary::BitOr:
+        return "|";
+    case AstExprBinary::BitXor:
+        return "~";
+    case AstExprBinary::ShiftLeft:
+        return "<<";
+    case AstExprBinary::ShiftRight:
+        return ">>";
     case AstExprBinary::And:
         return "and";
     case AstExprBinary::Or:
