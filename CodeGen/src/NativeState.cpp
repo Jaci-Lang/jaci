@@ -43,6 +43,7 @@ void initFunctions(NativeContext& context)
     context.luaV_concat = luaV_concat;
 
     context.luaH_getn = luaH_getn;
+    context.luaH_getstr = luaH_getstr;
     context.luaH_new = luaH_new;
     context.luaH_clone = luaH_clone;
     context.luaH_resizearray = luaH_resizearray;

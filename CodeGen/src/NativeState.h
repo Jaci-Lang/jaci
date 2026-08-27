@@ -47,6 +47,7 @@ struct NativeContext
     void (*luaV_concat)(lua_State* L, int total, int last) = nullptr;
 
     int (*luaH_getn)(LuaTable* t) = nullptr;
+    const TValue* (*luaH_getstr)(LuaTable* t, TString* key) = nullptr;
     LuaTable* (*luaH_new)(lua_State* L, int narray, int lnhash) = nullptr;
     LuaTable* (*luaH_clone)(lua_State* L, LuaTable* tt) = nullptr;
     void (*luaH_resizearray)(lua_State* L, LuaTable* t, int nasize) = nullptr;

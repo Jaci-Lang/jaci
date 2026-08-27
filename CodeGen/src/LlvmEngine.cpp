@@ -167,13 +167,15 @@ bool LlvmEngine::initialize()
         return false;
     }
 
+    const std::string cpu = sys::getHostCPUName().str();
+
     pImpl->tm.reset(target->createTargetMachine(
 #if LLVM_VERSION_MAJOR >= 21
         targetTriple,
 #else
         tripleStr,
 #endif
-        "generic",
+        cpu.empty() ? "generic" : cpu,
         /*features=*/"",
         TargetOptions(),
         Reloc::Model::Static,

@@ -4,6 +4,8 @@
 
 #if LUAU_USE_LLVM
 
+#include "Luau/CodeAllocator.h"
+
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/ELFObjectFile.h"
@@ -12,6 +14,7 @@
 #include "llvm/TargetParser/Triple.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstring>
 
 namespace Luau
@@ -68,6 +71,19 @@ bool isAllocableSection(const SectionRef& sec, StringRef name)
 
     return sec.isText() || name.starts_with(".rodata") || name.starts_with(".data") || name.starts_with(".eh_frame")
         || name == ".plt" || name.starts_with(".plt.");
+}
+
+uint64_t resolveRuntimeSymbol(StringRef name)
+{
+    if (name == "memset")
+        return uint64_t(reinterpret_cast<uintptr_t>(&std::memset));
+    if (name == "memcpy")
+        return uint64_t(reinterpret_cast<uintptr_t>(&std::memcpy));
+    if (name == "memmove")
+        return uint64_t(reinterpret_cast<uintptr_t>(&std::memmove));
+    if (name == "floor")
+        return uint64_t(reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(&std::floor)));
+    return 0;
 }
 
 void writeValue(uint8_t* site, size_t size, uint64_t value)
@@ -141,9 +157,9 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
         uint64_t secAlign = sec.getAlignment().value();
         if (secAlign == 0)
             secAlign = 1;
-        if (secAlign > 4096)
+        if (secAlign > kCodeAlignment)
         {
-            out.error = "section alignment too large";
+            out.error = "section alignment exceeds JIT allocator alignment";
             return false;
         }
 
@@ -175,7 +191,11 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
         return false;
     }
 
-    uint32_t dataSize = dataPos;
+    // CodeAllocator places data immediately before a kCodeAlignment-aligned
+    // code start. Pad the complete data region to the same alignment so the
+    // base address assumed by every aligned section remains aligned after it
+    // is copied into the final allocation.
+    uint32_t dataSize = alignUp(dataPos, kCodeAlignment);
     uint32_t codeSize = codePos;
 
     out.data.resize(dataSize);
@@ -289,27 +309,34 @@ bool loadJitObject(const uint8_t* bytes, size_t size, JitObjectLayout& out)
             {
                 if ((symFlags & BasicSymbolRef::SF_Undefined) && !symName.empty())
                 {
-                    out.error = std::string("undefined symbol in JIT object: ") + symName.str();
-                    return false;
+                    r.symbolValue = resolveRuntimeSymbol(symName);
+                    if (r.symbolValue == 0)
+                    {
+                        out.error = std::string("undefined symbol in JIT object: ") + symName.str();
+                        return false;
+                    }
+                    r.symbolAbsolute = true;
                 }
-
-                auto secResult = sym.getSection();
-                if (!secResult)
+                else
                 {
-                    out.error = "relocation symbol has no section";
-                    return false;
-                }
+                    auto secResult = sym.getSection();
+                    if (!secResult)
+                    {
+                        out.error = "relocation symbol has no section";
+                        return false;
+                    }
 
-                const SectionInfo* targetSec = findSectionInfo(**secResult);
-                if (!targetSec)
-                {
-                    out.error = "relocation target section not allocatable";
-                    return false;
-                }
+                    const SectionInfo* targetSec = findSectionInfo(**secResult);
+                    if (!targetSec)
+                    {
+                        out.error = "relocation target section not allocatable";
+                        return false;
+                    }
 
-                r.symbolAbsolute = false;
-                r.targetInCode = targetSec->inCode;
-                r.symbolOffset = uint64_t(targetSec->layoutOffset) + *sym.getAddress();
+                    r.symbolAbsolute = false;
+                    r.targetInCode = targetSec->inCode;
+                    r.symbolOffset = uint64_t(targetSec->layoutOffset) + *sym.getAddress();
+                }
             }
 
             uint64_t type = rel.getType();

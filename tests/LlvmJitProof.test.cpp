@@ -14,6 +14,7 @@
 
 #include "doctest.h"
 
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -253,7 +254,9 @@ TEST_CASE("LlvmJitProof_SetUpvaluePrimitive")
 
     luau_codegen_create(L);
 
-    std::string bytecode = Luau::compile("local function make(value) return function(delta) value += delta; return value end end; local f = make(10); return f(5), f(15)");
+    std::string bytecode = Luau::compile(
+        "local function make(value) return function(delta) value += delta; return value end end; local f = make(10); return f(5), f(15)"
+    );
     REQUIRE_EQ(luau_load(L, "test_setupval", bytecode.data(), bytecode.size(), 0), 0);
 
     CompilationOptions options;
@@ -335,7 +338,8 @@ TEST_CASE("LlvmJitProof_FixedLuaCall")
 
     luau_codegen_create(L);
 
-    std::string bytecode = Luau::compile("local function twice(f, n) return f(n) + f(n) end; local function inc(n) return n + 1 end; return twice(inc, 20)");
+    std::string bytecode =
+        Luau::compile("local function twice(f, n) return f(n) + f(n) end; local function inc(n) return n + 1 end; return twice(inc, 20)");
     REQUIRE_EQ(luau_load(L, "test_fixed_call", bytecode.data(), bytecode.size(), 0), 0);
 
     CompilationOptions options;
@@ -347,6 +351,124 @@ TEST_CASE("LlvmJitProof_FixedLuaCall")
     CHECK_EQ(lua_tonumber(L, -1), 42.0);
 }
 
+TEST_CASE("LlvmJitProof_NumericLeafPreservesTypeErrors")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile("local function numeric(a, b) return a * 2 + b end; return numeric('bad', 1)");
+    REQUIRE_EQ(luau_load(L, "test_numeric_leaf_fallback", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    CHECK_NE(lua_pcall(L, 0, 1, 0), 0);
+}
+
+TEST_CASE("LlvmJitProof_FallbackResumesExactInstruction")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile(R"(
+        local object = {x = 0}
+        local function fail(value)
+            object.x = object.x + 1
+            return value + 1
+        end
+        local ok = pcall(fail, "bad")
+        return object.x, ok
+    )");
+    REQUIRE_EQ(luau_load(L, "test_exact_fallback", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    REQUIRE_EQ(lua_pcall(L, 0, 2, 0), 0);
+    CHECK_EQ(lua_tonumber(L, -2), 1.0);
+    CHECK_FALSE(lua_toboolean(L, -1));
+}
+
+TEST_CASE("LlvmJitProof_UnaryMathFastcalls")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile(R"(
+        local function evaluate(value)
+            return math.abs(value), math.floor(value), math.ceil(value), math.sqrt(math.abs(value)), math.round(value),
+                math.deg(math.rad(value)), math.sign(value), math.sign(0 / 0)
+        end
+        return evaluate(-9.25)
+    )");
+    REQUIRE_EQ(luau_load(L, "test_unary_math_fastcalls", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    REQUIRE_EQ(lua_pcall(L, 0, 8, 0), 0);
+    CHECK_EQ(lua_tonumber(L, -8), 9.25);
+    CHECK_EQ(lua_tonumber(L, -7), -10.0);
+    CHECK_EQ(lua_tonumber(L, -6), -9.0);
+    CHECK_EQ(lua_tonumber(L, -5), doctest::Approx(std::sqrt(9.25)));
+    CHECK_EQ(lua_tonumber(L, -4), -9.0);
+    CHECK_EQ(lua_tonumber(L, -3), doctest::Approx(-9.25));
+    CHECK_EQ(lua_tonumber(L, -2), -1.0);
+    CHECK_EQ(lua_tonumber(L, -1), 0.0);
+}
+
+TEST_CASE("LlvmJitProof_BinaryMinMaxFastcalls")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile(R"(
+        local function loop(n, pivot)
+            local total = 0.0
+            for i = 1, n do
+                total = total + math.min(i, pivot) + math.max(i, pivot)
+            end
+            return total
+        end
+
+        local nan = 0 / 0
+        local negativeZero = -0.0
+        local ok = pcall(function() return math.min("bad", 1) end)
+        return math.min(nan, 5), math.min(5, nan), math.max(nan, 5), math.max(5, nan),
+            math.min(negativeZero, 0), math.max(negativeZero, 0), loop(100, 50), ok
+    )");
+    REQUIRE_EQ(luau_load(L, "test_binary_minmax_fastcalls", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    REQUIRE_EQ(lua_pcall(L, 0, 8, 0), 0);
+    CHECK(std::isnan(lua_tonumber(L, -8)));
+    CHECK_EQ(lua_tonumber(L, -7), 5.0);
+    CHECK(std::isnan(lua_tonumber(L, -6)));
+    CHECK_EQ(lua_tonumber(L, -5), 5.0);
+    CHECK(std::signbit(lua_tonumber(L, -4)));
+    CHECK(std::signbit(lua_tonumber(L, -3)));
+    CHECK_EQ(lua_tonumber(L, -2), 10050.0);
+    CHECK_FALSE(lua_toboolean(L, -1));
+}
+
 TEST_CASE("LlvmJitProof_LuaCallFillsMissingArguments")
 {
     std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
@@ -355,7 +477,8 @@ TEST_CASE("LlvmJitProof_LuaCallFillsMissingArguments")
 
     luau_codegen_create(L);
 
-    std::string bytecode = Luau::compile("local function call(f) return f() end; local function default(v) return v == nil and 42 or 0 end; return call(default)");
+    std::string bytecode =
+        Luau::compile("local function call(f) return f() end; local function default(v) return v == nil and 42 or 0 end; return call(default)");
     REQUIRE_EQ(luau_load(L, "test_missing_call_args", bytecode.data(), bytecode.size(), 0), 0);
 
     CompilationOptions options;
@@ -406,6 +529,198 @@ TEST_CASE("LlvmJitProof_BackedgeSafepoint")
 
     REQUIRE_EQ(lua_pcall(L, 0, 1, 0), 0);
     CHECK_EQ(lua_tonumber(L, -1), 5050.0);
+}
+
+TEST_CASE("LlvmJitProof_NumericLoopRegionSemantics")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile(R"(
+        local positive = 0
+        for i = 1, 9, 2 do
+            positive += i * i
+        end
+
+        local negative = 0
+        for i = 9, 1, -2 do
+            negative += i * 2
+        end
+
+        local function dynamic(first, last, step)
+            local total = 0
+            for i = first, last, step do
+                local quotient = i // 3
+                total += (i % 3) * i + quotient
+            end
+            return total
+        end
+
+        return positive, negative, dynamic(1, 10, 3), dynamic(10, 1, -3)
+    )");
+    REQUIRE_EQ(luau_load(L, "test_numeric_loop_region", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    REQUIRE_EQ(lua_pcall(L, 0, 4, 0), 0);
+    CHECK_EQ(lua_tonumber(L, -4), 165.0);
+    CHECK_EQ(lua_tonumber(L, -3), 50.0);
+    CHECK_EQ(lua_tonumber(L, -2), 28.0);
+    CHECK_EQ(lua_tonumber(L, -1), 28.0);
+}
+
+TEST_CASE("LlvmJitProof_NumericLoopBranchRegionSemantics")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile(R"(
+        local total = 0.0
+        for i = 1, 100 do
+            if i % 2 == 0 then
+                total += i * 0.25
+            else
+                total -= i * 0.125
+            end
+        end
+
+        local compared = 0.0
+        for i = 1, 10000 do
+            local bucket = i % 100
+            if bucket < 50 then
+                compared += bucket * 0.25
+            else
+                compared -= bucket * 0.125
+            end
+        end
+
+        return total, compared
+    )");
+    REQUIRE_EQ(luau_load(L, "test_numeric_loop_branch", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    REQUIRE_EQ(lua_pcall(L, 0, 2, 0), 0);
+    CHECK_EQ(lua_tonumber(L, -2), 325.0);
+    CHECK_EQ(lua_tonumber(L, -1), -15937.5);
+}
+
+TEST_CASE("LlvmJitProof_NumericLoopCachedFieldRegionSemantics")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile(R"(
+        local function work(object, count)
+            local total = 0.0
+            for i = 1, count do
+                total += object.x + object.y
+                object.x += 0.00001
+            end
+            return total, object.x
+        end
+        return work({x = 1.0, y = 2.0}, 10)
+    )");
+    REQUIRE_EQ(luau_load(L, "test_numeric_loop_fields", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    REQUIRE_EQ(lua_pcall(L, 0, 2, 0), 0);
+    CHECK_EQ(lua_tonumber(L, -2), doctest::Approx(30.00045));
+    CHECK_EQ(lua_tonumber(L, -1), doctest::Approx(1.0001));
+}
+
+TEST_CASE("LlvmJitProof_NumericLoopCachedFieldRegionPreservesReadonlyErrors")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile(R"(
+        local function work(object)
+            for i = 1, 2 do
+                object.x += i
+            end
+        end
+        return work(table.freeze({x = 1.0}))
+    )");
+    REQUIRE_EQ(luau_load(L, "test_numeric_loop_readonly_field", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    CHECK_NE(lua_pcall(L, 0, 0, 0), 0);
+}
+
+TEST_CASE("LlvmJitProof_NumericLoopArrayRegionAndMetatableFallback")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile(R"(
+        local function sum(values, count)
+            local total = 0.0
+            for i = 1, count do
+                total += values[i]
+            end
+            return total
+        end
+
+        local proxy = setmetatable({}, {
+            __index = function(_, index)
+                return index * 2
+            end,
+        })
+        return sum({1.5, 2.5, 3.5, 4.5}, 4), sum(proxy, 4)
+    )");
+    REQUIRE_EQ(luau_load(L, "test_numeric_loop_array", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    REQUIRE_EQ(lua_pcall(L, 0, 2, 0), 0);
+    CHECK_EQ(lua_tonumber(L, -2), 12.0);
+    CHECK_EQ(lua_tonumber(L, -1), 20.0);
+}
+
+TEST_CASE("LlvmJitProof_NumericLoopRegionPreservesFallbackErrors")
+{
+    std::unique_ptr<lua_State, void (*)(lua_State*)> state(luaL_newstate(), lua_close);
+    lua_State* L = state.get();
+    luaL_openlibs(L);
+    luau_codegen_create(L);
+
+    std::string bytecode = Luau::compile("local total = 'not a number'; for i = 1, 3 do total += i end; return total");
+    REQUIRE_EQ(luau_load(L, "test_numeric_loop_fallback", bytecode.data(), bytecode.size(), 0), 0);
+
+    CompilationOptions options;
+    options.flags = CodeGen_UseLlvm;
+    CompilationResult result = Luau::CodeGen::compile(L, -1, options);
+    REQUIRE((result.result == CodeGenCompilationResult::Success || result.result == CodeGenCompilationResult::NothingToCompile));
+
+    CHECK_NE(lua_pcall(L, 0, 1, 0), 0);
 }
 
 TEST_CASE("LlvmJitProof_TableShapesAndArraySpecialization")

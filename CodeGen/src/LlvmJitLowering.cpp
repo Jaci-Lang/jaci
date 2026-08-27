@@ -15,10 +15,14 @@
 #include "lgc.h"
 
 #include <climits>
+#include <array>
+#include <bitset>
 #include <cmath>
+#include <optional>
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/raw_ostream.h"
@@ -122,6 +126,102 @@ uint32_t instructionWords(const Proto* proto, uint32_t insn)
     }
 }
 
+struct NumericLeafPlan
+{
+    const Proto* proto = nullptr;
+    std::vector<Instruction> operations;
+    std::bitset<256> required;
+    uint8_t returnRegister = 0;
+    uint8_t resultCount = 0;
+};
+
+std::optional<NumericLeafPlan> analyzeNumericLeaf(const Proto* proto)
+{
+    if (proto->is_vararg)
+        return std::nullopt;
+
+    NumericLeafPlan plan;
+    plan.proto = proto;
+    std::bitset<256> defined;
+
+    auto require = [&](uint32_t reg)
+    {
+        if (!defined.test(reg))
+            plan.required.set(reg);
+    };
+
+    for (uint32_t pc = 0; pc < uint32_t(proto->sizecode); ++pc)
+    {
+        const Instruction insn = proto->code[pc];
+        const uint8_t op = LUAU_INSN_OP(insn);
+        if (op == LOP_RETURN)
+        {
+            const int resultCount = int(LUAU_INSN_B(insn)) - 1;
+            if (resultCount <= 0 || pc + 1 != uint32_t(proto->sizecode))
+                return std::nullopt;
+
+            for (int result = 0; result < resultCount; ++result)
+                require(LUAU_INSN_A(insn) + result);
+
+            plan.returnRegister = LUAU_INSN_A(insn);
+            plan.resultCount = uint8_t(resultCount);
+            if ((plan.required >> proto->numparams).any())
+                return std::nullopt;
+            return plan.operations.empty() ? std::nullopt : std::optional<NumericLeafPlan>(std::move(plan));
+        }
+
+        const uint32_t dst = LUAU_INSN_A(insn);
+        switch (op)
+        {
+        case LOP_MOVE:
+            require(LUAU_INSN_B(insn));
+            break;
+        case LOP_LOADN:
+            break;
+        case LOP_LOADK:
+            if (!ttisnumber(&proto->k[LUAU_INSN_D(insn)]))
+                return std::nullopt;
+            break;
+        case LOP_ADD:
+        case LOP_SUB:
+        case LOP_MUL:
+        case LOP_DIV:
+        case LOP_IDIV:
+        case LOP_MOD:
+            require(LUAU_INSN_B(insn));
+            require(LUAU_INSN_C(insn));
+            break;
+        case LOP_ADDK:
+        case LOP_SUBK:
+        case LOP_MULK:
+        case LOP_DIVK:
+        case LOP_IDIVK:
+        case LOP_MODK:
+        case LOP_SUBRK:
+        case LOP_DIVRK:
+        {
+            const bool constantFirst = op == LOP_SUBRK || op == LOP_DIVRK;
+            const uint32_t source = constantFirst ? LUAU_INSN_C(insn) : LUAU_INSN_B(insn);
+            const uint32_t constant = constantFirst ? LUAU_INSN_B(insn) : LUAU_INSN_C(insn);
+            if (!ttisnumber(&proto->k[constant]))
+                return std::nullopt;
+            require(source);
+            break;
+        }
+        case LOP_MINUS:
+            require(LUAU_INSN_B(insn));
+            break;
+        default:
+            return std::nullopt;
+        }
+
+        defined.set(dst);
+        plan.operations.push_back(insn);
+    }
+
+    return std::nullopt;
+}
+
 // Lowers one proto to a dso_local function with one resume block per bytecode
 // word. Wave 1 fast paths are emitted inline; every other instruction falls
 // back to the VM (savedpc is set to the instruction, the function returns 1).
@@ -196,6 +296,12 @@ public:
 
         for (const Proto* proto : protos)
         {
+            if (std::optional<NumericLeafPlan> plan = analyzeNumericLeaf(proto))
+                numericLeafPlans.push_back(std::move(*plan));
+        }
+
+        for (const Proto* proto : protos)
+        {
             if (!lowerProto(module, proto, error))
                 return false;
         }
@@ -205,6 +311,7 @@ public:
 
 private:
     IRBuilder<> B;
+    std::vector<NumericLeafPlan> numericLeafPlans;
 
     Type* i1Ty = nullptr;
     Type* i32Ty = nullptr;
@@ -266,17 +373,17 @@ private:
 
     Value* addrOf(Value* base, uint64_t offset)
     {
-        return B.CreateAdd(B.CreatePtrToInt(base, i64Ty), B.getInt64(offset));
+        return B.CreateGEP(B.getInt8Ty(), base, B.getInt64(offset));
     }
 
     Value* addrOf(Value* base, Value* offset)
     {
-        return B.CreateAdd(B.CreatePtrToInt(base, i64Ty), offset);
+        return B.CreateGEP(B.getInt8Ty(), base, offset);
     }
 
     Value* toPtr(Value* addr)
     {
-        return B.CreateIntToPtr(addr, ptrTy);
+        return addr->getType()->isPointerTy() ? addr : B.CreateIntToPtr(addr, ptrTy);
     }
 
     Value* contextFunction(Value* context, uint64_t offset, const char* name)
@@ -287,7 +394,7 @@ private:
     Value* regPtrOf(Value* base, int reg)
     {
         // reg is a compile-time constant (8-bit bytecode field)
-        return toPtr(B.CreateAdd(B.CreatePtrToInt(base, i64Ty), B.getInt64(int64_t(reg) * sizeof(TValue)), "reg"));
+        return B.CreateGEP(B.getInt8Ty(), base, B.getInt64(int64_t(reg) * sizeof(TValue)), "reg");
     }
 
     Value* loadTT(Value* tv)
@@ -343,11 +450,6 @@ private:
 
     // libm call through the external pointer table (the JIT object must not
     // reference undefined symbols; libm lives in the host process)
-    FunctionType* dblFn1Ty()
-    {
-        return FunctionType::get(dblTy, {dblTy}, false);
-    }
-
     FunctionType* dblFn2Ty()
     {
         return FunctionType::get(dblTy, {dblTy, dblTy}, false);
@@ -378,30 +480,45 @@ private:
         Value* code = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoCode)), "code");
         Value* savedPc = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiSavedPc)), "savedpc");
 
-        Value* idx =
-            B.CreateSDiv(B.CreateSub(B.CreatePtrToInt(savedPc, i64Ty), B.CreatePtrToInt(code, i64Ty)), B.getInt64(sizeof(Instruction)), "idx");
-        Value* inRange = B.CreateICmpSLT(idx, B.getInt64(sizecode), "inrange");
-
         BasicBlock* dispatch = BasicBlock::Create(B.getContext(), "dispatch", fn);
+        BasicBlock* rangeCheck = BasicBlock::Create(B.getContext(), "rangecheck", fn);
+        BasicBlock* freshDebugCheck = BasicBlock::Create(B.getContext(), "freshdebugcheck", fn);
+        BasicBlock* resumeDebugCheck = BasicBlock::Create(B.getContext(), "resumedebugcheck", fn);
         BasicBlock* fallback = BasicBlock::Create(B.getContext(), "fallback", fn);
         BasicBlock* exitNoop = BasicBlock::Create(B.getContext(), "exit", fn);
-        BasicBlock* debugCheck = BasicBlock::Create(B.getContext(), "debugcheck", fn);
-        B.CreateStore(idx, fbSlot);
-        B.CreateCondBr(inRange, debugCheck, exitNoop);
-
-        // Debugger breakpoints patch live bytecode after compilation, and an
-        // interrupt callback requires the VM's exact instruction boundaries.
-        // Keep the whole invocation in the VM while either is active.
-        B.SetInsertPoint(debugCheck);
-        Value* debugInstructions = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoDebugInsn)), "debuginsn");
-        Value* entryGlobal = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateGlobal)), "entryglobal");
-        Value* interrupt = B.CreateLoad(ptrTy, toPtr(addrOf(entryGlobal, offGlobalCb + offCbInterrupt)), "interrupt");
-        B.CreateCondBr(B.CreateAnd(B.CreateIsNull(debugInstructions), B.CreateIsNull(interrupt)), dispatch, fallback);
 
         // one resume block per bytecode word
         std::vector<BasicBlock*> blocks(sizecode);
         for (uint32_t i = 0; i < sizecode; ++i)
+        {
             blocks[i] = BasicBlock::Create(B.getContext(), "insn" + std::to_string(i), fn);
+            B.SetInsertPoint(blocks[i]);
+            B.CreateStore(B.getInt64(i), fbSlot);
+        }
+        B.SetInsertPoint(entry);
+
+        // Debugger breakpoints patch live bytecode after compilation, and an
+        // interrupt callback requires the VM's exact instruction boundaries.
+        // Keep the whole invocation in the VM while either is active.
+        Value* debugInstructions = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoDebugInsn)), "debuginsn");
+        Value* entryGlobal = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateGlobal)), "entryglobal");
+        Value* interrupt = B.CreateLoad(ptrTy, toPtr(addrOf(entryGlobal, offGlobalCb + offCbInterrupt)), "interrupt");
+        Value* nativeReady = B.CreateAnd(B.CreateIsNull(debugInstructions), B.CreateIsNull(interrupt), "nativeready");
+        B.CreateCondBr(B.CreateICmpEQ(savedPc, code, "freshentry"), freshDebugCheck, rangeCheck);
+
+        // Fresh calls avoid savedpc subtraction, division, bounds checking,
+        // and the resume switch. Hot Lua-to-Lua calls enter through this path.
+        B.SetInsertPoint(freshDebugCheck);
+        B.CreateCondBr(nativeReady, blocks[0], fallback);
+
+        B.SetInsertPoint(rangeCheck);
+        Value* idx =
+            B.CreateSDiv(B.CreateSub(B.CreatePtrToInt(savedPc, i64Ty), B.CreatePtrToInt(code, i64Ty)), B.getInt64(sizeof(Instruction)), "idx");
+        B.CreateStore(idx, fbSlot);
+        B.CreateCondBr(B.CreateICmpULT(idx, B.getInt64(sizecode), "inrange"), resumeDebugCheck, exitNoop);
+
+        B.SetInsertPoint(resumeDebugCheck);
+        B.CreateCondBr(nativeReady, dispatch, fallback);
 
         B.SetInsertPoint(dispatch);
         SwitchInst* sw = B.CreateSwitch(idx, fallback, sizecode);
@@ -494,15 +611,13 @@ private:
                 break;
             case BinOp::IDiv:
             {
-                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(::floor))), ptrTy);
-                r = B.CreateCall(dblFn1Ty(), flFn, {B.CreateFDiv(nb, nc)});
+                r = B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, B.CreateFDiv(nb, nc));
                 break;
             }
             case BinOp::Mod:
             {
                 // luai_nummod: a - floor(a / b) * b
-                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(::floor))), ptrTy);
-                Value* fl = B.CreateCall(dblFn1Ty(), flFn, {B.CreateFDiv(nb, nc)});
+                Value* fl = B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, B.CreateFDiv(nb, nc));
                 r = B.CreateFSub(nb, B.CreateFMul(fl, nc));
                 break;
             }
@@ -530,19 +645,22 @@ private:
 
             B.SetInsertPoint(blocks[i]);
             Value* rb = regPtrOf(base, int(breg));
-            Value* k = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoK)), "k");
-            Value* kv = toPtr(addrOf(k, uint64_t(cidx) * sizeof(TValue)));
+            const TValue* kv = &proto->k[cidx];
+            if (!ttisnumber(kv))
+            {
+                fb(i);
+                return;
+            }
 
             Value* ttR = loadTT(rb);
-            Value* ttK = loadTT(kv);
-            Value* fast = B.CreateAnd(B.CreateICmpEQ(ttR, B.getInt32(LUA_TNUMBER)), B.CreateICmpEQ(ttK, B.getInt32(LUA_TNUMBER)), "fast");
+            Value* fast = B.CreateICmpEQ(ttR, B.getInt32(LUA_TNUMBER), "fast");
 
             BasicBlock* fastBlock = BasicBlock::Create(B.getContext(), "fast", fn);
             B.CreateCondBr(fast, fastBlock, fallback);
 
             B.SetInsertPoint(fastBlock);
             Value* nr = loadNum(rb);
-            Value* nk = loadNum(kv);
+            Value* nk = ConstantFP::get(dblTy, nvalue(kv));
             Value* r;
             switch (op)
             {
@@ -560,14 +678,12 @@ private:
                 break;
             case LOP_IDIVK:
             {
-                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(::floor))), ptrTy);
-                r = B.CreateCall(dblFn1Ty(), flFn, {B.CreateFDiv(nr, nk)});
+                r = B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, B.CreateFDiv(nr, nk));
                 break;
             }
             case LOP_MODK:
             {
-                Value* flFn = ConstantExpr::getIntToPtr(B.getInt64(reinterpret_cast<uintptr_t>(static_cast<double (*)(double)>(::floor))), ptrTy);
-                Value* fl = B.CreateCall(dblFn1Ty(), flFn, {B.CreateFDiv(nr, nk)});
+                Value* fl = B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, B.CreateFDiv(nr, nk));
                 r = B.CreateFSub(nr, B.CreateFMul(fl, nk));
                 break;
             }
@@ -744,10 +860,25 @@ private:
                 B.CreateAnd(B.CreateICmpEQ(keyTag, B.getInt32(LUA_TSTRING)), B.CreateICmpEQ(loadVal(key), loadVal(constant)), "keymatch");
             Value* valuePresent = B.CreateICmpNE(loadTT(node), B.getInt32(LUA_TNIL), "present");
             BasicBlock* hit = BasicBlock::Create(B.getContext(), "cachehit", fn);
-            B.CreateCondBr(B.CreateAnd(keyMatches, valuePresent), hit, fallback);
+            BasicBlock* resolve = BasicBlock::Create(B.getContext(), "cacheresolve", fn);
+            B.CreateCondBr(B.CreateAnd(keyMatches, valuePresent), hit, resolve);
 
             B.SetInsertPoint(hit);
             copyTV(destination, node);
+            B.CreateBr(blocks[next]);
+
+            // The VM patches C after a miss, but LLVM embeds the original C
+            // byte. Resolve an initially stale prediction natively so the
+            // compiled function does not exit on every invocation.
+            B.SetInsertPoint(resolve);
+            FunctionType* getStringType = FunctionType::get(ptrTy, {ptrTy, ptrTy}, false);
+            Value* getString = contextFunction(nativeContext, offsetof(NativeContext, luaH_getstr), "luaH_getstr");
+            Value* resolved = B.CreateCall(getStringType, getString, {table, toPtr(loadVal(constant))}, "resolvedfield");
+            BasicBlock* resolvedHit = BasicBlock::Create(B.getContext(), "resolvedhit", fn);
+            B.CreateCondBr(B.CreateICmpNE(loadTT(resolved), B.getInt32(LUA_TNIL), "resolvedpresent"), resolvedHit, fallback);
+
+            B.SetInsertPoint(resolvedHit);
+            copyTV(destination, resolved);
             B.CreateBr(blocks[next]);
         };
 
@@ -756,7 +887,7 @@ private:
             B.SetInsertPoint(blocks[i]);
             Value* constants = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoK)), "k");
             Value* constant = toPtr(addrOf(constants, uint64_t(auxOf(proto, i)) * sizeof(TValue)));
-            Value* function = toPtr(addrOf(ci, offCiFunc));
+            Value* function = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiFunc)), "func");
             Value* closure = toPtr(loadVal(function));
             Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "env");
             lowerCachedStringGet(i, next, env, regPtrOf(base, int(LUAU_INSN_A(proto->code[i]))), constant);
@@ -795,10 +926,24 @@ private:
             Value* primitive = B.CreateICmpULT(loadTT(source), B.getInt32(LUA_TSTRING), "primitive");
             Value* eligible = B.CreateAnd(B.CreateAnd(keyMatches, valuePresent), B.CreateAnd(writable, primitive), "cachewrite");
             BasicBlock* hit = BasicBlock::Create(B.getContext(), "cachewrite", fn);
-            B.CreateCondBr(eligible, hit, fallback);
+            BasicBlock* resolve = BasicBlock::Create(B.getContext(), "cachewrite_resolve", fn);
+            B.CreateCondBr(eligible, hit, resolve);
 
             B.SetInsertPoint(hit);
             copyTV(node, source);
+            B.CreateBr(blocks[next]);
+
+            B.SetInsertPoint(resolve);
+            FunctionType* getStringType = FunctionType::get(ptrTy, {ptrTy, ptrTy}, false);
+            Value* getString = contextFunction(nativeContext, offsetof(NativeContext, luaH_getstr), "luaH_getstr");
+            Value* resolved = B.CreateCall(getStringType, getString, {table, toPtr(loadVal(constant))}, "resolvedfield");
+            Value* resolvedPresent = B.CreateICmpNE(loadTT(resolved), B.getInt32(LUA_TNIL), "resolvedpresent");
+            Value* resolvedEligible = B.CreateAnd(resolvedPresent, B.CreateAnd(writable, primitive), "resolvedwrite");
+            BasicBlock* resolvedHit = BasicBlock::Create(B.getContext(), "resolvedwritehit", fn);
+            B.CreateCondBr(resolvedEligible, resolvedHit, fallback);
+
+            B.SetInsertPoint(resolvedHit);
+            copyTV(resolved, source);
             B.CreateBr(blocks[next]);
         };
 
@@ -807,7 +952,7 @@ private:
             B.SetInsertPoint(blocks[i]);
             Value* constants = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoK)), "k");
             Value* constant = toPtr(addrOf(constants, uint64_t(auxOf(proto, i)) * sizeof(TValue)));
-            Value* function = toPtr(addrOf(ci, offCiFunc));
+            Value* function = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiFunc)), "func");
             Value* closure = toPtr(loadVal(function));
             Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "env");
             lowerCachedStringSet(i, next, env, regPtrOf(base, int(LUAU_INSN_A(proto->code[i]))), constant);
@@ -853,12 +998,25 @@ private:
                 B.CreateAnd(B.CreateICmpEQ(keyTag, B.getInt32(LUA_TSTRING)), B.CreateICmpEQ(loadVal(key), loadVal(constant)), "keymatch");
             Value* present = B.CreateICmpNE(loadTT(node), B.getInt32(LUA_TNIL), "present");
             BasicBlock* hit = BasicBlock::Create(B.getContext(), "namecallhit", fn);
-            B.CreateCondBr(B.CreateAnd(keyMatches, present), hit, fallback);
+            BasicBlock* resolve = BasicBlock::Create(B.getContext(), "namecallresolve", fn);
+            Value* destination = regPtrOf(base, int(LUAU_INSN_A(proto->code[i])));
+            B.CreateCondBr(B.CreateAnd(keyMatches, present), hit, resolve);
 
             B.SetInsertPoint(hit);
-            Value* destination = regPtrOf(base, int(LUAU_INSN_A(proto->code[i])));
             copyTV(toPtr(addrOf(destination, sizeof(TValue))), receiver);
             copyTV(destination, node);
+            B.CreateBr(blocks[next]);
+
+            B.SetInsertPoint(resolve);
+            FunctionType* getStringType = FunctionType::get(ptrTy, {ptrTy, ptrTy}, false);
+            Value* getString = contextFunction(nativeContext, offsetof(NativeContext, luaH_getstr), "luaH_getstr");
+            Value* resolved = B.CreateCall(getStringType, getString, {table, toPtr(loadVal(constant))}, "resolvedmethod");
+            BasicBlock* resolvedHit = BasicBlock::Create(B.getContext(), "namecallresolved", fn);
+            B.CreateCondBr(B.CreateICmpNE(loadTT(resolved), B.getInt32(LUA_TNIL), "resolvedpresent"), resolvedHit, fallback);
+
+            B.SetInsertPoint(resolvedHit);
+            copyTV(toPtr(addrOf(destination, sizeof(TValue))), receiver);
+            copyTV(destination, resolved);
             B.CreateBr(blocks[next]);
         };
 
@@ -1357,7 +1515,7 @@ private:
         // Fixed-argument Lua calls can construct the child CallInfo without
         // allocator or metamethod work.  Return to the VM after setup so it
         // enters the child through the normal native-entry protocol.
-        auto lowerCall = [&](uint32_t i, uint32_t next)
+        auto lowerCall = [&](uint32_t i, uint32_t next, BasicBlock* callEntry)
         {
             const int argumentCount = int(LUAU_INSN_B(proto->code[i])) - 1;
             if (argumentCount < 0)
@@ -1366,7 +1524,7 @@ private:
                 return;
             }
 
-            B.SetInsertPoint(blocks[i]);
+            B.SetInsertPoint(callEntry);
             Value* function = regPtrOf(base, int(LUAU_INSN_A(proto->code[i])));
             Value* isFunction = B.CreateICmpEQ(loadTT(function), B.getInt32(LUA_TFUNCTION), "isfunction");
             BasicBlock* functionBlock = BasicBlock::Create(B.getContext(), "callfunction", fn);
@@ -1386,6 +1544,130 @@ private:
             B.CreateCondBr(B.CreateICmpEQ(isVararg, B.getInt8(0)), fixedBlock, fallback);
 
             B.SetInsertPoint(fixedBlock);
+            BasicBlock* genericFixed = BasicBlock::Create(B.getContext(), "callfixed_generic", fn);
+            const int requestedResultCount = int(LUAU_INSN_C(proto->code[i])) - 1;
+            std::vector<const NumericLeafPlan*> inlineCandidates;
+            for (const NumericLeafPlan& plan : numericLeafPlans)
+            {
+                if (int(plan.proto->numparams) <= argumentCount && int(plan.resultCount) == requestedResultCount)
+                    inlineCandidates.push_back(&plan);
+            }
+
+            SwitchInst* inlineDispatch = nullptr;
+            if (inlineCandidates.empty())
+                B.CreateBr(genericFixed);
+            else
+                inlineDispatch = B.CreateSwitch(B.CreatePtrToInt(childProto, i64Ty, "inline_proto"), genericFixed, inlineCandidates.size());
+
+            for (const NumericLeafPlan* planPtr : inlineCandidates)
+            {
+                const NumericLeafPlan& plan = *planPtr;
+                BasicBlock* matchBlock = BasicBlock::Create(B.getContext(), "callinline_match", fn);
+                inlineDispatch->addCase(B.getInt64(uint64_t(reinterpret_cast<uintptr_t>(plan.proto))), matchBlock);
+
+                B.SetInsertPoint(matchBlock);
+                Value* childDebug = B.CreateLoad(ptrTy, toPtr(addrOf(childProto, offProtoDebugInsn)), "inline_debuginsn");
+                Value* global = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateGlobal)), "inline_global");
+                Value* interrupt = B.CreateLoad(ptrTy, toPtr(addrOf(global, offGlobalCb + offCbInterrupt)), "inline_interrupt");
+                Value* eligible = B.CreateAnd(B.CreateIsNull(childDebug), B.CreateIsNull(interrupt), "inline_ready");
+                for (uint32_t reg = 0; reg < 256; ++reg)
+                {
+                    if (plan.required.test(reg))
+                    {
+                        Value* argument = toPtr(addrOf(function, uint64_t(reg + 1) * sizeof(TValue)));
+                        eligible = B.CreateAnd(eligible, B.CreateICmpEQ(loadTT(argument), B.getInt32(LUA_TNUMBER)), "inline_num");
+                    }
+                }
+
+                BasicBlock* inlineBlock = BasicBlock::Create(B.getContext(), "callinline", fn);
+                B.CreateCondBr(eligible, inlineBlock, genericFixed);
+                B.SetInsertPoint(inlineBlock);
+
+                std::array<Value*, 256> values{};
+                for (uint32_t reg = 0; reg < 256; ++reg)
+                {
+                    if (plan.required.test(reg))
+                        values[reg] = loadNum(toPtr(addrOf(function, uint64_t(reg + 1) * sizeof(TValue))));
+                }
+
+                for (Instruction leafInsn : plan.operations)
+                {
+                    const uint8_t leafOp = LUAU_INSN_OP(leafInsn);
+                    const uint32_t dst = LUAU_INSN_A(leafInsn);
+                    Value* result = nullptr;
+
+                    if (leafOp == LOP_MOVE)
+                        result = values[LUAU_INSN_B(leafInsn)];
+                    else if (leafOp == LOP_LOADN)
+                        result = ConstantFP::get(dblTy, double(LUAU_INSN_D(leafInsn)));
+                    else if (leafOp == LOP_LOADK)
+                        result = ConstantFP::get(dblTy, nvalue(&plan.proto->k[LUAU_INSN_D(leafInsn)]));
+                    else if (leafOp == LOP_MINUS)
+                        result = B.CreateFNeg(values[LUAU_INSN_B(leafInsn)]);
+                    else
+                    {
+                        const bool constantOp = leafOp == LOP_ADDK || leafOp == LOP_SUBK || leafOp == LOP_MULK || leafOp == LOP_DIVK ||
+                                                leafOp == LOP_IDIVK || leafOp == LOP_MODK || leafOp == LOP_SUBRK || leafOp == LOP_DIVRK;
+                        const bool constantFirst = leafOp == LOP_SUBRK || leafOp == LOP_DIVRK;
+                        Value* lhs = nullptr;
+                        Value* rhs = nullptr;
+                        if (constantOp)
+                        {
+                            const uint32_t source = constantFirst ? LUAU_INSN_C(leafInsn) : LUAU_INSN_B(leafInsn);
+                            const uint32_t constantIndex = constantFirst ? LUAU_INSN_B(leafInsn) : LUAU_INSN_C(leafInsn);
+                            Value* constant = ConstantFP::get(dblTy, nvalue(&plan.proto->k[constantIndex]));
+                            lhs = constantFirst ? constant : values[source];
+                            rhs = constantFirst ? values[source] : constant;
+                        }
+                        else
+                        {
+                            lhs = values[LUAU_INSN_B(leafInsn)];
+                            rhs = values[LUAU_INSN_C(leafInsn)];
+                        }
+
+                        switch (leafOp)
+                        {
+                        case LOP_ADD:
+                        case LOP_ADDK:
+                            result = B.CreateFAdd(lhs, rhs);
+                            break;
+                        case LOP_SUB:
+                        case LOP_SUBK:
+                        case LOP_SUBRK:
+                            result = B.CreateFSub(lhs, rhs);
+                            break;
+                        case LOP_MUL:
+                        case LOP_MULK:
+                            result = B.CreateFMul(lhs, rhs);
+                            break;
+                        case LOP_DIV:
+                        case LOP_DIVK:
+                        case LOP_DIVRK:
+                            result = B.CreateFDiv(lhs, rhs);
+                            break;
+                        case LOP_IDIV:
+                        case LOP_IDIVK:
+                            result = B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, B.CreateFDiv(lhs, rhs));
+                            break;
+                        default:
+                        {
+                            Value* quotient = B.CreateFDiv(lhs, rhs);
+                            result = B.CreateFSub(lhs, B.CreateFMul(B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, quotient), rhs));
+                            break;
+                        }
+                        }
+                    }
+
+                    CODEGEN_ASSERT(result != nullptr);
+                    values[dst] = result;
+                }
+
+                for (uint32_t result = 0; result < plan.resultCount; ++result)
+                    storeNum(toPtr(addrOf(function, uint64_t(result) * sizeof(TValue))), values[plan.returnRegister + result]);
+                B.CreateBr(blocks[next]);
+            }
+
+            B.SetInsertPoint(genericFixed);
             Value* numparams = B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(childProto, offProtoNumParams)), "numparams");
             Value* childBase = toPtr(addrOf(function, uint64_t(sizeof(TValue))));
             Value* argTop = toPtr(addrOf(childBase, uint64_t(argumentCount) * sizeof(TValue)));
@@ -1422,12 +1704,10 @@ private:
 
             B.SetInsertPoint(afterFill);
             Value* childCode = B.CreateLoad(ptrTy, toPtr(addrOf(childProto, offProtoCodeEntry)), "childcode");
-            Value* requestedResults = B.getInt32(int(LUAU_INSN_C(proto->code[i])) - 1);
-            Value* compiled = B.CreateAnd(
-                B.CreateIsNotNull(B.CreateLoad(ptrTy, toPtr(addrOf(childProto, offProtoExecData)))),
-                B.CreateICmpNE(B.CreateLoad(i64Ty, toPtr(addrOf(childProto, offProtoExecTarget))), B.getInt64(0)),
-                "compiled"
-            );
+            Value* requestedResults = B.getInt32(requestedResultCount);
+            Value* childExecData = B.CreateLoad(ptrTy, toPtr(addrOf(childProto, offProtoExecData)), "childexecdata");
+            Value* childExecBase = B.CreateLoad(i64Ty, toPtr(addrOf(childProto, offProtoExecTarget)), "childexecbase");
+            Value* compiled = B.CreateAnd(B.CreateIsNotNull(childExecData), B.CreateICmpNE(childExecBase, B.getInt64(0)), "compiled");
             B.CreateStore(function, toPtr(addrOf(childCi, offCiFunc)));
             B.CreateStore(childBase, toPtr(addrOf(childCi, offCiBase)));
             B.CreateStore(childTop, toPtr(addrOf(childCi, offCiTop)));
@@ -1443,7 +1723,34 @@ private:
             B.CreateStore(childCi, toPtr(addrOf(L, offLStateCi)));
             B.CreateStore(childBase, toPtr(addrOf(L, offLStateBase)));
             B.CreateStore(childTop, toPtr(addrOf(L, offLStateTop)));
+
+            // Enter an LLVM child directly through its regular C ABI. A
+            // normal child return restores parentCi, allowing this function
+            // to resume without a native -> VM -> native gateway round trip.
+            // If the child yields or falls back while its frame remains
+            // active, propagate its status to the VM unchanged.
+            BasicBlock* directCall = BasicBlock::Create(B.getContext(), "calldirect", fn);
+            BasicBlock* vmCall = BasicBlock::Create(B.getContext(), "callvm", fn);
+            B.CreateCondBr(compiled, directCall, vmCall);
+
+            B.SetInsertPoint(vmCall);
             B.CreateRet(B.getInt32(1));
+
+            B.SetInsertPoint(directCall);
+            Value* entryOffset = B.CreateZExt(B.CreateLoad(i32Ty, childExecData, "childentryoffset"), i64Ty);
+            Value* childTarget = toPtr(B.CreateAdd(childExecBase, entryOffset, "childtarget"));
+            FunctionType* entryType = FunctionType::get(i32Ty, {ptrTy, ptrTy, ptrTy, ptrTy}, false);
+            Value* childResult = B.CreateCall(entryType, childTarget, {L, childProto, childTarget, nativeContext}, "childresult");
+            Value* currentCi = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateCi)), "ci_after_child");
+            BasicBlock* resumeParent = BasicBlock::Create(B.getContext(), "callresume", fn);
+            BasicBlock* leaveNative = BasicBlock::Create(B.getContext(), "callleave", fn);
+            B.CreateCondBr(B.CreateICmpEQ(currentCi, parentCi), resumeParent, leaveNative);
+
+            B.SetInsertPoint(resumeParent);
+            B.CreateBr(blocks[next]);
+
+            B.SetInsertPoint(leaveNative);
+            B.CreateRet(childResult);
         };
 
         // CALLFB uses the regular call protocol and additionally records its
@@ -1451,11 +1758,11 @@ private:
         // stack growth, metamethod calls, C yields, and feedback callbacks keep
         // the VM's exact ordering.  Resume through the VM because any of these
         // operations may replace the stack or the active prototype.
-        auto lowerCallFeedback = [&](uint32_t i, uint32_t next)
+        auto lowerCallFeedback = [&](uint32_t i, uint32_t next, BasicBlock* callEntry)
         {
             const int argumentCount = int(LUAU_INSN_B(proto->code[i])) - 1;
 
-            B.SetInsertPoint(blocks[i]);
+            B.SetInsertPoint(callEntry);
             Value* function = regPtrOf(base, int(LUAU_INSN_A(proto->code[i])));
             Value* argTop = argumentCount == LUA_MULTRET ? B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateTop)), "argtop")
                                                          : toPtr(addrOf(function, uint64_t(1 + argumentCount) * sizeof(TValue)));
@@ -1499,9 +1806,125 @@ private:
             B.CreateBr(blocks[next]);
         };
 
-        // Coverage counters live in the original bytecode instruction.  The
-        // E field is a saturated 23-bit hit count, so increment bit 8 only
-        // while the field remains below the VM's maximum.
+        auto isUnaryMathFastcall = [](uint32_t builtin)
+        {
+            return builtin == LBF_MATH_ABS || builtin == LBF_MATH_FLOOR || builtin == LBF_MATH_CEIL || builtin == LBF_MATH_SQRT ||
+                   builtin == LBF_MATH_ROUND || builtin == LBF_MATH_DEG || builtin == LBF_MATH_RAD || builtin == LBF_MATH_SIGN;
+        };
+
+        auto isBinaryMinMaxFastcall = [](uint32_t builtin)
+        {
+            return builtin == LBF_MATH_MIN || builtin == LBF_MATH_MAX;
+        };
+
+        auto emitUnaryMath = [&](uint32_t builtin, Value* input) -> Value*
+        {
+            switch (builtin)
+            {
+            case LBF_MATH_ABS:
+                return B.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, input);
+            case LBF_MATH_FLOOR:
+                return B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, input);
+            case LBF_MATH_CEIL:
+                return B.CreateUnaryIntrinsic(llvm::Intrinsic::ceil, input);
+            case LBF_MATH_SQRT:
+                return B.CreateUnaryIntrinsic(llvm::Intrinsic::sqrt, input);
+            case LBF_MATH_ROUND:
+                return B.CreateUnaryIntrinsic(llvm::Intrinsic::round, input);
+            case LBF_MATH_DEG:
+                return B.CreateFDiv(input, ConstantFP::get(dblTy, 3.14159265358979323846 / 180.0), "math_deg");
+            case LBF_MATH_RAD:
+                return B.CreateFMul(input, ConstantFP::get(dblTy, 3.14159265358979323846 / 180.0), "math_rad");
+            case LBF_MATH_SIGN:
+            {
+                Value* zero = ConstantFP::get(dblTy, 0.0);
+                Value* negative = B.CreateSelect(B.CreateFCmpOLT(input, zero), ConstantFP::get(dblTy, -1.0), zero);
+                return B.CreateSelect(B.CreateFCmpOGT(input, zero), ConstantFP::get(dblTy, 1.0), negative, "math_sign");
+            }
+            default:
+                CODEGEN_ASSERT(false);
+                return nullptr;
+            }
+        };
+
+        // Preserve the VM builtin's ordered comparison and first-argument
+        // tie/NaN behavior.  LLVM can lower this compare/select pair to the
+        // target's scalar min/max instruction with the required operand order.
+        auto emitBinaryMinMax = [&](uint32_t builtin, Value* first, Value* second) -> Value*
+        {
+            llvm::CmpInst::Predicate predicate = builtin == LBF_MATH_MIN ? llvm::CmpInst::FCMP_OLT : llvm::CmpInst::FCMP_OGT;
+            return B.CreateSelect(B.CreateFCmp(predicate, second, first), second, first, builtin == LBF_MATH_MIN ? "math_min" : "math_max");
+        };
+
+        auto lowerFastCall = [&](uint32_t i, uint32_t next)
+        {
+            const Instruction insn = proto->code[i];
+            const uint8_t op = LUAU_INSN_OP(insn);
+            const uint32_t builtin = LUAU_INSN_A(insn);
+            const bool unary = op == LOP_FASTCALL1 && isUnaryMathFastcall(builtin);
+            const bool binary = (op == LOP_FASTCALL2 || op == LOP_FASTCALL2K) && isBinaryMinMaxFastcall(builtin);
+            if (!unary && !binary)
+            {
+                B.CreateBr(blocks[next]);
+                return;
+            }
+
+            const uint32_t callIndex = i + 1 + LUAU_INSN_C(insn);
+            if (callIndex >= sizecode || LUAU_INSN_OP(proto->code[callIndex]) != LOP_CALL || callIndex + 1 >= sizecode)
+            {
+                B.CreateBr(blocks[next]);
+                return;
+            }
+
+            const Instruction call = proto->code[callIndex];
+            const int argumentCount = unary ? 1 : 2;
+            if (int(LUAU_INSN_B(call)) - 1 != argumentCount || int(LUAU_INSN_C(call)) - 1 != 1)
+            {
+                B.CreateBr(blocks[next]);
+                return;
+            }
+
+            Value* second = nullptr;
+            Value* secondEligible = B.getInt1(true);
+            if (op == LOP_FASTCALL2)
+            {
+                Value* secondArgument = regPtrOf(base, int(auxOf(proto, i) & 0xff));
+                secondEligible = B.CreateICmpEQ(loadTT(secondArgument), B.getInt32(LUA_TNUMBER));
+                second = loadNum(secondArgument);
+            }
+            else if (op == LOP_FASTCALL2K)
+            {
+                const uint32_t constantIndex = auxOf(proto, i);
+                if (constantIndex >= uint32_t(proto->sizek) || !ttisnumber(&proto->k[constantIndex]))
+                {
+                    B.CreateBr(blocks[next]);
+                    return;
+                }
+                second = ConstantFP::get(dblTy, nvalue(&proto->k[constantIndex]));
+            }
+
+            Value* function = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiFunc)), "func");
+            Value* closure = toPtr(loadVal(function));
+            Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "fastcall_env");
+            BasicBlock* envBlock = BasicBlock::Create(B.getContext(), "fastcall_env_check", fn);
+            B.CreateCondBr(B.CreateIsNotNull(env), envBlock, blocks[next]);
+
+            B.SetInsertPoint(envBlock);
+            Value* safeEnv = B.CreateICmpNE(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(env, offTableSafeEnv))), B.getInt8(0), "fastcall_safeenv");
+            Value* argument = regPtrOf(base, int(LUAU_INSN_B(insn)));
+            Value* eligible =
+                B.CreateAnd(B.CreateAnd(safeEnv, B.CreateICmpEQ(loadTT(argument), B.getInt32(LUA_TNUMBER))), secondEligible, "fastcall_num");
+            BasicBlock* fast = BasicBlock::Create(B.getContext(), "fastcall_math", fn);
+            B.CreateCondBr(eligible, fast, blocks[next]);
+
+            B.SetInsertPoint(fast);
+            Value* input = loadNum(argument);
+            Value* result = unary ? emitUnaryMath(builtin, input) : emitBinaryMinMax(builtin, input, second);
+
+            storeNum(regPtrOf(base, int(LUAU_INSN_A(call))), result);
+            B.CreateBr(blocks[callIndex + 1]);
+        };
+
         auto lowerCoverage = [&](uint32_t i, uint32_t next)
         {
             B.SetInsertPoint(blocks[i]);
@@ -1524,7 +1947,7 @@ private:
             Value* ra = regPtrOf(base, int(a));
             Value* table = toPtr(addrOf(ra, sizeof(TValue)));
             Value* index = toPtr(addrOf(ra, 2 * sizeof(TValue)));
-            Value* function = toPtr(addrOf(ci, offCiFunc));
+            Value* function = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiFunc)), "func");
             Value* closure = toPtr(loadVal(function));
             Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "env");
 
@@ -1563,7 +1986,7 @@ private:
             Value* ra = regPtrOf(base, int(a));
             Value* table = toPtr(addrOf(ra, sizeof(TValue)));
             Value* index = toPtr(addrOf(ra, 2 * sizeof(TValue)));
-            Value* function = toPtr(addrOf(ci, offCiFunc));
+            Value* function = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiFunc)), "func");
             Value* closure = toPtr(loadVal(function));
             Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "env");
             Value* safeEnv = B.CreateAnd(
@@ -1888,7 +2311,7 @@ private:
             Value* children = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoP)), "children");
             Value* child = B.CreateLoad(ptrTy, toPtr(addrOf(children, uint64_t(childIndex) * sizeof(Proto*))), "child");
             Value* nups = B.CreateZExt(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(child, offProtoNups))), i32Ty, "nups");
-            Value* function = toPtr(addrOf(ci, offCiFunc));
+            Value* function = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiFunc)), "func");
             Value* currentClosure = toPtr(loadVal(function));
             Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(currentClosure, offClosureEnv)), "env");
 
@@ -1992,6 +2415,904 @@ private:
             B.CreateRet(B.getInt32(1));
         };
 
+        auto constantLoopStep = [&](uint32_t prepIndex) -> std::optional<double>
+        {
+            if (prepIndex == 0 || LUAU_INSN_OP(proto->code[prepIndex]) != LOP_FORNPREP)
+                return std::nullopt;
+
+            uint32_t producerIndex = 0;
+            for (uint32_t cursor = 0; cursor < prepIndex;)
+            {
+                producerIndex = cursor;
+                cursor += instructionWords(proto, proto->code[cursor]);
+                if (cursor > prepIndex)
+                    return std::nullopt;
+            }
+
+            const uint32_t stepReg = LUAU_INSN_A(proto->code[prepIndex]) + 1;
+            const Instruction producer = proto->code[producerIndex];
+            if (LUAU_INSN_A(producer) != stepReg)
+                return std::nullopt;
+
+            if (LUAU_INSN_OP(producer) == LOP_LOADN)
+                return double(LUAU_INSN_D(producer));
+
+            if (LUAU_INSN_OP(producer) == LOP_LOADK)
+            {
+                const TValue* constant = &proto->k[LUAU_INSN_D(producer)];
+                if (ttisnumber(constant))
+                    return nvalue(constant);
+            }
+
+            return std::nullopt;
+        };
+
+        // Fuse an acyclic numeric for-loop body into one promotable SSA region.
+        // Generic instruction blocks remain available for VM resume at every
+        // bytecode PC, while the normal loop entry avoids repeated TValue tag
+        // checks and intermediate register-file stores. Forward jumps and
+        // numeric equality branches form LLVM CFG edges; mem2reg reconstructs
+        // loop and branch phis from the private scalar slots.
+        auto lowerNumericLoopRegion = [&](uint32_t prepIndex, uint32_t bodyStart, Value* limit, Value* step, Value* initialIndex) -> bool
+        {
+            const uint32_t a = LUAU_INSN_A(proto->code[prepIndex]);
+            const int64_t exitIndex64 = int64_t(prepIndex) + 1 + int64_t(LUAU_INSN_D(proto->code[prepIndex]));
+            if (exitIndex64 <= int64_t(bodyStart) || exitIndex64 > int64_t(sizecode))
+                return false;
+
+            const uint32_t loopIndex = uint32_t(exitIndex64 - 1);
+            if (LUAU_INSN_OP(proto->code[loopIndex]) != LOP_FORNLOOP || LUAU_INSN_A(proto->code[loopIndex]) != a ||
+                int64_t(loopIndex) + 1 + int64_t(LUAU_INSN_D(proto->code[loopIndex])) != int64_t(bodyStart))
+                return false;
+
+            std::vector<uint32_t> bodyPcs;
+            std::vector<bool> instructionStart(sizecode, false);
+            for (uint32_t pc = bodyStart; pc < loopIndex;)
+            {
+                instructionStart[pc] = true;
+                bodyPcs.push_back(pc);
+                const uint32_t words = instructionWords(proto, proto->code[pc]);
+                if (words == 0 || pc + words > loopIndex)
+                    return false;
+                pc += words;
+            }
+            instructionStart[loopIndex] = true;
+
+            std::vector<std::bitset<256>> reads(sizecode);
+            std::vector<std::bitset<256>> writes(sizecode);
+            std::vector<std::vector<uint32_t>> predecessors(sizecode);
+            std::bitset<256> required;
+            std::bitset<256> modified;
+            std::bitset<256> requiredTables;
+            std::vector<bool> traceSkipped(sizecode, false);
+            std::vector<uint32_t> fastCallResume(sizecode, 0);
+            bool requiresSafeEnv = false;
+
+            for (uint32_t pc : bodyPcs)
+            {
+                const Instruction bodyInsn = proto->code[pc];
+                const uint8_t bodyOp = LUAU_INSN_OP(bodyInsn);
+                if (bodyOp != LOP_FASTCALL1 && bodyOp != LOP_FASTCALL2 && bodyOp != LOP_FASTCALL2K)
+                    continue;
+
+                const uint32_t builtin = LUAU_INSN_A(bodyInsn);
+                const bool unary = bodyOp == LOP_FASTCALL1 && isUnaryMathFastcall(builtin);
+                const bool binary = (bodyOp == LOP_FASTCALL2 || bodyOp == LOP_FASTCALL2K) && isBinaryMinMaxFastcall(builtin);
+                if (!unary && !binary)
+                    return false;
+
+                if (bodyOp == LOP_FASTCALL2K)
+                {
+                    const uint32_t constantIndex = auxOf(proto, pc);
+                    if (constantIndex >= uint32_t(proto->sizek) || !ttisnumber(&proto->k[constantIndex]))
+                        return false;
+                }
+
+                const uint32_t callIndex = pc + 1 + LUAU_INSN_C(bodyInsn);
+                if (callIndex >= loopIndex || LUAU_INSN_OP(proto->code[callIndex]) != LOP_CALL)
+                    return false;
+                const Instruction call = proto->code[callIndex];
+                const int argumentCount = unary ? 1 : 2;
+                if (int(LUAU_INSN_B(call)) - 1 != argumentCount || int(LUAU_INSN_C(call)) - 1 != 1 ||
+                    (LUAU_INSN_A(call) >= a && LUAU_INSN_A(call) <= a + 2))
+                    return false;
+
+                for (uint32_t skipped = pc + instructionWords(proto, bodyInsn); skipped <= callIndex;
+                     skipped += instructionWords(proto, proto->code[skipped]))
+                    traceSkipped[skipped] = true;
+                fastCallResume[pc] = callIndex + 1;
+                requiresSafeEnv = true;
+            }
+
+            auto addSuccessor = [&](uint32_t pc, int64_t target) -> bool
+            {
+                if (target <= int64_t(pc) || target > int64_t(loopIndex) || !instructionStart[uint32_t(target)])
+                    return false;
+                predecessors[uint32_t(target)].push_back(pc);
+                return true;
+            };
+
+            auto addNumericOperands = [&](uint32_t pc) -> bool
+            {
+                const Instruction bodyInsn = proto->code[pc];
+                const uint8_t bodyOp = LUAU_INSN_OP(bodyInsn);
+                const uint32_t dst = LUAU_INSN_A(bodyInsn);
+
+                if (dst >= a && dst <= a + 2)
+                    return false;
+
+                switch (bodyOp)
+                {
+                case LOP_MOVE:
+                    reads[pc].set(LUAU_INSN_B(bodyInsn));
+                    break;
+                case LOP_LOADN:
+                    break;
+                case LOP_LOADK:
+                    if (!ttisnumber(&proto->k[LUAU_INSN_D(bodyInsn)]))
+                        return false;
+                    break;
+                case LOP_ADD:
+                case LOP_SUB:
+                case LOP_MUL:
+                case LOP_DIV:
+                case LOP_IDIV:
+                case LOP_MOD:
+                    reads[pc].set(LUAU_INSN_B(bodyInsn));
+                    reads[pc].set(LUAU_INSN_C(bodyInsn));
+                    break;
+                case LOP_ADDK:
+                case LOP_SUBK:
+                case LOP_MULK:
+                case LOP_DIVK:
+                case LOP_IDIVK:
+                case LOP_MODK:
+                case LOP_SUBRK:
+                case LOP_DIVRK:
+                {
+                    const bool constantFirst = bodyOp == LOP_SUBRK || bodyOp == LOP_DIVRK;
+                    const uint32_t source = constantFirst ? LUAU_INSN_C(bodyInsn) : LUAU_INSN_B(bodyInsn);
+                    const uint32_t constantIndex = constantFirst ? LUAU_INSN_B(bodyInsn) : LUAU_INSN_C(bodyInsn);
+                    if (!ttisnumber(&proto->k[constantIndex]))
+                        return false;
+                    reads[pc].set(source);
+                    break;
+                }
+                case LOP_MINUS:
+                    reads[pc].set(LUAU_INSN_B(bodyInsn));
+                    break;
+                default:
+                    return false;
+                }
+
+                writes[pc].set(dst);
+                modified.set(dst);
+                return true;
+            };
+
+            for (uint32_t pc : bodyPcs)
+            {
+                if (traceSkipped[pc])
+                    continue;
+
+                const Instruction bodyInsn = proto->code[pc];
+                const uint8_t bodyOp = LUAU_INSN_OP(bodyInsn);
+                const uint32_t next = pc + instructionWords(proto, bodyInsn);
+
+                if (bodyOp == LOP_FASTCALL1 || bodyOp == LOP_FASTCALL2 || bodyOp == LOP_FASTCALL2K)
+                {
+                    const uint32_t destination = LUAU_INSN_A(proto->code[fastCallResume[pc] - 1]);
+                    reads[pc].set(LUAU_INSN_B(bodyInsn));
+                    if (bodyOp == LOP_FASTCALL2)
+                        reads[pc].set(auxOf(proto, pc) & 0xff);
+                    writes[pc].set(destination);
+                    modified.set(destination);
+                    if (!addSuccessor(pc, fastCallResume[pc]))
+                        return false;
+                }
+                else if (bodyOp == LOP_JUMP)
+                {
+                    if (instructionWords(proto, bodyInsn) != 1 || !addSuccessor(pc, int64_t(pc) + 1 + LUAU_INSN_D(bodyInsn)))
+                        return false;
+                }
+                else if (
+                    bodyOp == LOP_JUMPIFEQ || bodyOp == LOP_JUMPIFNOTEQ || bodyOp == LOP_JUMPIFLT || bodyOp == LOP_JUMPIFNOTLT ||
+                    bodyOp == LOP_JUMPIFLE || bodyOp == LOP_JUMPIFNOTLE
+                )
+                {
+                    const uint32_t rhs = auxOf(proto, pc);
+                    if (instructionWords(proto, bodyInsn) != 2 || rhs >= 256)
+                        return false;
+                    reads[pc].set(LUAU_INSN_A(bodyInsn));
+                    reads[pc].set(rhs);
+                    if (!addSuccessor(pc, int64_t(pc) + 1 + LUAU_INSN_D(bodyInsn)) || !addSuccessor(pc, next))
+                        return false;
+                }
+                else if (bodyOp == LOP_JUMPXEQKN)
+                {
+                    const uint32_t aux = auxOf(proto, pc);
+                    if (instructionWords(proto, bodyInsn) != 2 || !ttisnumber(&proto->k[LUAU_INSN_AUX_KV(aux)]))
+                        return false;
+                    reads[pc].set(LUAU_INSN_A(bodyInsn));
+                    if (!addSuccessor(pc, int64_t(pc) + 1 + LUAU_INSN_D(bodyInsn)) || !addSuccessor(pc, next))
+                        return false;
+                }
+                else if (bodyOp == LOP_GETTABLEKS)
+                {
+                    const uint32_t dst = LUAU_INSN_A(bodyInsn);
+                    if (instructionWords(proto, bodyInsn) != 2 || (dst >= a && dst <= a + 2) || !ttisstring(&proto->k[auxOf(proto, pc)]))
+                        return false;
+
+                    requiredTables.set(LUAU_INSN_B(bodyInsn));
+                    writes[pc].set(dst);
+                    modified.set(dst);
+                    if (!addSuccessor(pc, next))
+                        return false;
+                }
+                else if (bodyOp == LOP_SETTABLEKS)
+                {
+                    if (instructionWords(proto, bodyInsn) != 2 || !ttisstring(&proto->k[auxOf(proto, pc)]))
+                        return false;
+
+                    reads[pc].set(LUAU_INSN_A(bodyInsn));
+                    requiredTables.set(LUAU_INSN_B(bodyInsn));
+                    if (!addSuccessor(pc, next))
+                        return false;
+                }
+                else if (bodyOp == LOP_GETTABLE)
+                {
+                    const uint32_t dst = LUAU_INSN_A(bodyInsn);
+                    if (instructionWords(proto, bodyInsn) != 1 || (dst >= a && dst <= a + 2))
+                        return false;
+
+                    reads[pc].set(LUAU_INSN_C(bodyInsn));
+                    requiredTables.set(LUAU_INSN_B(bodyInsn));
+                    writes[pc].set(dst);
+                    modified.set(dst);
+                    if (!addSuccessor(pc, next))
+                        return false;
+                }
+                else
+                {
+                    if (instructionWords(proto, bodyInsn) != 1 || !addNumericOperands(pc) || !addSuccessor(pc, next))
+                        return false;
+                }
+            }
+
+            // Compute registers that must be numeric at region entry using a
+            // forward definite-assignment analysis over the acyclic body.
+            std::vector<std::bitset<256>> definiteOut(sizecode);
+            std::vector<std::bitset<256>> definiteInAt(sizecode);
+            std::vector<bool> reachable(sizecode, false);
+            for (uint32_t pc : bodyPcs)
+            {
+                if (traceSkipped[pc])
+                    continue;
+
+                std::bitset<256> definiteIn;
+                if (pc == bodyStart)
+                    reachable[pc] = true;
+                else
+                {
+                    bool first = true;
+                    for (uint32_t predecessor : predecessors[pc])
+                    {
+                        if (!reachable[predecessor])
+                            continue;
+                        definiteIn = first ? definiteOut[predecessor] : definiteIn & definiteOut[predecessor];
+                        first = false;
+                    }
+                    if (first)
+                        return false;
+                    reachable[pc] = true;
+                }
+
+                required |= reads[pc] & ~definiteIn;
+                definiteInAt[pc] = definiteIn;
+                definiteOut[pc] = definiteIn | writes[pc];
+            }
+
+            std::bitset<256> definiteAtLoop;
+            bool firstLoopPredecessor = true;
+            for (uint32_t predecessor : predecessors[loopIndex])
+            {
+                if (!reachable[predecessor])
+                    continue;
+                definiteAtLoop = firstLoopPredecessor ? definiteOut[predecessor] : definiteAtLoop & definiteOut[predecessor];
+                firstLoopPredecessor = false;
+            }
+            if (firstLoopPredecessor || (modified & ~definiteAtLoop).any())
+                return false;
+
+            required.set(a + 2);
+            if ((requiredTables & (required | modified)).any())
+                return false;
+
+            Value* traceEligible = B.getInt1(true);
+            for (uint32_t reg = 0; reg < 256; ++reg)
+            {
+                if (required.test(reg) && reg != a && reg != a + 1 && reg != a + 2)
+                    traceEligible =
+                        B.CreateAnd(traceEligible, B.CreateICmpEQ(loadTT(regPtrOf(base, int(reg))), B.getInt32(LUA_TNUMBER)), "trace_num");
+            }
+
+            if (requiresSafeEnv)
+            {
+                BasicBlock* envPointerCheck = BasicBlock::Create(B.getContext(), "numloop_env", fn);
+                BasicBlock* envValueCheck = BasicBlock::Create(B.getContext(), "numloop_safeenv", fn);
+                B.CreateCondBr(traceEligible, envPointerCheck, blocks[bodyStart]);
+
+                B.SetInsertPoint(envPointerCheck);
+                Value* function = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiFunc)), "func");
+                Value* closure = toPtr(loadVal(function));
+                Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "numloop_env_ptr");
+                B.CreateCondBr(B.CreateIsNotNull(env), envValueCheck, blocks[bodyStart]);
+
+                B.SetInsertPoint(envValueCheck);
+                traceEligible = B.CreateICmpNE(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(env, offTableSafeEnv))), B.getInt8(0), "numloop_env_safe");
+            }
+
+            // A loop without calls or allocation cannot invalidate a table's
+            // hash storage between backedge safepoints. Resolve string nodes
+            // once, then keep numeric values in scalar SSA while
+            // loading or storing the stable node value directly.
+            std::vector<Value*> cachedNodes(sizecode, nullptr);
+            std::vector<uint32_t> guardedTablePcs;
+            for (uint32_t pc : bodyPcs)
+            {
+                const Instruction bodyInsn = proto->code[pc];
+                const uint8_t bodyOp = LUAU_INSN_OP(bodyInsn);
+                if (bodyOp == LOP_GETTABLEKS || bodyOp == LOP_SETTABLEKS || bodyOp == LOP_GETTABLE)
+                    guardedTablePcs.push_back(pc);
+            }
+
+            BasicBlock* traceInit = BasicBlock::Create(B.getContext(), "numloop_init", fn);
+            if (guardedTablePcs.empty())
+                B.CreateCondBr(traceEligible, traceInit, blocks[bodyStart]);
+            else
+            {
+                BasicBlock* firstCheck = BasicBlock::Create(B.getContext(), "numloop_fields", fn);
+                B.CreateCondBr(traceEligible, firstCheck, blocks[bodyStart]);
+                B.SetInsertPoint(firstCheck);
+            }
+
+            for (size_t fieldIndex = 0; fieldIndex < guardedTablePcs.size(); ++fieldIndex)
+            {
+                const uint32_t pc = guardedTablePcs[fieldIndex];
+                const Instruction bodyInsn = proto->code[pc];
+
+                Value* tableValue = regPtrOf(base, int(LUAU_INSN_B(bodyInsn)));
+                Value* isTable = B.CreateICmpEQ(loadTT(tableValue), B.getInt32(LUA_TTABLE), "trace_table");
+                BasicBlock* inspect = BasicBlock::Create(B.getContext(), "numloop_field", fn);
+                B.CreateCondBr(isTable, inspect, blocks[bodyStart]);
+                B.SetInsertPoint(inspect);
+
+                Value* table = toPtr(loadVal(tableValue));
+                Value* eligible = nullptr;
+                if (LUAU_INSN_OP(bodyInsn) == LOP_GETTABLE)
+                    eligible = B.CreateIsNull(B.CreateLoad(ptrTy, toPtr(addrOf(table, offTableMetatable))), "trace_plain_array");
+                else
+                {
+                    Value* constants = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoK)), "trace_k");
+                    Value* constant = toPtr(addrOf(constants, uint64_t(auxOf(proto, pc)) * sizeof(TValue)));
+                    FunctionType* getStringType = FunctionType::get(ptrTy, {ptrTy, ptrTy}, false);
+                    Value* getString = contextFunction(nativeContext, offsetof(NativeContext, luaH_getstr), "luaH_getstr");
+                    Value* node = B.CreateCall(getStringType, getString, {table, toPtr(loadVal(constant))}, "trace_field_node");
+                    eligible = B.CreateICmpEQ(loadTT(node), B.getInt32(LUA_TNUMBER), "trace_field_num");
+                    if (LUAU_INSN_OP(bodyInsn) == LOP_SETTABLEKS)
+                    {
+                        Value* writable =
+                            B.CreateICmpEQ(B.CreateLoad(B.getInt8Ty(), toPtr(addrOf(table, offTableReadonly))), B.getInt8(0), "trace_writable");
+                        eligible = B.CreateAnd(eligible, writable);
+                    }
+                    cachedNodes[pc] = node;
+                }
+
+                BasicBlock* nextCheck =
+                    fieldIndex + 1 == guardedTablePcs.size() ? traceInit : BasicBlock::Create(B.getContext(), "numloop_field_next", fn);
+                B.CreateCondBr(eligible, nextCheck, blocks[bodyStart]);
+                if (nextCheck != traceInit)
+                    B.SetInsertPoint(nextCheck);
+            }
+
+            B.SetInsertPoint(traceInit);
+
+            std::array<Value*, 256> slots{};
+            llvm::IRBuilder<> allocaBuilder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+            const std::bitset<256> used = required | modified;
+            for (uint32_t reg = 0; reg < 256; ++reg)
+            {
+                if (used.test(reg))
+                    slots[reg] = allocaBuilder.CreateAlloca(dblTy, nullptr, "numloop_slot");
+            }
+
+            for (uint32_t reg = 0; reg < 256; ++reg)
+            {
+                if (!required.test(reg))
+                    continue;
+
+                Value* initial = reg == a ? limit : reg == a + 1 ? step : reg == a + 2 ? initialIndex : loadNum(regPtrOf(base, int(reg)));
+                B.CreateStore(initial, slots[reg]);
+            }
+
+            std::vector<BasicBlock*> traceBlocks(sizecode, nullptr);
+            for (uint32_t pc : bodyPcs)
+            {
+                if (!traceSkipped[pc])
+                    traceBlocks[pc] = BasicBlock::Create(B.getContext(), "numloop_pc" + std::to_string(pc), fn);
+            }
+            traceBlocks[loopIndex] = BasicBlock::Create(B.getContext(), "numloop_backedge", fn);
+            B.CreateBr(traceBlocks[bodyStart]);
+
+            auto loadSlot = [&](uint32_t reg)
+            {
+                CODEGEN_ASSERT(slots[reg] != nullptr);
+                return B.CreateLoad(dblTy, slots[reg], "numloop_value");
+            };
+
+            auto emitNumericInstruction = [&](uint32_t pc)
+            {
+                const Instruction bodyInsn = proto->code[pc];
+                const uint8_t bodyOp = LUAU_INSN_OP(bodyInsn);
+                const uint32_t dst = LUAU_INSN_A(bodyInsn);
+                Value* result = nullptr;
+
+                if (bodyOp == LOP_MOVE)
+                    result = loadSlot(LUAU_INSN_B(bodyInsn));
+                else if (bodyOp == LOP_LOADN)
+                    result = ConstantFP::get(dblTy, double(LUAU_INSN_D(bodyInsn)));
+                else if (bodyOp == LOP_LOADK)
+                    result = ConstantFP::get(dblTy, nvalue(&proto->k[LUAU_INSN_D(bodyInsn)]));
+                else if (bodyOp == LOP_MINUS)
+                    result = B.CreateFNeg(loadSlot(LUAU_INSN_B(bodyInsn)));
+                else
+                {
+                    const bool constantOp = bodyOp == LOP_ADDK || bodyOp == LOP_SUBK || bodyOp == LOP_MULK || bodyOp == LOP_DIVK ||
+                                            bodyOp == LOP_IDIVK || bodyOp == LOP_MODK || bodyOp == LOP_SUBRK || bodyOp == LOP_DIVRK;
+                    const bool constantFirst = bodyOp == LOP_SUBRK || bodyOp == LOP_DIVRK;
+                    Value* lhs = nullptr;
+                    Value* rhs = nullptr;
+                    if (constantOp)
+                    {
+                        const uint32_t source = constantFirst ? LUAU_INSN_C(bodyInsn) : LUAU_INSN_B(bodyInsn);
+                        const uint32_t constantIndex = constantFirst ? LUAU_INSN_B(bodyInsn) : LUAU_INSN_C(bodyInsn);
+                        Value* constant = ConstantFP::get(dblTy, nvalue(&proto->k[constantIndex]));
+                        Value* sourceValue = loadSlot(source);
+                        lhs = constantFirst ? constant : sourceValue;
+                        rhs = constantFirst ? sourceValue : constant;
+                    }
+                    else
+                    {
+                        lhs = loadSlot(LUAU_INSN_B(bodyInsn));
+                        rhs = loadSlot(LUAU_INSN_C(bodyInsn));
+                    }
+
+                    switch (bodyOp)
+                    {
+                    case LOP_ADD:
+                    case LOP_ADDK:
+                        result = B.CreateFAdd(lhs, rhs);
+                        break;
+                    case LOP_SUB:
+                    case LOP_SUBK:
+                    case LOP_SUBRK:
+                        result = B.CreateFSub(lhs, rhs);
+                        break;
+                    case LOP_MUL:
+                    case LOP_MULK:
+                        result = B.CreateFMul(lhs, rhs);
+                        break;
+                    case LOP_DIV:
+                    case LOP_DIVK:
+                    case LOP_DIVRK:
+                        result = B.CreateFDiv(lhs, rhs);
+                        break;
+                    case LOP_IDIV:
+                    case LOP_IDIVK:
+                        result = B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, B.CreateFDiv(lhs, rhs));
+                        break;
+                    default:
+                    {
+                        Value* quotient = B.CreateFDiv(lhs, rhs);
+                        Value* floored = B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, quotient);
+                        result = B.CreateFSub(lhs, B.CreateFMul(floored, rhs));
+                        break;
+                    }
+                    }
+                }
+
+                CODEGEN_ASSERT(result != nullptr);
+                B.CreateStore(result, slots[dst]);
+            };
+
+            for (uint32_t pc : bodyPcs)
+            {
+                if (traceSkipped[pc])
+                    continue;
+
+                B.SetInsertPoint(traceBlocks[pc]);
+                const Instruction bodyInsn = proto->code[pc];
+                const uint8_t bodyOp = LUAU_INSN_OP(bodyInsn);
+                const uint32_t next = pc + instructionWords(proto, bodyInsn);
+
+                if (bodyOp == LOP_FASTCALL1 || bodyOp == LOP_FASTCALL2 || bodyOp == LOP_FASTCALL2K)
+                {
+                    Value* input = loadSlot(LUAU_INSN_B(bodyInsn));
+                    const uint32_t builtin = LUAU_INSN_A(bodyInsn);
+                    Value* result = nullptr;
+                    if (bodyOp == LOP_FASTCALL1)
+                        result = emitUnaryMath(builtin, input);
+                    else
+                    {
+                        Value* second = nullptr;
+                        if (bodyOp == LOP_FASTCALL2)
+                            second = loadSlot(auxOf(proto, pc) & 0xff);
+                        else
+                            second = ConstantFP::get(dblTy, nvalue(&proto->k[auxOf(proto, pc)]));
+                        result = emitBinaryMinMax(builtin, input, second);
+                    }
+
+                    const uint32_t destination = LUAU_INSN_A(proto->code[fastCallResume[pc] - 1]);
+                    B.CreateStore(result, slots[destination]);
+                    B.CreateBr(traceBlocks[fastCallResume[pc]]);
+                }
+                else if (bodyOp == LOP_JUMP)
+                    B.CreateBr(traceBlocks[uint32_t(int64_t(pc) + 1 + LUAU_INSN_D(bodyInsn))]);
+                else if (
+                    bodyOp == LOP_JUMPIFEQ || bodyOp == LOP_JUMPIFNOTEQ || bodyOp == LOP_JUMPIFLT || bodyOp == LOP_JUMPIFNOTLT ||
+                    bodyOp == LOP_JUMPIFLE || bodyOp == LOP_JUMPIFNOTLE
+                )
+                {
+                    Value* lhs = loadSlot(LUAU_INSN_A(bodyInsn));
+                    Value* rhs = loadSlot(auxOf(proto, pc));
+                    Value* comparison = nullptr;
+                    if (bodyOp == LOP_JUMPIFEQ || bodyOp == LOP_JUMPIFNOTEQ)
+                        comparison = B.CreateFCmpOEQ(lhs, rhs, "numloop_eq");
+                    else if (bodyOp == LOP_JUMPIFLT || bodyOp == LOP_JUMPIFNOTLT)
+                        comparison = B.CreateFCmpOLT(lhs, rhs, "numloop_lt");
+                    else
+                        comparison = B.CreateFCmpOLE(lhs, rhs, "numloop_le");
+
+                    if (bodyOp == LOP_JUMPIFNOTEQ || bodyOp == LOP_JUMPIFNOTLT || bodyOp == LOP_JUMPIFNOTLE)
+                        comparison = B.CreateNot(comparison);
+
+                    const uint32_t target = uint32_t(int64_t(pc) + 1 + LUAU_INSN_D(bodyInsn));
+                    B.CreateCondBr(comparison, traceBlocks[target], traceBlocks[next]);
+                }
+                else if (bodyOp == LOP_JUMPXEQKN)
+                {
+                    const uint32_t aux = auxOf(proto, pc);
+                    Value* constant = ConstantFP::get(dblTy, nvalue(&proto->k[LUAU_INSN_AUX_KV(aux)]));
+                    Value* matches = B.CreateFCmpOEQ(loadSlot(LUAU_INSN_A(bodyInsn)), constant, "numloop_eq");
+                    Value* jump = LUAU_INSN_AUX_NOT(aux) ? B.CreateNot(matches) : matches;
+                    const uint32_t target = uint32_t(int64_t(pc) + 1 + LUAU_INSN_D(bodyInsn));
+                    B.CreateCondBr(jump, traceBlocks[target], traceBlocks[next]);
+                }
+                else if (bodyOp == LOP_GETTABLEKS)
+                {
+                    B.CreateStore(loadNum(cachedNodes[pc]), slots[LUAU_INSN_A(bodyInsn)]);
+                    B.CreateBr(traceBlocks[next]);
+                }
+                else if (bodyOp == LOP_SETTABLEKS)
+                {
+                    B.CreateStore(loadSlot(LUAU_INSN_A(bodyInsn)), cachedNodes[pc]);
+                    B.CreateBr(traceBlocks[next]);
+                }
+                else if (bodyOp == LOP_GETTABLE)
+                {
+                    Value* key = loadSlot(LUAU_INSN_C(bodyInsn));
+                    Value* inIntRange = B.CreateAnd(
+                        B.CreateFCmpOGE(key, ConstantFP::get(dblTy, 1.0)),
+                        B.CreateFCmpOLE(key, ConstantFP::get(dblTy, double(INT_MAX))),
+                        "numloop_index_range"
+                    );
+                    BasicBlock* indexBlock = BasicBlock::Create(B.getContext(), "numloop_index", fn);
+                    BasicBlock* elementBlock = BasicBlock::Create(B.getContext(), "numloop_element", fn);
+                    BasicBlock* loadBlock = BasicBlock::Create(B.getContext(), "numloop_array_load", fn);
+                    BasicBlock* missBlock = BasicBlock::Create(B.getContext(), "numloop_array_miss", fn);
+                    B.CreateCondBr(inIntRange, indexBlock, missBlock);
+
+                    B.SetInsertPoint(indexBlock);
+                    Value* index = B.CreateFPToSI(key, i32Ty, "numloop_index");
+                    Value* exact = B.CreateFCmpOEQ(key, B.CreateSIToFP(index, dblTy), "numloop_exact_index");
+                    Value* tableValue = regPtrOf(base, int(LUAU_INSN_B(bodyInsn)));
+                    Value* table = toPtr(loadVal(tableValue));
+                    Value* sizeArray = B.CreateLoad(i32Ty, toPtr(addrOf(table, offTableSizeArray)), "numloop_sizearray");
+                    Value* inBounds = B.CreateICmpULT(B.CreateSub(index, B.getInt32(1)), sizeArray, "numloop_inbounds");
+                    B.CreateCondBr(B.CreateAnd(exact, inBounds), elementBlock, missBlock);
+
+                    B.SetInsertPoint(elementBlock);
+                    Value* array = B.CreateLoad(ptrTy, toPtr(addrOf(table, offTableArray)), "numloop_array");
+                    Value* offset = B.CreateMul(B.CreateZExt(B.CreateSub(index, B.getInt32(1)), i64Ty), B.getInt64(sizeof(TValue)));
+                    Value* element = toPtr(addrOf(array, offset));
+                    B.CreateCondBr(B.CreateICmpEQ(loadTT(element), B.getInt32(LUA_TNUMBER), "numloop_element_num"), loadBlock, missBlock);
+
+                    B.SetInsertPoint(loadBlock);
+                    B.CreateStore(loadNum(element), slots[LUAU_INSN_A(bodyInsn)]);
+                    B.CreateBr(traceBlocks[next]);
+
+                    B.SetInsertPoint(missBlock);
+                    const std::bitset<256> initialized = required | definiteInAt[pc];
+                    for (uint32_t reg = 0; reg < 256; ++reg)
+                    {
+                        if (modified.test(reg) && initialized.test(reg))
+                            storeNum(regPtrOf(base, int(reg)), loadSlot(reg));
+                    }
+                    storeNum(regPtrOf(base, int(a + 2)), loadSlot(a + 2));
+                    fb(pc);
+                }
+                else
+                {
+                    emitNumericInstruction(pc);
+                    B.CreateBr(traceBlocks[next]);
+                }
+            }
+
+            B.SetInsertPoint(traceBlocks[loopIndex]);
+            Value* global = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateGlobal)), "loop_global");
+            Value* interrupt = B.CreateLoad(ptrTy, toPtr(addrOf(global, offGlobalCb + offCbInterrupt)), "loop_interrupt");
+            Value* safePoint = B.CreateIsNull(interrupt, "loop_safe");
+            if (FFlag::LuauBackedgeHeapCheck)
+            {
+                Value* total = B.CreateLoad(i64Ty, toPtr(addrOf(global, offGlobalTotalBytes)), "loop_total");
+                Value* threshold = B.CreateLoad(i64Ty, toPtr(addrOf(global, offGlobalGcThreshold)), "loop_threshold");
+                safePoint = B.CreateAnd(safePoint, B.CreateICmpSLT(total, threshold), "loop_safe_gc");
+            }
+
+            BasicBlock* advance = BasicBlock::Create(B.getContext(), "numloop_advance", fn);
+            BasicBlock* syncFallback = BasicBlock::Create(B.getContext(), "numloop_fallback", fn);
+            B.CreateCondBr(safePoint, advance, syncFallback);
+
+            auto syncValues = [&](Value* index)
+            {
+                for (uint32_t reg = 0; reg < 256; ++reg)
+                {
+                    if (modified.test(reg))
+                        storeNum(regPtrOf(base, int(reg)), loadSlot(reg));
+                }
+                storeNum(regPtrOf(base, int(a + 2)), index);
+            };
+
+            B.SetInsertPoint(syncFallback);
+            Value* currentIndex = loadSlot(a + 2);
+            syncValues(currentIndex);
+            fb(loopIndex);
+
+            B.SetInsertPoint(advance);
+            Value* nextIndex = B.CreateFAdd(loadSlot(a + 2), step, "loop_next_index");
+            B.CreateStore(nextIndex, slots[a + 2]);
+            Value* stepPositive = B.CreateFCmpOGT(step, ConstantFP::get(dblTy, 0.0), "loop_step_pos");
+            Value* continueLoop = B.CreateSelect(
+                stepPositive, B.CreateFCmpOLE(nextIndex, limit, "loop_le"), B.CreateFCmpOLE(limit, nextIndex, "loop_ge"), "loop_continue"
+            );
+            BasicBlock* syncExit = BasicBlock::Create(B.getContext(), "numloop_exit", fn);
+            B.CreateCondBr(continueLoop, traceBlocks[bodyStart], syncExit);
+
+            B.SetInsertPoint(syncExit);
+            syncValues(nextIndex);
+            B.CreateBr(blocks[loopIndex + 1]);
+            return true;
+        };
+
+        // Collapse a straight numeric leaf into scalar SSA. This targets the
+        // small arithmetic callbacks commonly invoked from hot loops: validate
+        // numeric inputs once, avoid intermediate TValue stores, then hand the
+        // final registers to the regular return path.
+        auto lowerNumericLeafRegion = [&]() -> BasicBlock*
+        {
+            std::bitset<256> defined;
+            std::bitset<256> required;
+            std::vector<uint32_t> numericPcs;
+            uint32_t returnPc = 0;
+            bool foundReturn = false;
+
+            for (uint32_t pc = 0; pc < sizecode;)
+            {
+                const Instruction insn = proto->code[pc];
+                const uint8_t op = LUAU_INSN_OP(insn);
+                if (instructionWords(proto, insn) != 1)
+                    return nullptr;
+
+                if (op == LOP_RETURN)
+                {
+                    const int resultCount = int(LUAU_INSN_B(insn)) - 1;
+                    if (resultCount <= 0 || pc + 1 != sizecode)
+                        return nullptr;
+                    for (int result = 0; result < resultCount; ++result)
+                    {
+                        const uint32_t reg = LUAU_INSN_A(insn) + result;
+                        if (!defined.test(reg))
+                            required.set(reg);
+                    }
+                    returnPc = pc;
+                    foundReturn = true;
+                    break;
+                }
+
+                const uint32_t dst = LUAU_INSN_A(insn);
+                auto requireReg = [&](uint32_t reg)
+                {
+                    if (!defined.test(reg))
+                        required.set(reg);
+                };
+
+                switch (op)
+                {
+                case LOP_MOVE:
+                    requireReg(LUAU_INSN_B(insn));
+                    break;
+                case LOP_LOADN:
+                    break;
+                case LOP_LOADK:
+                    if (!ttisnumber(&proto->k[LUAU_INSN_D(insn)]))
+                        return nullptr;
+                    break;
+                case LOP_ADD:
+                case LOP_SUB:
+                case LOP_MUL:
+                case LOP_DIV:
+                case LOP_IDIV:
+                case LOP_MOD:
+                    requireReg(LUAU_INSN_B(insn));
+                    requireReg(LUAU_INSN_C(insn));
+                    break;
+                case LOP_ADDK:
+                case LOP_SUBK:
+                case LOP_MULK:
+                case LOP_DIVK:
+                case LOP_IDIVK:
+                case LOP_MODK:
+                case LOP_SUBRK:
+                case LOP_DIVRK:
+                {
+                    const bool constantFirst = op == LOP_SUBRK || op == LOP_DIVRK;
+                    const uint32_t source = constantFirst ? LUAU_INSN_C(insn) : LUAU_INSN_B(insn);
+                    const uint32_t constantIndex = constantFirst ? LUAU_INSN_B(insn) : LUAU_INSN_C(insn);
+                    if (!ttisnumber(&proto->k[constantIndex]))
+                        return nullptr;
+                    requireReg(source);
+                    break;
+                }
+                case LOP_MINUS:
+                    requireReg(LUAU_INSN_B(insn));
+                    break;
+                default:
+                    return nullptr;
+                }
+
+                defined.set(dst);
+                numericPcs.push_back(pc);
+                ++pc;
+            }
+
+            if (numericPcs.empty() || !foundReturn)
+                return nullptr;
+
+            Value* eligible = B.getInt1(true);
+            for (uint32_t reg = 0; reg < 256; ++reg)
+            {
+                if (required.test(reg))
+                    eligible = B.CreateAnd(eligible, B.CreateICmpEQ(loadTT(regPtrOf(base, int(reg))), B.getInt32(LUA_TNUMBER)), "leaf_num");
+            }
+
+            BasicBlock* trace = BasicBlock::Create(B.getContext(), "numleaf", fn);
+            BasicBlock* generic = BasicBlock::Create(B.getContext(), "numleaf_generic", fn);
+            B.CreateCondBr(eligible, trace, generic);
+            B.SetInsertPoint(trace);
+
+            std::array<Value*, 256> values{};
+            for (uint32_t reg = 0; reg < 256; ++reg)
+            {
+                if (required.test(reg))
+                    values[reg] = loadNum(regPtrOf(base, int(reg)));
+            }
+
+            for (uint32_t pc : numericPcs)
+            {
+                const Instruction insn = proto->code[pc];
+                const uint8_t op = LUAU_INSN_OP(insn);
+                const uint32_t dst = LUAU_INSN_A(insn);
+                Value* result = nullptr;
+
+                if (op == LOP_MOVE)
+                    result = values[LUAU_INSN_B(insn)];
+                else if (op == LOP_LOADN)
+                    result = ConstantFP::get(dblTy, double(LUAU_INSN_D(insn)));
+                else if (op == LOP_LOADK)
+                    result = ConstantFP::get(dblTy, nvalue(&proto->k[LUAU_INSN_D(insn)]));
+                else if (op == LOP_MINUS)
+                    result = B.CreateFNeg(values[LUAU_INSN_B(insn)]);
+                else
+                {
+                    const bool constantOp = op == LOP_ADDK || op == LOP_SUBK || op == LOP_MULK || op == LOP_DIVK || op == LOP_IDIVK ||
+                                            op == LOP_MODK || op == LOP_SUBRK || op == LOP_DIVRK;
+                    const bool constantFirst = op == LOP_SUBRK || op == LOP_DIVRK;
+                    Value* lhs = nullptr;
+                    Value* rhs = nullptr;
+                    if (constantOp)
+                    {
+                        const uint32_t source = constantFirst ? LUAU_INSN_C(insn) : LUAU_INSN_B(insn);
+                        const uint32_t constantIndex = constantFirst ? LUAU_INSN_B(insn) : LUAU_INSN_C(insn);
+                        Value* constant = ConstantFP::get(dblTy, nvalue(&proto->k[constantIndex]));
+                        lhs = constantFirst ? constant : values[source];
+                        rhs = constantFirst ? values[source] : constant;
+                    }
+                    else
+                    {
+                        lhs = values[LUAU_INSN_B(insn)];
+                        rhs = values[LUAU_INSN_C(insn)];
+                    }
+
+                    switch (op)
+                    {
+                    case LOP_ADD:
+                    case LOP_ADDK:
+                        result = B.CreateFAdd(lhs, rhs);
+                        break;
+                    case LOP_SUB:
+                    case LOP_SUBK:
+                    case LOP_SUBRK:
+                        result = B.CreateFSub(lhs, rhs);
+                        break;
+                    case LOP_MUL:
+                    case LOP_MULK:
+                        result = B.CreateFMul(lhs, rhs);
+                        break;
+                    case LOP_DIV:
+                    case LOP_DIVK:
+                    case LOP_DIVRK:
+                        result = B.CreateFDiv(lhs, rhs);
+                        break;
+                    case LOP_IDIV:
+                    case LOP_IDIVK:
+                        result = B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, B.CreateFDiv(lhs, rhs));
+                        break;
+                    default:
+                    {
+                        Value* quotient = B.CreateFDiv(lhs, rhs);
+                        result = B.CreateFSub(lhs, B.CreateFMul(B.CreateUnaryIntrinsic(llvm::Intrinsic::floor, quotient), rhs));
+                        break;
+                    }
+                    }
+                }
+
+                CODEGEN_ASSERT(result != nullptr);
+                values[dst] = result;
+            }
+
+            const Instruction returnInsn = proto->code[returnPc];
+            const int resultCount = int(LUAU_INSN_B(returnInsn)) - 1;
+            Value* returnCi = B.CreateLoad(ptrTy, toPtr(addrOf(L, offLStateCi)), "leaf_ci");
+            Value* requested = B.CreateLoad(i32Ty, toPtr(addrOf(returnCi, offCiNResults)), "leaf_nresults");
+            BasicBlock* directReturn = BasicBlock::Create(B.getContext(), "numleaf_return", fn);
+            BasicBlock* genericReturn = BasicBlock::Create(B.getContext(), "numleaf_return_generic", fn);
+            B.CreateCondBr(B.CreateICmpEQ(requested, B.getInt32(resultCount)), directReturn, genericReturn);
+
+            B.SetInsertPoint(directReturn);
+            Value* resultBase = B.CreateLoad(ptrTy, toPtr(addrOf(returnCi, offCiFunc)), "leaf_result");
+            for (int result = 0; result < resultCount; ++result)
+                storeNum(toPtr(addrOf(resultBase, uint64_t(result) * sizeof(TValue))), values[LUAU_INSN_A(returnInsn) + result]);
+
+            Value* parent = toPtr(B.CreateSub(B.CreatePtrToInt(returnCi, i64Ty), B.getInt64(sizeof(CallInfo))));
+            Value* parentBase = B.CreateLoad(ptrTy, toPtr(addrOf(parent, offCiBase)), "leaf_parentbase");
+            Value* parentTop = B.CreateLoad(ptrTy, toPtr(addrOf(parent, offCiTop)), "leaf_parenttop");
+            B.CreateStore(parent, toPtr(addrOf(L, offLStateCi)));
+            B.CreateStore(parentBase, toPtr(addrOf(L, offLStateBase)));
+            B.CreateStore(parentTop, toPtr(addrOf(L, offLStateTop)));
+            Value* flags = B.CreateLoad(i32Ty, toPtr(addrOf(returnCi, offCiFlags)), "leaf_flags");
+            Value* finalReturn = B.CreateICmpNE(B.CreateAnd(flags, B.getInt32(LUA_CALLINFO_RETURN)), B.getInt32(0), "leaf_finalreturn");
+            B.CreateRet(B.CreateSelect(finalReturn, B.getInt32(0), B.getInt32(1)));
+
+            B.SetInsertPoint(genericReturn);
+            for (int result = 0; result < resultCount; ++result)
+            {
+                const uint32_t reg = LUAU_INSN_A(returnInsn) + result;
+                storeNum(regPtrOf(base, int(reg)), values[reg]);
+            }
+            B.CreateBr(blocks[returnPc]);
+            return generic;
+        };
+
         // operand decoding walk
         uint32_t i = 0;
         while (i < sizecode)
@@ -2003,6 +3324,14 @@ private:
 
             B.SetInsertPoint(blocks[i]);
             B.CreateStore(B.getInt64(i), fbSlot);
+            if (i == 0)
+            {
+                if (BasicBlock* generic = lowerNumericLeafRegion())
+                {
+                    blocks[0] = generic;
+                    B.SetInsertPoint(generic);
+                }
+            }
 
             switch (op)
             {
@@ -2070,7 +3399,7 @@ private:
                 Value* destination = regPtrOf(base, int(LUAU_INSN_A(insn)));
                 Value* constants = B.CreateLoad(ptrTy, toPtr(addrOf(p, offProtoK)), "k");
                 Value* imported = toPtr(addrOf(constants, uint64_t(LUAU_INSN_D(insn)) * sizeof(TValue)));
-                Value* function = toPtr(addrOf(ci, offCiFunc));
+                Value* function = B.CreateLoad(ptrTy, toPtr(addrOf(ci, offCiFunc)), "func");
                 Value* closure = toPtr(loadVal(function));
                 Value* env = B.CreateLoad(ptrTy, toPtr(addrOf(closure, offClosureEnv)), "env");
                 Value* safe = B.CreateAnd(
@@ -2248,11 +3577,11 @@ private:
                 break;
 
             case LOP_CALL:
-                lowerCall(i, next);
+                lowerCall(i, next, blocks[i]);
                 break;
 
             case LOP_CALLFB:
-                lowerCallFeedback(i, next);
+                lowerCallFeedback(i, next, blocks[i]);
                 break;
 
             case LOP_NEWCLASSMEMBER:
@@ -2424,10 +3753,16 @@ private:
 
                 B.SetInsertPoint(fastBlock);
                 Value* limit = loadNum(r0);
-                Value* step = loadNum(r1);
+                const std::optional<double> knownStep = constantLoopStep(i);
+                Value* step = knownStep ? ConstantFP::get(dblTy, *knownStep) : loadNum(r1);
                 Value* idxv = loadNum(r2);
-                Value* stepPos = B.CreateFCmpOGT(step, ConstantFP::get(dblTy, 0.0), "steppos");
-                Value* cont = B.CreateSelect(stepPos, B.CreateFCmpOLE(idxv, limit, "le"), B.CreateFCmpOLE(limit, idxv, "ge"), "cont");
+                Value* cont = knownStep ? (*knownStep > 0.0 ? B.CreateFCmpOLE(idxv, limit, "le") : B.CreateFCmpOLE(limit, idxv, "ge"))
+                                        : B.CreateSelect(
+                                              B.CreateFCmpOGT(step, ConstantFP::get(dblTy, 0.0), "steppos"),
+                                              B.CreateFCmpOLE(idxv, limit, "le"),
+                                              B.CreateFCmpOLE(limit, idxv, "ge"),
+                                              "cont"
+                                          );
                 Value* jump = B.CreateNot(cont);
 
                 const int32_t delta = LUAU_INSN_D(insn);
@@ -2437,7 +3772,13 @@ private:
                 {
                     BasicBlock* target = jumpTo(i, delta, next);
                     if (target)
-                        B.CreateCondBr(jump, target, blocks[next]);
+                    {
+                        BasicBlock* loopEntry = BasicBlock::Create(B.getContext(), "numloop_entry", fn);
+                        B.CreateCondBr(jump, target, loopEntry);
+                        B.SetInsertPoint(loopEntry);
+                        if (!lowerNumericLoopRegion(i, next, limit, step, idxv))
+                            B.CreateBr(blocks[next]);
+                    }
                 }
                 break;
             }
@@ -2473,12 +3814,21 @@ private:
                 Value* r2 = toPtr(addrOf(r0, 2 * sizeof(TValue)));
 
                 Value* limit = loadNum(r0);
-                Value* step = loadNum(r1);
+                const int64_t loopTarget = int64_t(i) + 1 + int64_t(LUAU_INSN_D(insn));
+                const uint32_t prepIndex = loopTarget > 0 ? uint32_t(loopTarget - 1) : sizecode;
+                const std::optional<double> knownStep =
+                    prepIndex < sizecode && LUAU_INSN_A(proto->code[prepIndex]) == a ? constantLoopStep(prepIndex) : std::nullopt;
+                Value* step = knownStep ? ConstantFP::get(dblTy, *knownStep) : loadNum(r1);
                 Value* idxv = B.CreateFAdd(loadNum(r2), step, "idx2");
                 storeNum(r2, idxv);
 
-                Value* stepPos = B.CreateFCmpOGT(step, ConstantFP::get(dblTy, 0.0), "steppos");
-                Value* cont = B.CreateSelect(stepPos, B.CreateFCmpOLE(idxv, limit, "le"), B.CreateFCmpOLE(limit, idxv, "ge"), "cont");
+                Value* cont = knownStep ? (*knownStep > 0.0 ? B.CreateFCmpOLE(idxv, limit, "le") : B.CreateFCmpOLE(limit, idxv, "ge"))
+                                        : B.CreateSelect(
+                                              B.CreateFCmpOGT(step, ConstantFP::get(dblTy, 0.0), "steppos"),
+                                              B.CreateFCmpOLE(idxv, limit, "le"),
+                                              B.CreateFCmpOLE(limit, idxv, "ge"),
+                                              "cont"
+                                          );
 
                 const int32_t delta = LUAU_INSN_D(insn);
                 if (delta == 0)
@@ -2516,10 +3866,7 @@ private:
             case LOP_FASTCALL2:
             case LOP_FASTCALL2K:
             case LOP_FASTCALL3:
-                // The following MOVE/GETIMPORT + CALL sequence is the
-                // specified slow path. Continue natively through it when no
-                // builtin-specific LLVM expansion is selected.
-                B.CreateBr(blocks[next]);
+                lowerFastCall(i, next);
                 break;
 
             default:
