@@ -28,11 +28,10 @@ LUAU_FLAGVERSION(LuauExportValueSyntax, 4)
 LUAU_FASTFLAGVARIABLE(DebugLuauNoInline)
 LUAU_FASTFLAGVARIABLE(DebugLuauUserDefinedClasses)
 LUAU_FASTFLAGVARIABLE(LuauAllowGlobalDeclarationToBeCalledClass)
-LUAU_FASTFLAGVARIABLE(LuauDisallowExternClassInTypeDefinitions)
 LUAU_FASTFLAGVARIABLE(LuauStoreConstKeywordBegin)
 LUAU_FASTFLAGVARIABLE(LuauTrackPrefixLocal)
 LUAU_FASTFLAGVARIABLE(LuauNoDuplicateBinaryPrefix)
-LUAU_FASTFLAGVARIABLE(LuauFunctionReturnTypePackLessTypeGroups)
+LUAU_FASTFLAGVARIABLE(LuauSingleTypeOptionalPackReturnsAttributeParens)
 
 // Clip with DebugLuauReportReturnTypeVariadicWithTypeSuffix
 bool luau_telemetry_parsed_return_type_variadic_with_type_suffix = false;
@@ -1852,6 +1851,7 @@ AstStat* Parser::parseDeclaration(const Location& start, const AstArray<AstAttr*
     // global variable declaration whose name is `class`, not as a malformed class declaration. This allows
     // us to support a global table like string/math/bit32 called `class`. CLI-203833 tracks the work to actually
     // remove support for `declare class X [extends Y]` syntax.
+<<<<<<< HEAD
     else if (
         FFlag::LuauDisallowExternClassInTypeDefinitions
             ? AstName(lexer.current().name) == "extern"
@@ -1859,12 +1859,12 @@ AstStat* Parser::parseDeclaration(const Location& start, const AstArray<AstAttr*
                (FFlag::LuauAllowGlobalDeclarationToBeCalledClass ? lexer.lookahead().type != ':' : true)) ||
                   AstName(lexer.current().name) == "extern"
     )
+=======
+    else if (AstName(lexer.current().name) == "extern")
+>>>>>>> upstream/master
     {
-        bool foundExtern = false;
         if (AstName(lexer.current().name) == "extern")
         {
-            if (!FFlag::LuauDisallowExternClassInTypeDefinitions)
-                foundExtern = true;
             nextLexeme();
             if (AstName(lexer.current().name) != "type")
                 return reportStatError(
@@ -1884,17 +1884,14 @@ AstStat* Parser::parseDeclaration(const Location& start, const AstArray<AstAttr*
             superName = parseName("supertype name").name;
         }
 
-        if (FFlag::LuauDisallowExternClassInTypeDefinitions || foundExtern)
-        {
-            if (AstName(lexer.current().name) != "with")
-                report(
-                    lexer.current().location,
-                    "Expected `with` keyword before listing properties of the external type, but got %s instead",
-                    lexer.current().name
-                );
-            else
-                nextLexeme();
-        }
+        if (AstName(lexer.current().name) != "with")
+            report(
+                lexer.current().location,
+                "Expected `with` keyword before listing properties of the external type, but got %s instead",
+                lexer.current().name
+            );
+        else
+            nextLexeme();
 
         TempVector<AstDeclaredExternTypeProperty> props(scratchDeclaredClassProps);
         AstTableIndexer* indexer = nullptr;
@@ -2577,6 +2574,11 @@ AstTypePack* Parser::parseOptionalReturnType(Position* returnSpecifierPosition)
     return nullptr;
 }
 
+static bool isTypeFollow(Lexeme::Type c)
+{
+    return c == '|' || c == '?' || c == '&';
+}
+
 // ReturnType ::= Type | `(' TypeList `)'
 AstTypePack* Parser::parseReturnType()
 {
@@ -2633,16 +2635,32 @@ AstTypePack* Parser::parseReturnType()
             // TODO(CLI-140667): stop parsing type suffix when varargAnnotation != nullptr - this should be a parse error
             AstType* inner = nullptr;
 
-            if (varargAnnotation == nullptr &&
-                (FFlag::LuauFunctionReturnTypePackLessTypeGroups ? (lexer.current().type == '&' || lexer.current().type == '|') : true))
+            bool parensBelongToInnerGroup = false;
+            if (FFlag::LuauSingleTypeOptionalPackReturnsAttributeParens)
             {
-                inner = allocator.alloc<AstTypeGroup>(location, result[0]);
-
-                if (options.storeCstData)
-                    cstNodeMap[inner] = allocator.alloc<CstTypeGroup>(closeParenFound ? closeParenthesesPosition : Position::missing());
+                if (varargAnnotation == nullptr && isTypeFollow(lexer.current().type))
+                {
+                    inner = allocator.alloc<AstTypeGroup>(location, result[0]);
+                    parensBelongToInnerGroup = true;
+                    if (options.storeCstData)
+                        cstNodeMap[inner] = allocator.alloc<CstTypeGroup>(closeParenFound ? closeParenthesesPosition : Position::missing());
+                }
+                else
+                    inner = result[0];
             }
             else
-                inner = result[0];
+            {
+                if (varargAnnotation == nullptr)
+                {
+                    inner = allocator.alloc<AstTypeGroup>(location, result[0]);
+
+                    if (options.storeCstData)
+                        cstNodeMap[inner] = allocator.alloc<CstTypeGroup>(closeParenFound ? closeParenthesesPosition : Position::missing());
+                }
+                else
+                    inner = result[0];
+            }
+
 
             AstType* returnType = parseTypeSuffix(inner, begin.location);
 
@@ -2656,11 +2674,19 @@ AstTypePack* Parser::parseReturnType()
 
             AstTypePackExplicit* node =
                 allocator.alloc<AstTypePackExplicit>(Location{location.begin, endPos}, AstTypeList{copy(&returnType, 1), varargAnnotation});
-            if (options.storeCstData)
-                cstNodeMap[node] = FFlag::LuauFunctionReturnTypePackLessTypeGroups
-                                       ? allocator.alloc<CstTypePackExplicit>(location.begin, closeParenthesesPosition, copy(commaPositions))
-                                       : allocator.alloc<CstTypePackExplicit>();
-            return node;
+            if (FFlag::LuauSingleTypeOptionalPackReturnsAttributeParens && options.storeCstData)
+            {
+                cstNodeMap[node] = parensBelongToInnerGroup
+                                       ? allocator.alloc<CstTypePackExplicit>()
+                                       : allocator.alloc<CstTypePackExplicit>(location.begin, closeParenthesesPosition, copy(commaPositions));
+                return node;
+            }
+            else
+            {
+                if (options.storeCstData)
+                    cstNodeMap[node] = allocator.alloc<CstTypePackExplicit>();
+                return node;
+            }
         }
 
         AstTypePackExplicit* node = allocator.alloc<AstTypePackExplicit>(location, AstTypeList{copy(result), varargAnnotation});
@@ -3084,11 +3110,6 @@ AstType* Parser::parseFunctionTypeTail(
     return allocator.alloc<AstTypeFunction>(
         Location(begin.location, returnType->location), attributes, generics, genericPacks, paramTypes, paramNames, returnType
     );
-}
-
-static bool isTypeFollow(Lexeme::Type c)
-{
-    return c == '|' || c == '?' || c == '&';
 }
 
 // Type ::=

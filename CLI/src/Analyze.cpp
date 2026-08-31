@@ -458,6 +458,7 @@ int main(int argc, char** argv)
             solverMode = Luau::SolverMode::Old;
         else if (strcmp(argv[i], "--solver=new") == 0)
             solverMode = Luau::SolverMode::New;
+<<<<<<< HEAD
         else if (strcmp(argv[i], "--lsp") == 0)
             return Luau::runLspServer();
         else if (strncmp(argv[i], "--color=", 8) == 0)
@@ -475,6 +476,12 @@ int main(int argc, char** argv)
             snprintf(message, sizeof(message), "unknown option '%s'", argv[i]);
             Luau::Cli::error(stderr, message);
             Luau::Cli::hint(stderr, "run 'luau-analyze --help' to list supported options");
+=======
+        else
+        {
+            fprintf(stderr, "Error: Unrecognized option '%s'.\n\n", argv[i]);
+            displayHelp(argv[0]);
+>>>>>>> upstream/master
             return 1;
         }
     }

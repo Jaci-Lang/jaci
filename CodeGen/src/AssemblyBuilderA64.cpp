@@ -652,9 +652,20 @@ void AssemblyBuilderA64::br(RegisterA64 src)
 void AssemblyBuilderA64::blr(RegisterA64 src)
 {
     if (features & Feature_PtrAuthCall)
+<<<<<<< HEAD
         placeBR("blraaz", src, 0b1101011'0'0'01'11111'0000'1'0, 0b11111);
     else
         placeBR("blr", src, 0b1101011'0'0'01'11111'0000'0'0);
+=======
+    {
+        // op4 = 0b11111 selects the Z (zero modifier) form
+        placeBR("blraaz", src, 0b1101011'0'0'01'11111'0000'1'0, 0b11111);
+    }
+    else
+    {
+        placeBR("blr", src, 0b1101011'0'0'01'11111'0000'0'0);
+    }
+>>>>>>> upstream/master
 }
 
 void AssemblyBuilderA64::ret()
@@ -665,12 +676,20 @@ void AssemblyBuilderA64::ret()
 void AssemblyBuilderA64::pacibsp()
 {
     CODEGEN_ASSERT(features & Feature_PtrAuthRet);
+<<<<<<< HEAD
+=======
+
+>>>>>>> upstream/master
     place0("pacibsp", 0b11010101000000110010'0011'01111111u);
 }
 
 void AssemblyBuilderA64::retab()
 {
     CODEGEN_ASSERT(features & Feature_PtrAuthRet);
+<<<<<<< HEAD
+=======
+
+>>>>>>> upstream/master
     place0("retab", 0b1101011'0'0'10'11111'0000'1'1'11111'11111);
 }
 

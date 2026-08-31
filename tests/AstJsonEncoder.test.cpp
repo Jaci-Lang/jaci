@@ -12,14 +12,12 @@
 using namespace Luau;
 
 
-LUAU_FASTFLAG(LuauDisallowExternClassInTypeDefinitions)
-LUAU_FASTFLAG(LuauFunctionReturnTypePackLessTypeGroups)
+LUAU_FASTFLAG(LuauSingleTypeOptionalPackReturnsAttributeParens)
 
 struct JsonEncoderFixture
 {
     Allocator allocator;
     AstNameTable names{allocator};
-    ScopedFastFlag sff{FFlag::LuauDisallowExternClassInTypeDefinitions, true};
 
     ParseResult parse(std::string_view src)
     {
@@ -483,7 +481,7 @@ TEST_CASE_FIXTURE(JsonEncoderFixture, "encode_AstStatDeclareClass")
 
 TEST_CASE_FIXTURE(JsonEncoderFixture, "encode_annotation")
 {
-    ScopedFastFlag sff{FFlag::LuauFunctionReturnTypePackLessTypeGroups, true};
+    ScopedFastFlag sff{FFlag::LuauSingleTypeOptionalPackReturnsAttributeParens, true};
 
     AstStat* statement = expectParseStatement("type T = ((number) -> (string | nil)) & ((string) -> ())");
 

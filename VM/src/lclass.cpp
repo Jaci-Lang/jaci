@@ -19,14 +19,13 @@ LUAU_FASTFLAG(LuauManagedDebugNames)
 
 LuauClass* luaR_newblankclass(lua_State* L, TString* name, bool isopen)
 {
-    LuauClass* classobject = luaM_newgco(L, LuauClass, sizeof(LuauClass), L->activememcat);
+    LuauClass* classobject = luaM_newgco(L, LuauClass, sizeof(LuauClass), L->activememcat, LUA_TCLASS);
     luaC_init(L, classobject, LUA_TCLASS);
     classobject->name = name;
     classobject->super = NULL;
     classobject->staticmembers = NULL;
     classobject->memberstooffset = NULL;
     classobject->offsettomember = NULL;
-    classobject->metatable = NULL;
     classobject->instancemetatable = NULL;
     classobject->numberofinstancemembers = 0;
     classobject->numberofallmembers = 0;
@@ -335,7 +334,7 @@ int luaR_constructobject(lua_State* L)
     Closure* cl = clvalue(L->ci->func);
     LuauClass* classobject = classvalue(&cl->c.upvals[0]);
 
-    LuauObject* self = luaM_newgco(L, LuauObject, sizeof(LuauObject), L->activememcat);
+    LuauObject* self = luaM_newgco(L, LuauObject, sizeof(LuauObject), L->activememcat, LUA_TOBJECT);
     memset(self, 0, sizeof(LuauObject));
     luaC_init(L, self, LUA_TOBJECT);
     self->lclass = classobject;
@@ -418,9 +417,6 @@ int luaR_defaultcreateobject(lua_State* L)
     }
 
     L->top--;
-
-    // Preserve the GC invariant, moving barrier back once after writing multiple objects (similar to SETLIST)
-    luaC_barrierfast(L, classinst);
 
     return 0;
 }

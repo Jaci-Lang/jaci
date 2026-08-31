@@ -877,8 +877,13 @@ namespace Luau
 namespace CodeGen
 {
 unsigned int getCpuFeaturesA64();
+<<<<<<< HEAD
 }
 }
+=======
+} // namespace CodeGen
+} // namespace Luau
+>>>>>>> upstream/master
 
 template<typename FunctionType>
 static FunctionType* asCallablePointer(uint8_t* code)

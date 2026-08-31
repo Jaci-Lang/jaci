@@ -399,6 +399,7 @@ static Closure* callFallbackImpl(lua_State* L, StkId ra, StkId argtop, int nresu
     }
 }
 
+<<<<<<< HEAD
 Closure* callFallback(lua_State* L, StkId ra, StkId argtop, int nresults)
 {
     return callFallbackImpl(L, ra, argtop, nresults, nullptr);
@@ -407,6 +408,40 @@ Closure* callFallback(lua_State* L, StkId ra, StkId argtop, int nresults)
 Closure* callFeedbackFallback(lua_State* L, StkId ra, StkId argtop, int nresults, Instruction* feedback)
 {
     return callFallbackImpl(L, ra, argtop, nresults, feedback);
+=======
+int fastPcallSetup(lua_State* L, StkId ra, int pfid, int nparams, int nresults)
+{
+    LUAU_ASSERT(pfid == 0 || pfid == 1);
+
+    if (nparams == LUA_MULTRET)
+        nparams = int(L->top - (ra + 1));
+
+    setclvalue(L, ra, pfid == 0 ? L->global->builtinPcall : L->global->builtinXpcall);
+
+    int errfunc = pfid; // for current supported functions this happens to match
+
+    L->top = ra + 1 + nparams;
+
+    luau_pushhandlerci(L, ra, errfunc, nresults);
+
+    StkId callerfunc = L->ci->base + errfunc;
+    int calleeresults = (nresults > 0) ? nresults - 1 : nresults;
+    int pr = luau_precall(L, callerfunc, calleeresults);
+
+    if (pr == PCRLUA)
+    {
+        L->ci->flags |= LUA_CALLINFO_RETURN;
+        return 0;
+    }
+    else if (pr == PCRC)
+    {
+        luau_pospcallsuccess(L);
+        return -1;
+    }
+
+    LUAU_ASSERT(pr == PCRYIELD);
+    return 1;
+>>>>>>> upstream/master
 }
 
 const Instruction* executeGETGLOBAL(lua_State* L, const Instruction* pc, StkId base, TValue* k)

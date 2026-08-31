@@ -161,6 +161,18 @@ unsigned int getCpuFeaturesA64()
         result |= A64::Feature_AdvSIMD;
 #endif
 
+<<<<<<< HEAD
+=======
+    // The JITted code must match the Pointer Authentication (PAC) use of the
+    // process in which it runs, so we determine whether to use PAC based on
+    // how the hosting binary has been built, not on the hardware capabilities.
+    // (It is possible to not-use PAC on PAC-capable hardware.)
+    //
+    // Note that the two options here are separate:
+    //  * Apple arm64e makes use of both call- and ret-signing.
+    //  * Linux -mbranch-protection=pac-ret only makes use of ret-signing.
+    // (Both cases are detected and reflected in the state of the macros.)
+>>>>>>> upstream/master
 #ifdef CODEGEN_TARGET_A64_PTRAUTH_CALLS
     result |= A64::Feature_PtrAuthCall;
 #endif

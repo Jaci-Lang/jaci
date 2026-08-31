@@ -29,6 +29,7 @@ LUAU_FASTFLAGVARIABLE(LuauCodegenSubstituteReplacements)
 LUAU_FASTFLAGVARIABLE(LuauCodegenConstVectorBufferRead)
 LUAU_FASTFLAGVARIABLE(LuauCodegenOriginVerifyMatch)
 LUAU_FASTFLAGVARIABLE(LuauCodegenPropagateFallbackTags)
+LUAU_FASTFLAGVARIABLE(LuauCodegenNoLinearFastpcall)
 
 namespace Luau
 {
@@ -2369,6 +2370,8 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
             state.inSafeEnv = true;
         }
         break;
+    case IrCmd::CHECK_YIELDABLE:
+        break;
     case IrCmd::CHECK_BUFFER_LEN:
     {
         std::optional<int> bufferOffset = function.asIntOp(OP_B(inst).kind == IrOpKind::Constant ? OP_B(inst) : state.tryGetValue(OP_B(inst)));
@@ -2586,6 +2589,11 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     }
     case IrCmd::INVOKE_FASTCALL:
         handleBuiltinEffects(state, LuauBuiltinFunction(function.uintOp(OP_A(inst))), vmRegOp(OP_B(inst)), function.intOp(OP_G(inst)));
+        break;
+
+    case IrCmd::INVOKE_FASTPCALL:
+        state.invalidateRegistersFrom(vmRegOp(OP_A(inst)));
+        state.invalidateUserCall();
         break;
 
         // These instructions don't have an effect on register/memory state we are tracking
@@ -3734,6 +3742,10 @@ static bool includeBlockInLinearPath(IrFunction& function, const IrBlock& block)
 
         // Call cannot return to the linear block upon completion, so it cannot be included in a linear path clone
         if (inst.cmd == IrCmd::CALL)
+            return false;
+
+        // Same rule applies to fast pcall path as it acts as a call
+        if (FFlag::LuauCodegenNoLinearFastpcall && inst.cmd == IrCmd::INVOKE_FASTPCALL)
             return false;
     }
 

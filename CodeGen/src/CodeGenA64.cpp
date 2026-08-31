@@ -23,6 +23,10 @@ namespace Luau
 {
 namespace CodeGen
 {
+<<<<<<< HEAD
+=======
+
+>>>>>>> upstream/master
 unsigned int getCpuFeaturesA64();
 
 namespace A64
@@ -411,7 +415,11 @@ static EntryLocations buildEntryFunction(AssemblyBuilderA64& build, UnwindBuilde
     build.add(sp, sp, uint16_t(kStackSize));
 
     if (build.features & Feature_PtrAuthRet)
+<<<<<<< HEAD
         build.retab();
+=======
+        build.retab(); // Authenticate the LR signed by pacibsp in the prologue, then return
+>>>>>>> upstream/master
     else
         build.ret();
 
@@ -425,8 +433,16 @@ static EntryLocations buildEntryFunction(AssemblyBuilderA64& build, UnwindBuilde
 
 bool initHeaderFunctions(BaseCodeGenContext& codeGenContext)
 {
+<<<<<<< HEAD
 #if defined(CODEGEN_TARGET_A64)
     AssemblyBuilderA64 build(/* logger= */ nullptr, getCpuFeaturesA64());
+=======
+    // This file is built for every target, but CodeGen.cpp only defines
+    // getCpuFeaturesA64() when the host is arm64. The gate is only executed on
+    // an arm64 host, so the features are irrelevant elsewhere.
+#if defined(CODEGEN_TARGET_A64)
+    AssemblyBuilderA64 build(/* logger= */ nullptr, /* features= */ getCpuFeaturesA64());
+>>>>>>> upstream/master
 #else
     AssemblyBuilderA64 build(/* logger= */ nullptr, /* features= */ 0);
 #endif
@@ -458,6 +474,12 @@ bool initHeaderFunctions(BaseCodeGenContext& codeGenContext)
     uint8_t* gateEntry = codeStart + build.getLabelOffset(entryLocations.start);
 
 #ifdef CODEGEN_TARGET_A64_PTRAUTH_CALLS
+<<<<<<< HEAD
+=======
+    // onEnter() invokes gateEntry through a GateFn function pointer.  When PAC
+    // function pointer signing is enabled, we need to sign the function pointer
+    // so that authentication succeeds when onEnter() calls it.
+>>>>>>> upstream/master
     gateEntry = (uint8_t*)ptrauth_sign_unauthenticated(gateEntry, ptrauth_key_function_pointer, 0);
 #endif
 

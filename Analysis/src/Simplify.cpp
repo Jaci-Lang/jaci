@@ -16,10 +16,10 @@
 
 #include <algorithm>
 
-LUAU_FASTFLAG(LuauSolverV2)
 LUAU_DYNAMIC_FASTINTVARIABLE(LuauSimplificationComplexityLimit, 8)
 LUAU_DYNAMIC_FASTINTVARIABLE(LuauTypeSimplificationIterationLimit, 128)
 LUAU_FASTFLAGVARIABLE(LuauCheckReadTyWhenRelatingExtern)
+LUAU_FASTFLAGVARIABLE(LuauRelateIndexersTypo)
 
 namespace Luau
 {
@@ -405,8 +405,16 @@ Relation relateTables(const TableType* leftTable, const TableType* rightTable, S
     if (relate(leftTable->indexer->indexType, rightTable->indexer->indexType, seen) != Relation::Coincident)
         return Relation::Intersects;
 
-    if (relate(leftTable->indexer->indexType, rightTable->indexer->indexType, seen) != Relation::Coincident)
-        return Relation::Intersects;
+    if (FFlag::LuauRelateIndexersTypo)
+    {
+        if (relate(leftTable->indexer->indexResultType, rightTable->indexer->indexResultType, seen) != Relation::Coincident)
+            return Relation::Intersects;
+    }
+    else
+    {
+        if (relate(leftTable->indexer->indexType, rightTable->indexer->indexType, seen) != Relation::Coincident)
+            return Relation::Intersects;
+    }
 
     return hasSubset ? Relation::Subset : Relation::Coincident;
 }
@@ -818,7 +826,7 @@ TypeId TypeSimplifier::intersectFromParts(TypeIds parts)
             return builtinTypes->neverType;
 
         // At this point, source will contain some intersection, and dest will contain
-        // the intersection we want to retain for the next interation.
+        // the intersection we want to retain for the next iteration.
 
         // We swap the two, so that we can use `source` as the basis for the next iteration.
         std::swap(source, dest);

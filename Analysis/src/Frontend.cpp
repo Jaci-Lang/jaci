@@ -56,6 +56,8 @@ LUAU_FASTFLAG(LuauExportValueSyntax)
 LUAU_FASTFLAGVARIABLE(LuauExportValueTypecheck)
 LUAU_FLAGVERSION(LuauExportValueTypecheck, 2)
 LUAU_FASTFLAGVARIABLE(LuauCyclicRequireTypeInference)
+LUAU_FLAGVERSION(LuauCyclicRequireTypeInference, 6)
+LUAU_FASTFLAGVARIABLE(LuauCyclicRequireTopLevelAccessError)
 
 LUAU_FASTFLAGVARIABLE(DebugLuauForceOldSolver)
 LUAU_FASTFLAG(DebugLuauCFG)
@@ -1064,22 +1066,16 @@ bool Frontend::parseGraph(
     return cyclic;
 }
 
-static bool moduleHasExports(const SourceModule& sourceModule)
+static bool moduleHasTopLevelReturn(const SourceModule& sourceModule)
 {
     if (!sourceModule.root)
         return false;
 
     for (AstStat* stat : sourceModule.root->body)
     {
-        if (AstStatLocal* local = stat->as<AstStatLocal>())
+        if (stat->is<AstStatReturn>())
         {
-            if (local->isExported)
-                return true;
-        }
-        else if (AstStatLocalFunction* func = stat->as<AstStatLocalFunction>())
-        {
-            if (func->name->isExported)
-                return true;
+            return true;
         }
     }
 
@@ -1234,21 +1230,23 @@ void Frontend::computeSCCs(const std::vector<ModuleName>& buildQueue)
 
     for (const ModuleSCCPtr& scc : foundSCCs)
     {
-        // Only register SCCs where all members use `export` — those have runtime
-        // placeholder support for cyclic requires. Mixed SCCs with non-export modules
-        // will crash at runtime, so they go through the old per-module path.
-        bool allMembersUseExport = true;
+        // Only group modules with no top-level return statement into an SCC — a top-level return is
+        // incompatible with cyclic type inference. This is broader than what the runtime supports (a
+        // module with neither an export nor a return still throws at runtime), but that divergence is
+        // intentional for now, as this module could be mid-edit, and we don't want to raise a cyclic-require
+        // error prematurely.
+        bool allMembersAreValid = true;
         for (const ModuleName& member : scc->members)
         {
             auto it = sourceModules.find(member);
-            if (it == sourceModules.end() || !it->second || !moduleHasExports(*it->second))
+            if (it == sourceModules.end() || !it->second || moduleHasTopLevelReturn(*it->second))
             {
-                allMembersUseExport = false;
+                allMembersAreValid = false;
                 break;
             }
         }
 
-        if (!allMembersUseExport)
+        if (!allMembersAreValid)
             continue;
 
         for (const ModuleName& member : scc->members)
@@ -1384,6 +1382,95 @@ static void applyInternalLimitScaling(SourceNode& sourceNode, const ModulePtr mo
         sourceNode.autocompleteLimitsMult = std::min(sourceNode.autocompleteLimitsMult * 2.0, 1.0);
 }
 
+struct CyclicTopLevelAccessVisitor : public AstVisitor
+{
+    NotNull<const DenseHashMap2<Name, ModuleName>> peerImports;
+    NotNull<std::vector<TypeError>> errors;
+    ModuleName moduleName;
+
+    CyclicTopLevelAccessVisitor(
+        NotNull<const DenseHashMap2<Name, ModuleName>> peerImports,
+        NotNull<std::vector<TypeError>> errors,
+        ModuleName moduleName
+    )
+        : peerImports(peerImports)
+        , errors(errors)
+        , moduleName(std::move(moduleName))
+    {
+    }
+
+    bool visit(AstExprFunction*) override
+    {
+        return false;
+    }
+
+    bool visit(AstExprIndexName* node) override
+    {
+        if (auto* local = node->expr->as<AstExprLocal>())
+        {
+            if (const ModuleName* target = peerImports->find(local->local->name.value))
+                errors->emplace_back(
+                    node->location,
+                    moduleName,
+                    CyclicModuleTopLevelAccess{*target, std::string{local->local->name.value}, std::string{node->index.value}}
+                );
+        }
+        return true;
+    }
+
+    bool visit(AstExprIndexExpr* node) override
+    {
+        if (auto* local = node->expr->as<AstExprLocal>())
+        {
+            if (const ModuleName* target = peerImports->find(local->local->name.value))
+            {
+                std::string propName;
+                if (auto* constStr = node->index->as<AstExprConstantString>())
+                    propName = std::string{constStr->value.data, constStr->value.size};
+
+                errors->emplace_back(
+                    node->location, moduleName, CyclicModuleTopLevelAccess{*target, std::string{local->local->name.value}, std::move(propName)}
+                );
+            }
+        }
+        return true;
+    }
+};
+
+static void errorOnCyclicTopLevelAccess(const SourceModule& sourceModule, const ModulePtr& module, const std::vector<ModuleName>& sccMembers)
+{
+    LUAU_ASSERT(FFlag::LuauCyclicRequireTopLevelAccessError);
+
+    ScopePtr rootScope = module->getModuleScope();
+    if (!rootScope || rootScope->importedModules.empty())
+        return;
+
+    DenseHashSet2<ModuleName> peerSet;
+    for (const auto& member : sccMembers)
+    {
+        if (member != sourceModule.name)
+            peerSet.insert(member);
+    }
+
+    if (peerSet.empty())
+        return;
+
+    DenseHashMap2<Name, ModuleName> peerImports;
+    for (const auto& [localName, importedModule] : rootScope->importedModules)
+    {
+        if (peerSet.contains(importedModule))
+            peerImports[localName] = importedModule;
+    }
+
+    if (peerImports.empty())
+        return;
+
+    CyclicTopLevelAccessVisitor visitor{NotNull{&peerImports}, NotNull{&module->errors}, sourceModule.name};
+
+    for (AstStat* stat : sourceModule.root->body)
+        stat->visit(&visitor);
+}
+
 void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
 {
     ModuleSCCPtr scc = item.scc;
@@ -1479,6 +1566,16 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
         for (auto& deferred : cgResult.deferredConstraints)
             mergedDeferredConstraints.push_back(std::move(deferred));
 
+        // Synthesize exports table early so subsequent modules in the SCC can
+        // see the correct table shape (with free types) during their CG pass.
+        // Without this, export-only modules (no explicit return) would have an
+        // empty return type in the placeholder, causing peers to see unknown.
+        if (FFlag::LuauExportValueSyntax && FFlag::LuauExportValueTypecheck)
+        {
+            module->scopes = cgData[i].cgScopes;
+            synthesizeExportReturn(builtinTypes, NotNull{module.get()});
+        }
+
         // Bind the placeholder BlockedType to the actual return type so subsequent
         // modules in this SCC see real types when they require() this one.
         TypePackId actualReturnType = cgData[i].cgScopes[0].second->returnType;
@@ -1497,6 +1594,9 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
             {
                 emplaceType<BoundType>(asMutable(*placeholderHead), *actualHead);
             }
+
+            // Copy exported type bindings so subsequent CG passes can import them
+            placeholderModule->exportedTypeBindings = cgData[i].cgScopes[0].second->exportedTypeBindings;
         }
 
         mergedErrors.insert(mergedErrors.end(), std::make_move_iterator(cgResult.errors.begin()), std::make_move_iterator(cgResult.errors.end()));
@@ -1631,9 +1731,6 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
             }
         }
 
-        if (FFlag::LuauExportValueSyntax && FFlag::LuauExportValueTypecheck && !module->timeout && !module->cancelled)
-            synthesizeExportReturn(builtinTypes, NotNull{module.get()});
-
         // Clone public interface
         unfreeze(module->interfaceTypes);
         module->clonePublicInterface(builtinTypes, iceHandler, SolverMode::New);
@@ -1658,16 +1755,45 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
     for (BuildQueueModuleInfo& moduleInfo : item.modules)
         freeze(moduleInfo.module->interfaceTypes);
 
-    // Emit a warning on the first SCC member if the cycle is large enough.
+    // Check for top-level accesses to cyclic peer modules
+    if (FFlag::LuauCyclicRequireTopLevelAccessError)
+    {
+        for (BuildQueueModuleInfo& moduleInfo : item.modules)
+            errorOnCyclicTopLevelAccess(*moduleInfo.sourceModule, moduleInfo.module, scc->members);
+    }
+
+    // Emit a warning on every SCC member if the cycle is large enough.
     if (FInt::LuauCyclicSccWarningThreshold > 0 && scc->members.size() >= static_cast<size_t>(FInt::LuauCyclicSccWarningThreshold))
     {
-        item.modules[0].module->errors.emplace_back(Location{}, item.modules[0].name, CyclicModuleGraphTooLarge{scc->members.size(), scc->members});
+        for (BuildQueueModuleInfo& moduleInfo : item.modules)
+        {
+            Location loc{};
+            for (const auto& [depName, depLoc] : moduleInfo.sourceNode->requireLocations)
+            {
+                if (depName != moduleInfo.name)
+                {
+                    for (const ModuleName& member : scc->members)
+                    {
+                        if (member == depName)
+                        {
+                            loc = depLoc;
+                            break;
+                        }
+                    }
+                    if (loc != Location{})
+                        break;
+                }
+            }
+
+            moduleInfo.module->errors.emplace_back(loc, moduleInfo.name, CyclicModuleGraphTooLarge{scc->members.size(), scc->members});
+        }
     }
 }
 
 void Frontend::checkBuildQueueItem(BuildQueueItem& item)
 {
-    if (FFlag::LuauCyclicRequireTypeInference && item.scc && item.modules.size() > 1)
+    // Check every SCC in its shared arena, including single-member self-loops.
+    if (FFlag::LuauCyclicRequireTypeInference && item.scc && (item.modules.size() == item.scc->members.size()))
     {
         checkSCCBuildQueueItem(item);
         return;
@@ -1832,8 +1958,22 @@ void Frontend::checkBuildQueueItem(BuildQueueItem& item)
     {
         for (const RequireCycle& cyc : requireCycles)
         {
-            TypeError te{cyc.location, moduleInfo.name, ModuleHasCyclicDependency{cyc.path}};
+            std::vector<ModuleName> cycleModules;
+            if (FFlag::LuauCyclicRequireTypeInference)
+            {
+                for (const ModuleName& name : cyc.path)
+                {
+                    auto it = sourceModules.find(name);
+                    if (it == sourceModules.end() || !it->second || moduleHasTopLevelReturn(*it->second))
+                        cycleModules.push_back(name);
+                }
+            }
+            else
+            {
+                cycleModules = cyc.path;
+            }
 
+            TypeError te{cyc.location, moduleInfo.name, ModuleHasCyclicDependency{std::move(cycleModules)}};
             module->errors.push_back(te);
         }
     }
