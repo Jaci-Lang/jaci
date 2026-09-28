@@ -7,7 +7,8 @@
 #include <ostream>
 
 LUAU_FASTFLAG(DebugLuauLogSolver)
-LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+LUAU_FASTFLAG(LuauTraverseScopeToFunction)
+LUAU_FASTFLAG(LuauReferenceCountInitializerIsIterative)
 
 namespace Luau
 {
@@ -277,7 +278,31 @@ ConstraintGraph::UnblockedTypes ConstraintGraph::unblockConstraint(NotNull<const
      */
 
     for (TypeId type : result.types)
+    {
         repairTypeReferences(type);
+        if (FFlag::LuauTraverseScopeToFunction)
+        {
+            // Consider the following code:
+            //
+            //  -- Annotated with a free type for reading ease.
+            //  local function f(g: 'func)
+            //      local _ = g(42)
+            //      local n: number? = g(67)
+            //  end
+            //
+            // When resolving the first function call to `g`, we'll infer that
+            // `'func <: (number) -> ('ret...)`: we know `g` takes a number but
+            // we don't know what `g` returns. However, we end up introducing
+            // a layer of indirection between `'ret...` and the *second* call
+            // to `g`, which may also mutate `'ret...`.
+            type = follow(type);
+            if (auto ft = get<FreeType>(type))
+            {
+                copyDependenciesOf(type, follow(ft->upperBound));
+                copyDependenciesOf(type, follow(ft->lowerBound));
+            }
+        }
+    }
 
     for (TypePackId typePack : result.packs)
         repairTypeReferences(typePack);
@@ -288,6 +313,7 @@ ConstraintGraph::UnblockedTypes ConstraintGraph::unblockConstraint(NotNull<const
 bool ConstraintGraph::hasUnsolvedDependencies(ConstraintVertex vertex)
 {
     auto deps = findDependencyList(vertex);
+<<<<<<< HEAD
     if (!FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
     {
         if (auto c = vertex.get_if<const Constraint*>())
@@ -296,14 +322,9 @@ bool ConstraintGraph::hasUnsolvedDependencies(ConstraintVertex vertex)
                 return deps->size() > 1;
         }
     }
+=======
+>>>>>>> upstream/master
     return deps->size() > 0;
-}
-
-bool ConstraintGraph::DEPRECATED_hasStrictlyMoreThanOneDependency(ConstraintVertex vertex)
-{
-    LUAU_ASSERT(!FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier);
-    auto deps = findDependencyList(vertex);
-    return deps->size() > 1;
 }
 
 /**
@@ -380,8 +401,16 @@ void ConstraintGraph::shiftReferences(T source, T target)
 
     TypeIds mutatedTypes;
     TypePackIds mutatedTypePacks;
-    ReferenceCountInitializer rci{NotNull{&mutatedTypes}, NotNull{&mutatedTypePacks}};
-    rci.traverse(target);
+    if (FFlag::LuauReferenceCountInitializerIsIterative)
+    {
+        ReferenceCountInitializer rci{NotNull{source->owningArena}, NotNull{&mutatedTypes}, NotNull{&mutatedTypePacks}};
+        rci.run(target);
+    }
+    else
+    {
+        ReferenceCountInitializer_DEPRECATED rci{NotNull{&mutatedTypes}, NotNull{&mutatedTypePacks}};
+        rci.traverse(target);
+    }
     copyDependenciesToReachableTypes(source, sourceDependencies, std::move(mutatedTypes), std::move(mutatedTypePacks));
 
     // Types in the constraint graph are always dynamically discovered, so
@@ -400,9 +429,9 @@ void ConstraintGraph::repairTypeReferences(T ty)
 
     T root = follow(ty);
 
-    // This is a strong guard against a self bound cylic type, but we
+    // This is a strong guard against a self bound cyclic type, but we
     // hopefully threw an exception above if this were the case.
-    DenseHashSet2<T> seen;
+    DenseHashSet<T> seen;
     seen.insert(root);
 
     while (!seen.contains(ty))
@@ -436,8 +465,17 @@ void ConstraintGraph::copyDependenciesOf(T source, T target)
     auto sourceDependencies = findDependencyList(source);
     TypeIds mutatedTypes;
     TypePackIds mutatedTypePacks;
-    ReferenceCountInitializer rci{NotNull{&mutatedTypes}, NotNull{&mutatedTypePacks}};
-    rci.traverse(target);
+
+    if (FFlag::LuauReferenceCountInitializerIsIterative)
+    {
+        ReferenceCountInitializer rci{NotNull{source->owningArena}, NotNull{&mutatedTypes}, NotNull{&mutatedTypePacks}};
+        rci.run(target);
+    }
+    else
+    {
+        ReferenceCountInitializer_DEPRECATED rci{NotNull{&mutatedTypes}, NotNull{&mutatedTypePacks}};
+        rci.traverse(target);
+    }
     // We do not want to _delete_ the original vertex, so we pass nullopt here.
     copyDependenciesToReachableTypes(std::nullopt, sourceDependencies, std::move(mutatedTypes), std::move(mutatedTypePacks));
 }

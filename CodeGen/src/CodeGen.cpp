@@ -59,7 +59,6 @@ LUAU_FASTINTVARIABLE(CodegenHeuristicsBlockLimit, 32'768) // 32 K
 LUAU_FASTINTVARIABLE(CodegenHeuristicsBlockInstructionLimit, 65'536) // 64 K
 
 LUAU_FASTFLAGVARIABLE(LuauCodegenInteger3)
-LUAU_FASTFLAG(LuauCIProto)
 
 namespace Luau
 {
@@ -128,14 +127,9 @@ void onDisable(lua_State* L, Proto* proto)
 
             for (CallInfo* ci = th->ci; ci > th->base_ci; ci--)
             {
-                if (isLua(ci))
+                if (isLua(ci) && ci->p == proto)
                 {
-                    Proto* p = FFlag::LuauCIProto ? ci->p : clvalue(ci->func)->l.p;
-
-                    if (p == proto)
-                    {
-                        ci->flags &= ~LUA_CALLINFO_NATIVE;
-                    }
+                    ci->flags &= ~LUA_CALLINFO_NATIVE;
                 }
             }
 
@@ -161,6 +155,18 @@ unsigned int getCpuFeaturesA64()
         result |= A64::Feature_AdvSIMD;
 #endif
 
+<<<<<<< HEAD
+=======
+    // The JITted code must match the Pointer Authentication (PAC) use of the
+    // process in which it runs, so we determine whether to use PAC based on
+    // how the hosting binary has been built, not on the hardware capabilities.
+    // (It is possible to not-use PAC on PAC-capable hardware.)
+    //
+    // Note that the two options here are separate:
+    //  * Apple arm64e makes use of both call- and ret-signing.
+    //  * Linux -mbranch-protection=pac-ret only makes use of ret-signing.
+    // (Both cases are detected and reflected in the state of the macros.)
+>>>>>>> upstream/master
 #ifdef CODEGEN_TARGET_A64_PTRAUTH_CALLS
     result |= A64::Feature_PtrAuthCall;
 #endif

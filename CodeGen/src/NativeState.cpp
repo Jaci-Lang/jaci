@@ -95,7 +95,11 @@ void initFunctions(NativeContext& context)
     context.getImport = getImport;
 
     context.callFallback = callFallback;
+<<<<<<< HEAD
     context.callFeedbackFallback = callFeedbackFallback;
+=======
+    context.fastPcallSetup = fastPcallSetup;
+>>>>>>> upstream/master
 
     context.executeGETGLOBAL = executeGETGLOBAL;
     context.executeSETGLOBAL = executeSETGLOBAL;

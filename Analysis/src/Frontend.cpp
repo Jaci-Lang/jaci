@@ -10,7 +10,7 @@
 #include "Luau/ConstraintSolver.h"
 #include "Luau/ControlFlowGraph.h"
 #include "Luau/DataFlowGraph.h"
-#include "Luau/DenseHash2.h"
+#include "Luau/DenseHash.h"
 #include "Luau/DumpCFG.h"
 #include "Luau/DcrLogger.h"
 #include "Luau/ExpectedTypeVisitor.h"
@@ -41,10 +41,8 @@
 LUAU_FASTINT(LuauTypeInferIterationLimit)
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
 LUAU_FASTINT(LuauTarjanChildLimit)
-LUAU_FASTINTVARIABLE(LuauCyclicSccWarningThreshold, 4)
 
 LUAU_FASTFLAGVARIABLE(LuauKnowsTheDataModel3)
-LUAU_FASTFLAGVARIABLE(LuauFrontendSourceNodeErase)
 LUAU_FASTFLAG(LuauSolverV2)
 LUAU_FASTFLAGVARIABLE(DebugLuauLogSolverToJson)
 LUAU_FASTFLAGVARIABLE(DebugLuauLogSolverToJsonFile)
@@ -52,10 +50,13 @@ LUAU_FASTFLAGVARIABLE(DebugLuauForbidInternalTypes)
 LUAU_FASTFLAGVARIABLE(DebugLuauForceStrictMode)
 LUAU_FASTFLAGVARIABLE(DebugLuauForceNonStrictMode)
 LUAU_FASTFLAGVARIABLE(DebugLuauAlwaysShowConstraintSolvingIncomplete)
+LUAU_FASTFLAG(LuauStrictVisitInstantiatedType)
 LUAU_FASTFLAG(LuauExportValueSyntax)
 LUAU_FASTFLAGVARIABLE(LuauExportValueTypecheck)
 LUAU_FLAGVERSION(LuauExportValueTypecheck, 2)
 LUAU_FASTFLAGVARIABLE(LuauCyclicRequireTypeInference)
+LUAU_FLAGVERSION(LuauCyclicRequireTypeInference, 6)
+LUAU_FASTFLAGVARIABLE(LuauCyclicRequireTopLevelAccessError)
 
 LUAU_FASTFLAGVARIABLE(DebugLuauForceOldSolver)
 LUAU_FASTFLAG(DebugLuauCFG)
@@ -280,7 +281,7 @@ ErrorVec accumulateErrors(
     const ModuleName& name
 )
 {
-    DenseHashSet2<ModuleName> seen;
+    DenseHashSet<ModuleName> seen;
     std::vector<ModuleName> queue{name};
 
     ErrorVec result;
@@ -360,7 +361,7 @@ std::vector<RequireCycle> getRequireCycles(
 {
     std::vector<RequireCycle> result;
 
-    DenseHashSet2<const SourceNode*> seen;
+    DenseHashSet<const SourceNode*> seen;
     std::vector<const SourceNode*> stack;
     std::vector<const SourceNode*> path;
 
@@ -509,7 +510,7 @@ void Frontend::parseModules(const std::vector<ModuleName>& names)
 {
     LUAU_TIMETRACE_SCOPE("Frontend::parseModules", "Frontend");
 
-    DenseHashSet2<Luau::ModuleName> seen;
+    DenseHashSet<Luau::ModuleName> seen;
 
     for (const ModuleName& name : names)
     {
@@ -555,7 +556,7 @@ CheckResult Frontend::check(const ModuleName& name, std::optional<FrontendOption
     if (FFlag::LuauCyclicRequireTypeInference)
         computeSCCs(buildQueue);
 
-    DenseHashSet2<Luau::ModuleName> seen;
+    DenseHashSet<Luau::ModuleName> seen;
     std::vector<BuildQueueItem> buildQueueItems;
     addBuildQueueItems(buildQueueItems, buildQueue, cycleDetected, seen, frontendOptions);
     LUAU_ASSERT(!buildQueueItems.empty());
@@ -637,7 +638,7 @@ std::vector<ModuleName> Frontend::checkQueuedModules(
     std::vector<ModuleName> currModuleQueue;
     std::swap(currModuleQueue, moduleQueue);
 
-    DenseHashSet2<Luau::ModuleName> seen;
+    DenseHashSet<Luau::ModuleName> seen;
 
     std::shared_ptr<BuildQueueWorkState> state = std::make_shared<BuildQueueWorkState>();
 
@@ -966,7 +967,7 @@ bool Frontend::parseGraph(
         Permanent
     };
 
-    DenseHashMap2<SourceNode*, Mark> seen;
+    DenseHashMap<SourceNode*, Mark> seen;
     std::vector<SourceNode*> stack;
     std::vector<SourceNode*> path;
     stack.reserve(64);
@@ -1064,22 +1065,16 @@ bool Frontend::parseGraph(
     return cyclic;
 }
 
-static bool moduleHasExports(const SourceModule& sourceModule)
+static bool moduleHasTopLevelReturn(const SourceModule& sourceModule)
 {
     if (!sourceModule.root)
         return false;
 
     for (AstStat* stat : sourceModule.root->body)
     {
-        if (AstStatLocal* local = stat->as<AstStatLocal>())
+        if (stat->is<AstStatReturn>())
         {
-            if (local->isExported)
-                return true;
-        }
-        else if (AstStatLocalFunction* func = stat->as<AstStatLocalFunction>())
-        {
-            if (func->name->isExported)
-                return true;
+            return true;
         }
     }
 
@@ -1097,7 +1092,7 @@ static std::vector<ModuleSCCPtr> computeTarjanSCCs(
     if (N == 0)
         return {};
 
-    DenseHashMap2<ModuleName, size_t> nameToVertex;
+    DenseHashMap<ModuleName, size_t> nameToVertex;
     for (size_t i = 0; i < N; i++)
         nameToVertex[buildQueue[i]] = i;
 
@@ -1234,21 +1229,23 @@ void Frontend::computeSCCs(const std::vector<ModuleName>& buildQueue)
 
     for (const ModuleSCCPtr& scc : foundSCCs)
     {
-        // Only register SCCs where all members use `export` — those have runtime
-        // placeholder support for cyclic requires. Mixed SCCs with non-export modules
-        // will crash at runtime, so they go through the old per-module path.
-        bool allMembersUseExport = true;
+        // Only group modules with no top-level return statement into an SCC — a top-level return is
+        // incompatible with cyclic type inference. This is broader than what the runtime supports (a
+        // module with neither an export nor a return still throws at runtime), but that divergence is
+        // intentional for now, as this module could be mid-edit, and we don't want to raise a cyclic-require
+        // error prematurely.
+        bool allMembersAreValid = true;
         for (const ModuleName& member : scc->members)
         {
             auto it = sourceModules.find(member);
-            if (it == sourceModules.end() || !it->second || !moduleHasExports(*it->second))
+            if (it == sourceModules.end() || !it->second || moduleHasTopLevelReturn(*it->second))
             {
-                allMembersUseExport = false;
+                allMembersAreValid = false;
                 break;
             }
         }
 
-        if (!allMembersUseExport)
+        if (!allMembersAreValid)
             continue;
 
         for (const ModuleName& member : scc->members)
@@ -1265,12 +1262,12 @@ void Frontend::addBuildQueueItems(
     std::vector<BuildQueueItem>& items,
     std::vector<ModuleName>& buildQueue,
     bool cycleDetected,
-    DenseHashSet2<Luau::ModuleName>& seen,
+    DenseHashSet<Luau::ModuleName>& seen,
     const FrontendOptions& frontendOptions
 )
 {
     // Map SCC pointer to item index for grouping SCC members into a single BuildQueueItem
-    DenseHashMap2<ModuleSCC*, size_t> sccToItemIndex;
+    DenseHashMap<ModuleSCC*, size_t> sccToItemIndex;
 
     for (const ModuleName& moduleName : buildQueue)
     {
@@ -1384,6 +1381,95 @@ static void applyInternalLimitScaling(SourceNode& sourceNode, const ModulePtr mo
         sourceNode.autocompleteLimitsMult = std::min(sourceNode.autocompleteLimitsMult * 2.0, 1.0);
 }
 
+struct CyclicTopLevelAccessVisitor : public AstVisitor
+{
+    NotNull<const DenseHashMap<Name, ModuleName>> peerImports;
+    NotNull<std::vector<TypeError>> errors;
+    ModuleName moduleName;
+
+    CyclicTopLevelAccessVisitor(
+        NotNull<const DenseHashMap<Name, ModuleName>> peerImports,
+        NotNull<std::vector<TypeError>> errors,
+        ModuleName moduleName
+    )
+        : peerImports(peerImports)
+        , errors(errors)
+        , moduleName(std::move(moduleName))
+    {
+    }
+
+    bool visit(AstExprFunction*) override
+    {
+        return false;
+    }
+
+    bool visit(AstExprIndexName* node) override
+    {
+        if (auto* local = node->expr->as<AstExprLocal>())
+        {
+            if (const ModuleName* target = peerImports->find(local->local->name.value))
+                errors->emplace_back(
+                    node->location,
+                    moduleName,
+                    CyclicModuleTopLevelAccess{*target, std::string{local->local->name.value}, std::string{node->index.value}}
+                );
+        }
+        return true;
+    }
+
+    bool visit(AstExprIndexExpr* node) override
+    {
+        if (auto* local = node->expr->as<AstExprLocal>())
+        {
+            if (const ModuleName* target = peerImports->find(local->local->name.value))
+            {
+                std::string propName;
+                if (auto* constStr = node->index->as<AstExprConstantString>())
+                    propName = std::string{constStr->value.data, constStr->value.size};
+
+                errors->emplace_back(
+                    node->location, moduleName, CyclicModuleTopLevelAccess{*target, std::string{local->local->name.value}, std::move(propName)}
+                );
+            }
+        }
+        return true;
+    }
+};
+
+static void errorOnCyclicTopLevelAccess(const SourceModule& sourceModule, const ModulePtr& module, const std::vector<ModuleName>& sccMembers)
+{
+    LUAU_ASSERT(FFlag::LuauCyclicRequireTopLevelAccessError);
+
+    ScopePtr rootScope = module->getModuleScope();
+    if (!rootScope || rootScope->importedModules.empty())
+        return;
+
+    DenseHashSet<ModuleName> peerSet;
+    for (const auto& member : sccMembers)
+    {
+        if (member != sourceModule.name)
+            peerSet.insert(member);
+    }
+
+    if (peerSet.empty())
+        return;
+
+    DenseHashMap<Name, ModuleName> peerImports;
+    for (const auto& [localName, importedModule] : rootScope->importedModules)
+    {
+        if (peerSet.contains(importedModule))
+            peerImports[localName] = importedModule;
+    }
+
+    if (peerImports.empty())
+        return;
+
+    CyclicTopLevelAccessVisitor visitor{NotNull{&peerImports}, NotNull{&module->errors}, sourceModule.name};
+
+    for (AstStat* stat : sourceModule.root->body)
+        stat->visit(&visitor);
+}
+
 void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
 {
     ModuleSCCPtr scc = item.scc;
@@ -1479,6 +1565,16 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
         for (auto& deferred : cgResult.deferredConstraints)
             mergedDeferredConstraints.push_back(std::move(deferred));
 
+        // Synthesize exports table early so subsequent modules in the SCC can
+        // see the correct table shape (with free types) during their CG pass.
+        // Without this, export-only modules (no explicit return) would have an
+        // empty return type in the placeholder, causing peers to see unknown.
+        if (FFlag::LuauExportValueSyntax && FFlag::LuauExportValueTypecheck)
+        {
+            module->scopes = cgData[i].cgScopes;
+            synthesizeExportReturn(builtinTypes, NotNull{module.get()});
+        }
+
         // Bind the placeholder BlockedType to the actual return type so subsequent
         // modules in this SCC see real types when they require() this one.
         TypePackId actualReturnType = cgData[i].cgScopes[0].second->returnType;
@@ -1497,6 +1593,9 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
             {
                 emplaceType<BoundType>(asMutable(*placeholderHead), *actualHead);
             }
+
+            // Copy exported type bindings so subsequent CG passes can import them
+            placeholderModule->exportedTypeBindings = cgData[i].cgScopes[0].second->exportedTypeBindings;
         }
 
         mergedErrors.insert(mergedErrors.end(), std::make_move_iterator(cgResult.errors.begin()), std::make_move_iterator(cgResult.errors.end()));
@@ -1510,7 +1609,7 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
         NotNull{rootScope.get()},
         {},
         {},
-        DenseHashMap2<Scope*, TypeId>{},
+        DenseHashMap<Scope*, TypeId>{},
         {},
         std::move(mergedDeferredConstraints),
     };
@@ -1548,7 +1647,7 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
 
     // Partition CG + solver errors to the appropriate modules by moduleName
     {
-        DenseHashMap2<ModuleName, ModulePtr> nameToModule;
+        DenseHashMap<ModuleName, ModulePtr> nameToModule;
         for (const BuildQueueModuleInfo& moduleInfo : item.modules)
             nameToModule[moduleInfo.name] = moduleInfo.module;
 
@@ -1631,9 +1730,6 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
             }
         }
 
-        if (FFlag::LuauExportValueSyntax && FFlag::LuauExportValueTypecheck && !module->timeout && !module->cancelled)
-            synthesizeExportReturn(builtinTypes, NotNull{module.get()});
-
         // Clone public interface
         unfreeze(module->interfaceTypes);
         module->clonePublicInterface(builtinTypes, iceHandler, SolverMode::New);
@@ -1658,16 +1754,18 @@ void Frontend::checkSCCBuildQueueItem(BuildQueueItem& item)
     for (BuildQueueModuleInfo& moduleInfo : item.modules)
         freeze(moduleInfo.module->interfaceTypes);
 
-    // Emit a warning on the first SCC member if the cycle is large enough.
-    if (FInt::LuauCyclicSccWarningThreshold > 0 && scc->members.size() >= static_cast<size_t>(FInt::LuauCyclicSccWarningThreshold))
+    // Check for top-level accesses to cyclic peer modules
+    if (FFlag::LuauCyclicRequireTopLevelAccessError)
     {
-        item.modules[0].module->errors.emplace_back(Location{}, item.modules[0].name, CyclicModuleGraphTooLarge{scc->members.size(), scc->members});
+        for (BuildQueueModuleInfo& moduleInfo : item.modules)
+            errorOnCyclicTopLevelAccess(*moduleInfo.sourceModule, moduleInfo.module, scc->members);
     }
 }
 
 void Frontend::checkBuildQueueItem(BuildQueueItem& item)
 {
-    if (FFlag::LuauCyclicRequireTypeInference && item.scc && item.modules.size() > 1)
+    // Check every SCC in its shared arena, including single-member self-loops.
+    if (FFlag::LuauCyclicRequireTypeInference && item.scc && (item.modules.size() == item.scc->members.size()))
     {
         checkSCCBuildQueueItem(item);
         return;
@@ -1822,6 +1920,11 @@ void Frontend::checkBuildQueueItem(BuildQueueItem& item)
         module->astForInNextTypes.clear();
         module->astResolvedTypes.clear();
         module->astResolvedTypePacks.clear();
+        if (FFlag::LuauStrictVisitInstantiatedType)
+        {
+            module->astTypeReferenceLookupFailures.clear();
+            module->astTypePackReferenceLookupFailures.clear();
+        }
         module->astCompoundAssignResultTypes.clear();
         module->astScopes.clear();
         module->upperBoundContributors.clear();
@@ -1832,8 +1935,22 @@ void Frontend::checkBuildQueueItem(BuildQueueItem& item)
     {
         for (const RequireCycle& cyc : requireCycles)
         {
-            TypeError te{cyc.location, moduleInfo.name, ModuleHasCyclicDependency{cyc.path}};
+            std::vector<ModuleName> cycleModules;
+            if (FFlag::LuauCyclicRequireTypeInference)
+            {
+                for (const ModuleName& name : cyc.path)
+                {
+                    auto it = sourceModules.find(name);
+                    if (it == sourceModules.end() || !it->second || moduleHasTopLevelReturn(*it->second))
+                        cycleModules.push_back(name);
+                }
+            }
+            else
+            {
+                cycleModules = cyc.path;
+            }
 
+            TypeError te{cyc.location, moduleInfo.name, ModuleHasCyclicDependency{std::move(cycleModules)}};
             module->errors.push_back(te);
         }
     }
@@ -2091,7 +2208,7 @@ void Frontend::traverseDependents(const ModuleName& name, std::function<bool(Sou
         if (!processSubtree(sourceNode))
             continue;
 
-        const Set<ModuleName>& dependents = sourceNode.dependents;
+        const DenseHashSet<ModuleName>& dependents = sourceNode.dependents;
         queue.insert(queue.end(), dependents.begin(), dependents.end());
     }
 }
@@ -2533,29 +2650,22 @@ std::pair<SourceNode*, SourceModule*> Frontend::getSourceNode(const ModuleName& 
 
     if (!source)
     {
-        if (FFlag::LuauFrontendSourceNodeErase)
+        if (auto it = sourceNodes.find(name); it != sourceNodes.end())
         {
-            if (auto it = sourceNodes.find(name); it != sourceNodes.end())
+            // Remove this module from the dependents set of each of its dependencies
+            for (const ModuleName& dep : it->second->requireSet)
             {
-                // Remove this module from the dependents set of each of its dependencies
-                for (const ModuleName& dep : it->second->requireSet)
-                {
-                    if (auto depIt = sourceNodes.find(dep); depIt != sourceNodes.end())
-                        depIt->second->dependents.erase(name);
-                }
-
-                sourceNodes.erase(it);
+                if (auto depIt = sourceNodes.find(dep); depIt != sourceNodes.end())
+                    depIt->second->dependents.erase(name);
             }
 
-            sourceModules.erase(name);
-            requireTrace.erase(name);
-            moduleResolver.eraseModule(name);
-            moduleResolverForAutocomplete.eraseModule(name);
+            sourceNodes.erase(it);
         }
-        else
-        {
-            sourceModules.erase(name);
-        }
+
+        sourceModules.erase(name);
+        requireTrace.erase(name);
+        moduleResolver.eraseModule(name);
+        moduleResolverForAutocomplete.eraseModule(name);
 
         return {nullptr, nullptr};
     }
