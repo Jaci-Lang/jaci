@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <math.h>
 
-LUAU_FASTFLAGVARIABLE(LuauCodegenSkipDeadPredecessorTags)
+LUAU_FASTFLAG(LuauCodegenPropagateFallbackTags)
 
 namespace Luau
 {
@@ -121,6 +121,7 @@ bool isFastCall(LuauOpcode op)
     case LOP_FASTCALL2:
     case LOP_FASTCALL2K:
     case LOP_FASTCALL3:
+    case LOP_FASTPCALL:
         return true;
 
     default:
@@ -319,6 +320,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::INVOKE_FASTCALL:
         return IrValueKind::Int;
     case IrCmd::CHECK_FASTCALL_RES:
+    case IrCmd::INVOKE_FASTPCALL:
     case IrCmd::DO_ARITH:
     case IrCmd::DO_LEN:
     case IrCmd::GET_TABLE:
@@ -334,6 +336,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::CHECK_READONLY:
     case IrCmd::CHECK_NO_METATABLE:
     case IrCmd::CHECK_SAFE_ENV:
+    case IrCmd::CHECK_YIELDABLE:
     case IrCmd::CHECK_ARRAY_SIZE:
     case IrCmd::CHECK_SLOT_MATCH:
     case IrCmd::CHECK_NODE_NO_NEXT:
@@ -1876,6 +1879,10 @@ void propagateTagsFromPredecessors(
     if (blockIdx >= function.cfg.predecessorsOffsets.size())
         return;
 
+    // Entry block has an implicit edge as the function start and it has no tag info at that moment
+    if (FFlag::LuauCodegenPropagateFallbackTags && function.entryBlock == blockIdx)
+        return;
+
     BlockIteratorWrapper preds = predecessors(function.cfg, blockIdx);
 
     if (preds.empty())
@@ -1887,7 +1894,7 @@ void propagateTagsFromPredecessors(
 
     for (uint32_t predIdx : preds)
     {
-        if (FFlag::LuauCodegenSkipDeadPredecessorTags && function.blocks[predIdx].kind == IrBlockKind::Dead)
+        if (function.blocks[predIdx].kind == IrBlockKind::Dead)
             continue;
 
         if (predIdx >= numBlockExitTags)
@@ -1902,7 +1909,7 @@ void propagateTagsFromPredecessors(
 
     for (uint32_t predIdx : preds)
     {
-        if (FFlag::LuauCodegenSkipDeadPredecessorTags && function.blocks[predIdx].kind == IrBlockKind::Dead)
+        if (function.blocks[predIdx].kind == IrBlockKind::Dead)
             continue;
 
         const std::vector<uint8_t>& predTags = function.blockExitTags[predIdx];

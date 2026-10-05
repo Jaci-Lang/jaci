@@ -3,7 +3,7 @@
 
 #include "Luau/BytecodeGraph.h"
 #include "Luau/BytecodeOps.h"
-#include "Luau/DenseHash2.h"
+#include "Luau/DenseHash.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -25,29 +25,29 @@ struct CallInliner
     BcCallFB<VmConst> call;
     std::vector<BcOp> callParams;
     Reg targetReg;
-    uint32_t callerFbVecSize;
 
     uint32_t callerBlocksSizeBeforeInline = 0;
     uint32_t callerInstSizeBeforeInline = 0;
     uint32_t callerVmConstSizeBeforeInline = 0;
     uint32_t callerProtoSizeBeforeInline = 0;
     uint32_t callerUpValSizeBeforeInline = 0;
+    uint32_t callerFeedbackSlotSizeBeforeInline = 0;
 
     std::vector<BcOp> returnOps;
     std::unordered_set<BcOp, BcOpHash> callProjections;
     std::unordered_map<BcOp, std::vector<BcOp>, BcOpHash> varArgMoves;
+    std::vector<std::pair<BcOp, BcOp>> returnSites;
     // memoizes target-phi -> caller-phi so a target phi referenced both in a block's phi list and as
     // another phi's operand maps to a single caller phi. Without this, the operand reference would get
     // its own unanchored duplicate that SCCP never visits (it only visits phis listed in a block)
-    DenseHashMap2<BcOp, BcOp, BcOpHash> mappedPhis;
+    DenseHashMap<BcOp, BcOp, BcOpHash> mappedPhis;
 
-    CallInliner(BcFunction<VmConst>& caller, BcFunction<VmConst>& target, BcOp callOp, uint32_t callerFbVecSize)
+    CallInliner(BcFunction<VmConst>& caller, BcFunction<VmConst>& target, BcOp callOp)
         : caller(caller)
         , target(target)
         , call(caller.template as<BcCallFB<VmConst>>(callOp))
         , callParams(call.params())
         , targetReg(call.getOutReg())
-        , callerFbVecSize(callerFbVecSize)
     {
     }
 
@@ -173,10 +173,26 @@ struct CallInliner
         caller.instructions.resize(callerInstSizeBeforeInline + target.instructions.size());
     }
 
+    uint32_t mapInstIndex(uint32_t index)
+    {
+        return callerInstSizeBeforeInline + index;
+    }
+
     BcOp mapInstOp(BcOp targetInst)
     {
         LUAU_ASSERT(targetInst.kind == BcOpKind::Inst);
-        return BcOp{BcOpKind::Inst, callerInstSizeBeforeInline + targetInst.index};
+        return BcOp{BcOpKind::Inst, mapInstIndex(targetInst.index)};
+    }
+
+    uint32_t mapVmConstIndex(uint32_t index)
+    {
+        return callerVmConstSizeBeforeInline + index;
+    }
+
+    BcOp mapVmConstOp(BcOp targetVmConst)
+    {
+        LUAU_ASSERT(targetVmConst.kind == BcOpKind::VmConst);
+        return BcOp{BcOpKind::VmConst, mapVmConstIndex(targetVmConst.index)};
     }
 
     void allocateVmConsts()
@@ -187,16 +203,28 @@ struct CallInliner
             caller.constants.push_back(c);
     }
 
-    BcOp mapVmConstOp(BcOp targetVmConst)
+    void allocateFeedbackSlots()
     {
-        LUAU_ASSERT(targetVmConst.kind == BcOpKind::VmConst);
-        return BcOp{BcOpKind::VmConst, callerVmConstSizeBeforeInline + targetVmConst.index};
+        callerFeedbackSlotSizeBeforeInline = uint32_t(caller.feedbackSlots.size());
+        caller.feedbackSlots.reserve(callerFeedbackSlotSizeBeforeInline + target.feedbackSlots.size());
+
+        for (BcFeedbackSlot slot : target.feedbackSlots)
+        {
+            if (slot.kind == LFT_CALLTARGET)
+                slot.callTarget.inst = mapInstIndex(slot.callTarget.inst);
+            else
+                LUAU_ASSERT(!"unknown feedback slot kind");
+
+            caller.feedbackSlots.push_back(slot);
+        }
     }
 
     void allocateProtos()
     {
         callerProtoSizeBeforeInline = uint32_t(caller.protos.size());
-        caller.protos.resize(callerProtoSizeBeforeInline + target.protos.size());
+        caller.protos.reserve(callerProtoSizeBeforeInline + target.protos.size());
+        for (auto p : target.protos)
+            caller.protos.push_back(p);
     }
 
     BcOp mapProtoOp(BcOp targetProtoOp)
@@ -270,12 +298,12 @@ struct CallInliner
         }
     }
 
-    bool replaceReturn(BcRef<BcBlock>& nextBlock, BcOp callerBlockOp, BcOp targetReturnOp)
+    void replaceReturn(BcRef<BcBlock>& nextBlock, BcOp callerBlockOp, BcOp targetReturnOp)
     {
         BcRef<BcBlock> callerBlock = caller.block(callerBlockOp);
         BcReturn ret = target.template as<BcReturn<VmConst>>(targetReturnOp);
-        if (ret.ReturnCount() < 0)
-            return false;
+        // multi-value returns are rejected by migrateBlocks before collecting the site
+        LUAU_ASSERT(ret.ReturnCount() >= 0);
         std::vector<BcOp> values = ret.values();
         uint32_t i = 0;
         for (; i < values.size(); i++)
@@ -298,7 +326,6 @@ struct CallInliner
 
         callerBlock->successors.push_back({BcBlockEdgeKind::Fallthrough, nextBlock.op});
         nextBlock->predecessors.push_back({BcBlockEdgeKind::Fallthrough, callerBlockOp});
-        return true;
     }
 
     void replaceGetVarArg(BcOp callerBlockOp, BcOp targetGetVarArgsOp)
@@ -373,8 +400,9 @@ struct CallInliner
                 }
                 else if (inst.op == LOP_RETURN)
                 {
-                    if (!replaceReturn(nextBlock, callerBlockOp, op))
+                    if (target.template as<BcReturn<VmConst>>(op).ReturnCount() < 0)
                         return false;
+                    returnSites.push_back({callerBlockOp, op});
                 }
                 else if (inst.op != LOP_PREPVARARGS)
                 {
@@ -411,6 +439,13 @@ struct CallInliner
 
             BcOp callerPhiOp = caller.addPhi();
             mappedPhis[targetOp] = callerPhiOp;
+
+            // loop-carried phis have a register we need to preserve as well
+            if (auto it = target.regs.find(targetOp); it != target.regs.end())
+            {
+                caller.regs[callerPhiOp] = mapToCallerReg(it->second);
+            }
+
             BcRef<BcPhi> targetPhi = target.phi(targetOp);
             for (uint32_t i = 0; i < targetPhi->ops.size(); i++)
             {
@@ -419,6 +454,7 @@ struct CallInliner
                 BcRef<BcPhi> callerPhi = caller.phi(callerPhiOp);
                 caller.addUse(callerPhi, mapped);
             }
+
             return callerPhiOp;
         }
         case BcOpKind::Proj:
@@ -596,7 +632,7 @@ struct CallInliner
 
                 // do not migrate sealed fbcalls
                 if (fbcall.FbSlot() != -1)
-                    fbcall.setFbSlot(fbcall.FbSlot() + callerFbVecSize);
+                    fbcall.setFbSlot(fbcall.FbSlot() + callerFeedbackSlotSizeBeforeInline);
 
                 break;
             }
@@ -640,6 +676,7 @@ struct CallInliner
         allocateBlocks();
         allocateInstructions();
         allocateVmConsts();
+        allocateFeedbackSlots();
         allocateProtos();
         allocateUpValues();
     }
@@ -740,6 +777,9 @@ struct CallInliner
 
         migrateBlockPhis();
 
+        for (auto& [callerBlockOp, targetReturnOp] : returnSites)
+            replaceReturn(nextBlock, callerBlockOp, targetReturnOp);
+
         migrateInstructions();
 
         replaceCallUsagesWithReturnPhis();
@@ -822,9 +862,9 @@ struct CallInliner
 };
 
 template<typename VmConst>
-bool inlineCall(BcFunction<VmConst>& caller, BcFunction<VmConst>& target, BcOp callOp, uint32_t targetProtoId, uint32_t callerFbVecSize = 0)
+bool inlineCall(BcFunction<VmConst>& caller, BcFunction<VmConst>& target, BcOp callOp, uint32_t targetProtoId)
 {
-    CallInliner<VmConst> inliner(caller, target, callOp, callerFbVecSize);
+    CallInliner<VmConst> inliner(caller, target, callOp);
     return inliner.inlineTarget(targetProtoId);
 }
 

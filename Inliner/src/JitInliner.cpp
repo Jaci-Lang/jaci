@@ -3,6 +3,7 @@
 
 #include "Luau/Bytecode.h"
 #include "Luau/BytecodeCallInliner.h"
+#include "Luau/BytecodeDump.h"
 #include "Luau/BytecodeGraph.h"
 #include "Luau/BytecodeUtils.h"
 #include "Luau/Common.h"
@@ -47,6 +48,7 @@ std::optional<std::pair<RuntimeBcFunction, BcOp>> buildGraphFromProto(Proto* p, 
     fn.nups = p->nups;
     fn.is_vararg = static_cast<bool>(p->is_vararg);
     fn.flags = p->flags;
+    fn.linedefined = p->linedefined;
 
     uint8_t* typeinfo = p->typeinfo;
     fn.typeInfo = std::string_view(reinterpret_cast<char*>(typeinfo), p->sizetypeinfo);
@@ -59,6 +61,23 @@ std::optional<std::pair<RuntimeBcFunction, BcOp>> buildGraphFromProto(Proto* p, 
     for (int i = 0; i < p->sizep; i++)
         fn.protos[i] = i;
 
+    fn.feedbackSlots.resize(p->feedbackvecsize);
+    for (uint32_t i = 0; i < p->feedbackvecsize; ++i)
+    {
+        FeedbackVectorSlot& runtimeSlot = p->feedbackvec[i];
+        BcFeedbackSlot& graphSlot = fn.feedbackSlots[i];
+
+        if (runtimeSlot.kind == FeedbackVectorSlotKind::CALL_TARGET)
+        {
+            graphSlot.kind = LFT_CALLTARGET;
+            graphSlot.callTarget.inst = runtimeSlot.call_target.pc;
+        }
+        else
+        {
+            LUAU_ASSERT(!"unknown feedback slot kind");
+        }
+    }
+
     std::vector<uint32_t> lines(p->sizecode, 0);
     if (p->lineinfo != nullptr && p->abslineinfo != nullptr)
         for (int i = 0; i < p->sizecode; i++)
@@ -70,6 +89,15 @@ std::optional<std::pair<RuntimeBcFunction, BcOp>> buildGraphFromProto(Proto* p, 
     Instruction* code = p->code;
     if (!graphParser.rebuildGraph(code, p->sizecode, lines, insnsPC))
         return {};
+
+    for (BcFeedbackSlot& graphSlot : fn.feedbackSlots)
+    {
+        if (graphSlot.kind == LFT_CALLTARGET)
+        {
+            LUAU_ASSERT(graphSlot.callTarget.inst < insnsPC.size());
+            graphSlot.callTarget.inst = insnsPC[graphSlot.callTarget.inst];
+        }
+    }
 
     BcOp callOp;
     if (callPc)
@@ -97,7 +125,12 @@ std::optional<CodeData> emitCode(lua_State* L, RuntimeBcFunction& graph, std::ve
 
     bcb.foldJumps();
 
-    std::vector<uint32_t> remap = bcb.expandJumps();
+    bool hasLongJumpError = false;
+    std::vector<uint32_t> remap = bcb.expandJumps(hasLongJumpError);
+
+    if (hasLongJumpError)
+        return {};
+
     if (remap.size() > 0)
     {
         LUAU_ASSERT(insnsPC.size() <= remap.size());
@@ -172,12 +205,23 @@ Proto* createInlinedProto(lua_State* L, Proto* caller, Proto* target, RuntimeBcF
     memcpy(p->feedbackvec, caller->feedbackvec, caller->feedbackvecsize * sizeof(FeedbackVectorSlot));
     memcpy(p->feedbackvec + caller->feedbackvecsize, target->feedbackvec, target->feedbackvecsize * sizeof(FeedbackVectorSlot));
 
-    for (uint32_t i = 0; i < std::min<uint32_t>(p->feedbackvecsize, uint32_t(codeData.fbSlotPCs.size())); i++)
-        if (codeData.fbSlotPCs[i] != kUnassignedPC)
+    LUAU_ASSERT(graph.feedbackSlots.size() == p->feedbackvecsize);
+    for (uint32_t i = 0; i < p->feedbackvecsize; ++i)
+    {
+        BcFeedbackSlot& graphSlot = graph.feedbackSlots[i];
+        FeedbackVectorSlot& runtimeSlot = p->feedbackvec[i];
+
+        if (graphSlot.kind == LFT_CALLTARGET)
         {
-            LUAU_ASSERT(p->feedbackvec[i].kind == FeedbackVectorSlotKind::CALL_TARGET);
-            p->feedbackvec[i].call_target.pc = codeData.fbSlotPCs[i];
+            LUAU_ASSERT(runtimeSlot.kind == FeedbackVectorSlotKind::CALL_TARGET);
+            if (i < codeData.fbSlotPCs.size() && codeData.fbSlotPCs[i] != kUnassignedPC)
+                runtimeSlot.call_target.pc = codeData.fbSlotPCs[i];
         }
+        else
+        {
+            LUAU_ASSERT(!"unknown feedback slot kind");
+        }
+    }
 
     p->deoptimized = caller;
     caller->optimized = p;
@@ -253,6 +297,49 @@ bool hasFoldableConstants(const RuntimeBcFunction& func)
     return false;
 }
 
+bool isEnvDependentOrUsesSelect(Proto* proto, bool crossEnv)
+{
+    Instruction* codeend = proto->code + proto->sizecode;
+    for (Instruction* pc = proto->code; pc < codeend;)
+    {
+        switch (LUAU_INSN_OP(*pc))
+        {
+            case LOP_GETIMPORT:
+            {
+                uint16_t importKIndex = LUAU_INSN_D(*pc);
+                LUAU_ASSERT(importKIndex < static_cast<uint16_t>(proto->sizek));
+                // if import is unresolved we cannot inline target, because globals can differ in the caller's env.
+                if (crossEnv && ttisnil(proto->k + importKIndex))
+                    return true;
+                break;
+            }
+            case LOP_GETGLOBAL:
+            case LOP_SETGLOBAL:
+            case LOP_NEWCLOSURE:
+            case LOP_DUPCLOSURE:
+            {
+                if (crossEnv)
+                    return true;
+                break;
+            }
+            case LOP_FASTCALL1:
+            case LOP_FASTCALL2:
+            case LOP_FASTCALL2K:
+            case LOP_FASTCALL3:
+            case LOP_FASTCALL:
+            {
+                if (LUAU_INSN_A(*pc) == LBF_SELECT_VARARG)
+                    return true;
+                break;
+            }
+            default:
+                break;
+        }
+        pc += Luau::getOpLength(static_cast<LuauOpcode>(LUAU_INSN_OP(*pc)));
+    }
+    return false;
+}
+
 Proto* onInlineFunction(lua_State* L, Closure* caller, Closure* target, uint32_t pc)
 {
     LUAU_ASSERT(!caller->isC && !target->isC);
@@ -271,6 +358,12 @@ Proto* onInlineFunction(lua_State* L, Closure* caller, Closure* target, uint32_t
 
     // recursive inlining is not supported yet.
     if (targetProto->funid == callerProto->funid)
+        return nullptr;
+
+    if (caller->env->safeenv == 0 || target->env->safeenv == 0)
+        return nullptr;
+    
+    if (isEnvDependentOrUsesSelect(targetProto, caller->env != target->env))
         return nullptr;
 
     // pick the latest optimized version for inlining
@@ -311,7 +404,7 @@ Proto* onInlineFunction(lua_State* L, Closure* caller, Closure* target, uint32_t
     if (!targetGraph)
         return nullptr;
 
-    if (!inlineCall(callerGraph->first, targetGraph->first, callerGraph->second, targetProto->funid, callerProto->feedbackvecsize))
+    if (!inlineCall(callerGraph->first, targetGraph->first, callerGraph->second, targetProto->funid))
         return nullptr;
 
     // impl must outlive emitCode and createInlinedProto

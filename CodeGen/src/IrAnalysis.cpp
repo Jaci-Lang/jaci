@@ -1,7 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/IrAnalysis.h"
 
-#include "Luau/DenseHash2.h"
+#include "Luau/DenseHash.h"
 #include "Luau/IrData.h"
 #include "Luau/IrUtils.h"
 #include "Luau/IrVisitUseDef.h"
@@ -34,13 +34,11 @@ void updateUseCounts(IrFunction& function)
         if (op.kind == IrOpKind::Inst)
         {
             IrInst& target = instructions[op.index];
-            CODEGEN_ASSERT(target.useCount < 0xffff);
             target.useCount++;
         }
         else if (op.kind == IrOpKind::Block)
         {
             IrBlock& target = blocks[op.index];
-            CODEGEN_ASSERT(target.useCount < 0xffff);
             target.useCount++;
         }
     };

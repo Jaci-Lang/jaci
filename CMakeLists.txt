@@ -27,6 +27,10 @@ option(LUAU_STRIP_BINARIES "Strip debug symbols from release executable artifact
 set(LUAU_USE_LLVM "ON" CACHE STRING "Use LLVM as the native code generation backend (AUTO/ON/OFF)")
 set_property(CACHE LUAU_USE_LLVM PROPERTY STRINGS AUTO ON OFF)
 
+# Compile time options for Luau features
+option(LUAU_VECTOR_DOUBLE "Use 64-bit doubles for vector components" OFF)
+option(LUAU_VECTOR_FOUR_WIDE "Enable 4-wide mode for vectors, adding a 'w' component" OFF)
+
 if(LUAU_BUILD_SHARED AND NOT LUAU_EXTERN_C)
     message(FATAL_ERROR "LUAU_BUILD_SHARED requires LUAU_EXTERN_C to be ON")
 endif()
@@ -364,6 +368,14 @@ if(LUAU_EXTERN_C)
     endif()
 endif()
 
+if(LUAU_VECTOR_DOUBLE)
+    target_compile_definitions(Luau.VM PUBLIC "LUA_VECTOR_DOUBLE=1")
+endif()
+
+if(LUAU_VECTOR_FOUR_WIDE)
+    target_compile_definitions(Luau.VM PUBLIC "LUA_VECTOR_SIZE=4")
+endif()
+
 if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND MSVC_VERSION GREATER_EQUAL 1924)
     # disable partial redundancy elimination which regresses interpreter codegen substantially in VS2022:
     # https://developercommunity.visualstudio.com/t/performance-regression-on-a-complex-interpreter-lo/1631863
@@ -379,13 +391,13 @@ if(MSVC AND LUAU_BUILD_CLI)
     # the default stack size that MSVC linker uses is 1 MB; we need more stack space in Debug because stack frames are larger
     set_target_properties(Luau.Analyze.CLI PROPERTIES LINK_FLAGS_DEBUG /STACK:2097152)
     set_target_properties(Luau.Repl.CLI PROPERTIES LINK_FLAGS_DEBUG /STACK:2097152)
-    set_target_properties(Luau.UnitTest PROPERTIES LINK_FLAGS_DEBUG /STACK:2097152)
 endif()
 
 if(MSVC AND LUAU_BUILD_TESTS)
     # the default stack size that MSVC linker uses is 1 MB; we need more stack space in Debug because stack frames are larger
     set_target_properties(Luau.CLI.Test PROPERTIES LINK_FLAGS_DEBUG /STACK:2097152)
     set_target_properties(Luau.Conformance PROPERTIES LINK_FLAGS_DEBUG /STACK:2097152)
+    set_target_properties(Luau.UnitTest PROPERTIES LINK_FLAGS_DEBUG /STACK:2097152)
     set_target_properties(Luau.CLI.Test PROPERTIES LINK_FLAGS_OPTIMIZED /STACK:2097152)
     set_target_properties(Luau.Conformance PROPERTIES LINK_FLAGS_OPTIMIZED /STACK:2097152)
     set_target_properties(t_native_interop_test PROPERTIES LINK_FLAGS_DEBUG /STACK:2097152)
@@ -504,6 +516,28 @@ if(LUAU_BUILD_TESTS)
     endif()
 
     add_subdirectory(fuzz)
+endif()
+
+if(LUAU_BUILD_CLI AND LUAU_BUILD_TESTS)
+    if(CMAKE_VERSION VERSION_LESS 3.12)
+        find_package(PythonInterp 3 REQUIRED)
+        set(LUAU_PYTHON_EXECUTABLE "${PYTHON_EXECUTABLE}")
+    else()
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        set(LUAU_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
+    endif()
+    add_custom_target(Luau.GoldenTest
+        COMMAND ${LUAU_PYTHON_EXECUTABLE} -m tools.golden.selftest
+            --luau "$<TARGET_FILE:Luau.Repl.CLI>"
+            --luau-analyze "$<TARGET_FILE:Luau.Analyze.CLI>"
+        COMMAND ${LUAU_PYTHON_EXECUTABLE} -m tools.golden
+            --luau "$<TARGET_FILE:Luau.Repl.CLI>"
+            --luau-analyze "$<TARGET_FILE:Luau.Analyze.CLI>"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        USES_TERMINAL
+        VERBATIM
+    )
+    add_dependencies(Luau.GoldenTest Luau.Repl.CLI Luau.Analyze.CLI)
 endif()
 
 if(LUAU_BUILD_WEB)

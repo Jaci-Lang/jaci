@@ -76,8 +76,6 @@ public:
     CodeAllocator codeAllocator;
     std::unique_ptr<UnwindBuilder> unwindBuilder;
 
-    uint8_t* gateData_DEPRECATED = nullptr;
-    size_t gateDataSize_DEPRECATED = 0;
     CodeAllocationData gateAllocationData;
 
     void* userdataRemappingContext = nullptr;

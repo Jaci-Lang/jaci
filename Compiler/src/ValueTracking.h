@@ -2,7 +2,7 @@
 #pragma once
 
 #include "Luau/Ast.h"
-#include "Luau/DenseHash2.h"
+#include "Luau/DenseHash.h"
 
 #include <vector>
 
@@ -26,27 +26,30 @@ enum class Global
 struct Variable
 {
     AstExpr* init = nullptr; // initial value of the variable; filled by trackValues
+    AstStatBlock* owner = nullptr;    // block statement in which the variable was defined (not necessarily directly)
+    AstExprLocal* lastUsed = nullptr; // last lexical expression where the variable was read
     bool written = false;    // is the variable ever assigned to? filled by trackValues
     bool constant = false;   // is the variable's value a compile-time constant? filled by constantFold
+    bool nonLexicalUse = false; // variable may be used by expressions which do not lexically mention it (like function calls)
 };
 
-void assignMutable(DenseHashMap2<AstName, Global>& globals, const AstNameTable& names, const char* const* mutableGlobals);
+void assignMutable(DenseHashMap<AstName, Global>& globals, const AstNameTable& names, const char* const* mutableGlobals);
 void trackValues(
-    DenseHashMap2<AstName, Global>& globals,
-    DenseHashMap2<AstLocal*, Variable>& variables,
-    DenseHashMap2<AstName, AstLocal*>& classLocals,
-    DenseHashSet2<AstLocal*>& exportedFunctions,
+    DenseHashMap<AstName, Global>& globals,
+    DenseHashMap<AstLocal*, Variable>& variables,
+    DenseHashMap<AstName, AstLocal*>& classLocals,
+    DenseHashSet<AstLocal*>& exportedFunctions,
     std::vector<AstLocal*>& exportedVariables,
     AstNode* root
 );
 void trackValues_DEPRECATED(
-    DenseHashMap2<AstName, Global>& globals,
-    DenseHashMap2<AstLocal*, Variable>& variables,
-    DenseHashMap2<AstName, AstLocal*>& classLocals,
+    DenseHashMap<AstName, Global>& globals,
+    DenseHashMap<AstLocal*, Variable>& variables,
+    DenseHashMap<AstName, AstLocal*>& classLocals,
     AstNode* root
 );
 
-inline Global getGlobalState(const DenseHashMap2<AstName, Global>& globals, AstName name)
+inline Global getGlobalState(const DenseHashMap<AstName, Global>& globals, AstName name)
 {
     const Global* it = globals.find(name);
 

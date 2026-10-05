@@ -4,9 +4,6 @@
 #include "Luau/IrDump.h"
 #include "Luau/IrUtils.h"
 
-LUAU_FASTFLAG(LuauCodegenDseRestoreHints)
-LUAU_FASTFLAGVARIABLE(LuauCodegenDseRestoreHintUpdate)
-
 namespace Luau
 {
 namespace CodeGen
@@ -62,7 +59,7 @@ void IrValueLocationTracking::processStoreLocationHint(const StoreLocationHint* 
 
         if (existingLoc.op.kind != IrOpKind::None)
         {
-            if (FFlag::LuauCodegenDseRestoreHintUpdate && existingLoc.lazy)
+            if (existingLoc.lazy)
             {
                 int prevReg = vmRegOp(existingLoc.op);
 
@@ -90,7 +87,7 @@ void IrValueLocationTracking::processStoreLocationHint(const StoreLocationHint* 
 
             if (logger && logger->options.includeRegSpills)
             {
-                if (FFlag::LuauCodegenDseRestoreHintUpdate && existingLoc.op.kind != IrOpKind::None)
+                if (existingLoc.op.kind != IrOpKind::None)
                     logger->formatAppendWithPrefix("  ; %%%u has a new lazy restore location R%d\n", hint->instIdx, reg);
                 else
                     logger->formatAppendWithPrefix("  ; %%%u has a lazy restore location R%d\n", hint->instIdx, reg);
@@ -131,6 +128,10 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::INVOKE_FASTCALL:
         // While ADJUST_STACK_TO_REG would semantically define the result range, we need to define it immediately
         invalidateRestoreVmRegs(vmRegOp(OP_B(inst)), function.intOp(OP_G(inst)));
+        break;
+    case IrCmd::INVOKE_FASTPCALL:
+        // Even if result count is limited, all registers starting from function (ra) might be modified
+        invalidateRestoreVmRegs(vmRegOp(OP_A(inst)), -1);
         break;
     case IrCmd::DO_ARITH:
     case IrCmd::DO_LEN:

@@ -18,6 +18,7 @@
 __pycache__
 .cache
 .clangd
+<<<<<<< HEAD
 .trae/
 site/
 bench/upstream/
@@ -29,3 +30,8 @@ test-out/
 _probe*.luau
 .llvmdev/
 .debug/
+=======
+
+# Golden-test captured outputs for user debugging
+*.output.tmp
+>>>>>>> upstream/master

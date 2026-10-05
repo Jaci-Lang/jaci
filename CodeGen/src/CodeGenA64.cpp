@@ -17,12 +17,15 @@
 #endif
 
 LUAU_DYNAMIC_FASTFLAG(AddReturnExectargetCheck)
-LUAU_FASTFLAG(LuauCIProto)
 
 namespace Luau
 {
 namespace CodeGen
 {
+<<<<<<< HEAD
+=======
+
+>>>>>>> upstream/master
 unsigned int getCpuFeaturesA64();
 
 namespace A64
@@ -245,15 +248,8 @@ static void emitContinueCall(AssemblyBuilderA64& build, ModuleHelpers& helpers)
     build.tbnz(x0, 0, helpers.exitNoContinueVm);
 
     // Need to update state of the current function before we jump away
-    if (FFlag::LuauCIProto)
-    {
-        build.ldr(x1, mem(rState, offsetof(lua_State, ci)));
-        build.ldr(x1, mem(x1, offsetof(CallInfo, p))); // L->ci->p aka proto
-    }
-    else
-    {
-        build.ldr(x1, mem(x0, offsetof(Closure, l.p))); // cl->l.p aka proto
-    }
+    build.ldr(x1, mem(rState, offsetof(lua_State, ci)));
+    build.ldr(x1, mem(x1, offsetof(CallInfo, p))); // L->ci->p aka proto
 
     build.ldr(x2, mem(x1, offsetof(Proto, exectarget)));
     build.cbz(x2, helpers.exitContinueVm);
@@ -322,10 +318,7 @@ void emitReturn(AssemblyBuilderA64& build, ModuleHelpers& helpers)
     build.ldr(rClosure, mem(x2, offsetof(CallInfo, func)));
     build.ldr(rClosure, mem(rClosure, offsetof(TValue, value.gc)));
 
-    if (FFlag::LuauCIProto)
-        build.ldr(x1, mem(x2, offsetof(CallInfo, p))); // ci->p aka proto
-    else
-        build.ldr(x1, mem(rClosure, offsetof(Closure, l.p))); // cl->l.p aka proto
+    build.ldr(x1, mem(x2, offsetof(CallInfo, p))); // ci->p aka proto
 
     if (DFFlag::AddReturnExectargetCheck)
     {
@@ -411,7 +404,11 @@ static EntryLocations buildEntryFunction(AssemblyBuilderA64& build, UnwindBuilde
     build.add(sp, sp, uint16_t(kStackSize));
 
     if (build.features & Feature_PtrAuthRet)
+<<<<<<< HEAD
         build.retab();
+=======
+        build.retab(); // Authenticate the LR signed by pacibsp in the prologue, then return
+>>>>>>> upstream/master
     else
         build.ret();
 
@@ -425,8 +422,16 @@ static EntryLocations buildEntryFunction(AssemblyBuilderA64& build, UnwindBuilde
 
 bool initHeaderFunctions(BaseCodeGenContext& codeGenContext)
 {
+<<<<<<< HEAD
 #if defined(CODEGEN_TARGET_A64)
     AssemblyBuilderA64 build(/* logger= */ nullptr, getCpuFeaturesA64());
+=======
+    // This file is built for every target, but CodeGen.cpp only defines
+    // getCpuFeaturesA64() when the host is arm64. The gate is only executed on
+    // an arm64 host, so the features are irrelevant elsewhere.
+#if defined(CODEGEN_TARGET_A64)
+    AssemblyBuilderA64 build(/* logger= */ nullptr, /* features= */ getCpuFeaturesA64());
+>>>>>>> upstream/master
 #else
     AssemblyBuilderA64 build(/* logger= */ nullptr, /* features= */ 0);
 #endif
@@ -458,6 +463,12 @@ bool initHeaderFunctions(BaseCodeGenContext& codeGenContext)
     uint8_t* gateEntry = codeStart + build.getLabelOffset(entryLocations.start);
 
 #ifdef CODEGEN_TARGET_A64_PTRAUTH_CALLS
+<<<<<<< HEAD
+=======
+    // onEnter() invokes gateEntry through a GateFn function pointer.  When PAC
+    // function pointer signing is enabled, we need to sign the function pointer
+    // so that authentication succeeds when onEnter() calls it.
+>>>>>>> upstream/master
     gateEntry = (uint8_t*)ptrauth_sign_unauthenticated(gateEntry, ptrauth_key_function_pointer, 0);
 #endif
 

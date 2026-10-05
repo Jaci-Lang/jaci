@@ -15,7 +15,6 @@
 #include <utility>
 
 LUAU_DYNAMIC_FASTFLAGVARIABLE(AddReturnExectargetCheck, false)
-LUAU_FASTFLAG(LuauCIProto)
 
 namespace Luau
 {
@@ -544,10 +543,7 @@ void emitReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers)
     build.mov(rax, qword[rax + offsetof(TValue, value.gc)]);
     build.mov(sClosure, rax);
 
-    if (FFlag::LuauCIProto)
-        build.mov(proto, qword[cip + offsetof(CallInfo, p)]);
-    else
-        build.mov(proto, qword[rax + offsetof(Closure, l.p)]);
+    build.mov(proto, qword[cip + offsetof(CallInfo, p)]);
 
     build.mov(execdata, qword[proto + offsetof(Proto, execdata)]);
 
@@ -588,6 +584,37 @@ void emitReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers)
     build.jmp(rdx);
 }
 
+void emitDispatchLuauCall(AssemblyBuilderX64& build, ModuleHelpers& helpers)
+{
+    RegisterX64 proto = rcx; // Sync with emitContinueCallInVm
+    RegisterX64 ci = rdx;
+
+    build.mov(ci, qword[rState + offsetof(lua_State, ci)]);
+
+    // Switch current Closure (sClosure = ci->func->value.gc)
+    build.mov(rax, qword[ci + offsetof(CallInfo, func)]);
+    build.mov(rax, qword[rax + offsetof(TValue, value.gc)]);
+    build.mov(sClosure, rax);
+
+    build.mov(proto, qword[ci + offsetof(CallInfo, p)]);
+
+    // Switch current code
+    build.mov(rax, qword[proto + offsetof(Proto, code)]);
+    build.mov(sCode, rax);
+
+    // Switch current constants
+    build.mov(rConstants, qword[proto + offsetof(Proto, k)]);
+
+    // Get native function entry
+    build.mov(rax, qword[proto + offsetof(Proto, exectarget)]);
+    build.test(rax, rax);
+    build.jcc(ConditionX64::Zero, helpers.exitContinueVm);
+
+    // Mark call frame as native
+    build.or_(dword[ci + offsetof(CallInfo, flags)], LUA_CALLINFO_NATIVE);
+
+    build.jmp(rax);
+}
 
 } // namespace X64
 } // namespace CodeGen
