@@ -7,7 +7,7 @@
 #include "Luau/StringUtils.h"
 
 
-#include "ClassFixture.h"
+#include "ExternTypeFixture.h"
 #include "Fixture.h"
 #include "ScopedFlags.h"
 
@@ -18,14 +18,14 @@
 LUAU_DYNAMIC_FASTINT(LuauSubtypingRecursionLimit)
 
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
-LUAU_FASTFLAG(LuauAutocompleteFunctionArglistSuggestion)
-LUAU_FASTFLAG(LuauAutocompleteMetatableInheritance)
+
 LUAU_FASTFLAG(LuauCheckTypeForDeprecated)
-LUAU_FASTFLAG(LuauDeprecatedAttributeOnAnonymousFunctions)
-LUAU_FASTFLAG(LuauAutocompleteSkipErrorTypeInUnion)
-LUAU_FASTFLAG(LuauCheckTypeForDeprecated)
-LUAU_FASTFLAG(LuauDeprecatedAttributeOnAnonymousFunctions)
+LUAU_FASTFLAG(LuauAutocompleteDotMethodConversion)
 LUAU_FASTFLAG(LuauUseExplicitTypeArgsInGenerics)
+LUAU_FASTFLAG(DebugLuauForceOldSolver)
+LUAU_FASTFLAG(LuauExperimentalIfLocalSyntax)
+LUAU_FASTFLAG(LuauExperimentalIfLocalAnalysis)
+LUAU_FASTFLAG(LuauRefactorAutocompleteAncestry)
 
 using namespace Luau;
 
@@ -150,6 +150,12 @@ struct ACFixtureImpl : BaseType
             freeze(globals.globalTypes);
         }
 
+        if (!result.parseResult.errors.empty())
+        {
+            for (const auto& e : result.parseResult.errors)
+                printf("Parse error at (%s): %s\n", toString(e.getLocation()).c_str(), e.getMessage().c_str());
+        }
+
         REQUIRE_MESSAGE(result.success, "loadDefinition: unable to load definition file");
         return result;
     }
@@ -177,7 +183,7 @@ struct ACFixture : ACFixtureImpl<Fixture>
             return *frontend;
 
         Frontend& f = Fixture::getFrontend();
-        // TODO - move this into its own consructor
+        // TODO - move this into its own constructor
         addGlobalBinding(f.globals, "table", Binding{getBuiltins()->anyType});
         addGlobalBinding(f.globals, "math", Binding{getBuiltins()->anyType});
         addGlobalBinding(f.globalsForAutocomplete, "table", Binding{getBuiltins()->anyType});
@@ -1144,14 +1150,42 @@ TEST_CASE_FIXTURE(ACFixture, "local_function")
 
     ac = autocomplete('1');
     CHECK(ac.entryMap.empty());
+}
+
+TEST_CASE_FIXTURE(ACFixture, "table_statement_full_stem_included")
+{
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
 
     check(R"(
         local tbl = {}
         function tbl.something@1() end
     )");
 
-    ac = autocomplete('1');
-    CHECK(ac.entryMap.empty());
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("something"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "table_assignment_full_stem_included")
+{
+    check(R"(
+        local tbl = {}
+        tbl.something@1 = 42
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("something"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "global_autocomplete_full_stem")
+{
+    check(R"(
+foobar = 42
+
+print(math.abs(foobar@1
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foobar"));
 }
 
 TEST_CASE_FIXTURE(ACFixture, "local_function_params")
@@ -1194,28 +1228,46 @@ TEST_CASE_FIXTURE(ACFixture, "local_function_params")
     CHECK_EQ(ac3.context, AutocompleteContext::Unknown);
 }
 
-TEST_CASE_FIXTURE(ACFixture, "global_function_params")
+TEST_CASE_FIXTURE(ACFixture, "global_function_params_1")
 {
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
+
     check(R"(
-        function abc(def)
+        funct@1ion abc@2(def@3)
     )");
 
-    for (unsigned int i = 17; i < 25; ++i)
-    {
-        CHECK(autocomplete(1, i).entryMap.empty());
-    }
-    CHECK(!autocomplete(1, 26).entryMap.empty());
+    auto ac1 = autocomplete('1');
+    CHECK(ac1.entryMap.empty());
+
+    auto ac2 = autocomplete('2');
+    CHECK(!ac2.entryMap.empty());
+
+    auto ac3 = autocomplete('3');
+    CHECK(ac3.entryMap.empty());
+}
+
+TEST_CASE_FIXTURE(ACFixture, "global_function_params_2")
+{
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
 
     check(R"(
-        function abc(def)
+        funct@1ion abc@2(def@3)
         end
     )");
 
-    for (unsigned int i = 17; i < 25; ++i)
-    {
-        CHECK(autocomplete(1, i).entryMap.empty());
-    }
-    CHECK(!autocomplete(1, 26).entryMap.empty());
+    auto ac1 = autocomplete('1');
+    CHECK(ac1.entryMap.empty());
+
+    auto ac2 = autocomplete('2');
+    CHECK(!ac2.entryMap.empty());
+
+    auto ac3 = autocomplete('3');
+    CHECK(ac3.entryMap.empty());
+}
+
+TEST_CASE_FIXTURE(ACFixture, "global_function_params_3")
+{
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
 
     check(R"(
         function abc(def)
@@ -1223,19 +1275,24 @@ TEST_CASE_FIXTURE(ACFixture, "global_function_params")
         end
     )");
 
-    auto ac2 = autocomplete('1');
-    CHECK_EQ(ac2.entryMap.count("abc"), 1);
-    CHECK_EQ(ac2.entryMap.count("def"), 1);
-    CHECK_EQ(ac2.context, AutocompleteContext::Statement);
+    auto ac = autocomplete('1');
+    CHECK_EQ(ac.entryMap.count("abc"), 1);
+    CHECK_EQ(ac.entryMap.count("def"), 1);
+    CHECK_EQ(ac.context, AutocompleteContext::Statement);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "global_function_params_4")
+{
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
 
     check(R"(
         function abc(def, ghi@1)
         end
     )");
 
-    auto ac3 = autocomplete('1');
-    CHECK(ac3.entryMap.empty());
-    CHECK_EQ(ac3.context, AutocompleteContext::Unknown);
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.empty());
+    CHECK_EQ(ac.context, AutocompleteContext::Unknown);
 }
 
 TEST_CASE_FIXTURE(ACFixture, "arguments_to_global_lambda")
@@ -1748,7 +1805,19 @@ local a: boolean, b: n@1 = false, f()
     CHECK(ac.entryMap["number"].typeCorrect == TypeCorrectKind::Correct);
 }
 
-TEST_CASE_FIXTURE(ACFixture, "type_correct_function_type_suggestion")
+TEST_CASE_FIXTURE(ACFixture, "type_correct_function_type_suggestion_1")
+{
+    check(R"(
+local b: (number, string) -> b@1 = function(a: number, b: string): boolean return a + #b == 0 end
+    )");
+
+    auto ac = autocomplete('1');
+
+    CHECK(ac.entryMap.count("boolean"));
+    CHECK(ac.entryMap["boolean"].typeCorrect == TypeCorrectKind::Correct);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "type_correct_function_type_suggestion_2")
 {
     check(R"(
 local b: (n@1) -> number = function(a: number, b: string) return a + #b end
@@ -1758,39 +1827,39 @@ local b: (n@1) -> number = function(a: number, b: string) return a + #b end
 
     CHECK(ac.entryMap.count("number"));
     CHECK(ac.entryMap["number"].typeCorrect == TypeCorrectKind::Correct);
+}
 
+TEST_CASE_FIXTURE(ACFixture, "type_correct_function_type_suggestion_3")
+{
     check(R"(
 local b: (number, s@1 = function(a: number, b: string) return a + #b end
     )");
 
-    ac = autocomplete('1');
+    auto ac = autocomplete('1');
 
     CHECK(ac.entryMap.count("string"));
     CHECK(ac.entryMap["string"].typeCorrect == TypeCorrectKind::Correct);
+}
 
-    check(R"(
-local b: (number, string) -> b@1 = function(a: number, b: string): boolean return a + #b == 0 end
-    )");
-
-    ac = autocomplete('1');
-
-    CHECK(ac.entryMap.count("boolean"));
-    CHECK(ac.entryMap["boolean"].typeCorrect == TypeCorrectKind::Correct);
-
+TEST_CASE_FIXTURE(ACFixture, "type_correct_function_type_suggestion_4")
+{
     check(R"(
 local b: (number, ...s@1) = function(a: number, ...: string) return a end
     )");
 
-    ac = autocomplete('1');
+    auto ac = autocomplete('1');
 
     CHECK(ac.entryMap.count("string"));
     CHECK(ac.entryMap["string"].typeCorrect == TypeCorrectKind::Correct);
+}
 
+TEST_CASE_FIXTURE(ACFixture, "type_correct_function_type_suggestion_5")
+{
     check(R"(
 local b: (number) -> ...s@1 = function(a: number): ...string return "a", "b", "c" end
     )");
 
-    ac = autocomplete('1');
+    auto ac = autocomplete('1');
 
     CHECK(ac.entryMap.count("string"));
     CHECK(ac.entryMap["string"].typeCorrect == TypeCorrectKind::Correct);
@@ -2079,7 +2148,9 @@ local function b(a: ((done) -> number) -> number) return a(function(done) return
 return {a = a, b = b}
     )";
 
-    LUAU_REQUIRE_NO_ERRORS(getFrontend().check("Module/A"));
+    CheckResult result = getFrontend().check("Module/A");
+    ignoreMissingAnnotations(result);
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     fileResolver.source["Module/B"] = R"(
 local ex = require(script.Parent.A)
@@ -2113,7 +2184,9 @@ local function b(a: ((done) -> number) -> number) return a(function(done) return
 return {a = a, b = b}
     )";
 
-    LUAU_REQUIRE_NO_ERRORS(getFrontend().check("Module/A"));
+    CheckResult result = getFrontend().check("Module/A");
+    ignoreMissingAnnotations(result);
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     fileResolver.source["Module/B"] = R"(
 local ex = require(script.Parent.A)
@@ -2346,21 +2419,46 @@ return b.@1
     CHECK_EQ(0, ac.entryMap.size());
 }
 
-TEST_CASE_FIXTURE(ACFixture, "no_function_name_suggestions")
+
+TEST_CASE_FIXTURE(ACFixture, "function_name_suggestions_1")
 {
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
+
     check(R"(
+local name
+
 function na@1
     )");
 
     auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("name"));
+}
 
-    CHECK(ac.entryMap.empty());
+TEST_CASE_FIXTURE(ACFixture, "function_name_suggestions_2")
+{
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
 
+    check(R"(
+local name1
+local name2
+
+function na@1()
+end
+    )");
+
+    auto ac = autocomplete('1');
+
+    CHECK(ac.entryMap.count("name1"));
+    CHECK(ac.entryMap.count("name2"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "no_function_name_suggestions")
+{
     check(R"(
 local function @1
     )");
 
-    ac = autocomplete('1');
+    auto ac = autocomplete('1');
 
     CHECK(ac.entryMap.empty());
 
@@ -3465,6 +3563,10 @@ local abc = b@1
 
 TEST_CASE_FIXTURE(ACFixture, "no_incompatible_self_calls_on_class")
 {
+    // Legacy behavior: dot on an extern type method (`one`) is flagged wrongIndexType. The
+    // conversion feature changes this — see extern_type_method_via_dot for the flag-on case.
+    ScopedFastFlag sff{FFlag::LuauAutocompleteDotMethodConversion, false};
+
     loadDefinition(R"(
 declare extern type Foo with
     function one(self): number
@@ -3585,6 +3687,10 @@ t:@1
 
 TEST_CASE_FIXTURE(ACFixture, "do_wrong_compatible_nonself_calls")
 {
+    // Legacy behavior: dot on a method is flagged wrongIndexType. The conversion feature
+    // intentionally changes this — see dot_method_marks_for_conversion for the flag-on case.
+    ScopedFastFlag sff{FFlag::LuauAutocompleteDotMethodConversion, false};
+
     check(R"(
 local t = {}
 function t:m(x: string) end
@@ -3618,6 +3724,153 @@ t:@1
     CHECK(ac.entryMap["m"].indexedWithSelf);
 }
 
+TEST_CASE_FIXTURE(ACFixture, "dot_method_marks_for_conversion")
+{
+    // The conversion signal relies on `checkTypeMatch` precisely identifying that the receiver
+    // matches the function's first arg — which the new solver does and the old solver does not
+    // (see do_wrong_compatible_nonself_calls). Force the new solver so this test is deterministic.
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauAutocompleteDotMethodConversion, true},
+    };
+
+    check(R"(
+local t = {}
+function t:m() end
+t.@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    REQUIRE(ac.entryMap.count("m"));
+    CHECK(ac.entryMap["m"].replaceDotWithColon);
+    CHECK(!ac.entryMap["m"].wrongIndexType);
+    CHECK(ac.entryMap["m"].indexedWithSelf);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "dot_function_no_conversion")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauAutocompleteDotMethodConversion, true},
+    };
+
+    check(R"(
+local t = {}
+function t.m() end
+t.@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    REQUIRE(ac.entryMap.count("m"));
+    CHECK(!ac.entryMap["m"].replaceDotWithColon);
+    CHECK(!ac.entryMap["m"].wrongIndexType);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "colon_no_conversion_marker")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauAutocompleteDotMethodConversion, true},
+    };
+
+    check(R"(
+local t = {}
+function t:m() end
+t:@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    REQUIRE(ac.entryMap.count("m"));
+    CHECK(!ac.entryMap["m"].replaceDotWithColon);
+    CHECK(!ac.entryMap["m"].wrongIndexType);
+    CHECK(ac.entryMap["m"].indexedWithSelf);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "extern_type_method_via_dot")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauAutocompleteDotMethodConversion, true},
+    };
+
+    loadDefinition(R"(
+        declare extern type Foo with
+            function one(self): number
+            two: () -> number
+        end
+    )");
+
+    check(R"(
+        local function f(t: Foo)
+            t.@1
+        end
+    )");
+
+    auto ac = autocomplete('1');
+
+    REQUIRE(ac.entryMap.count("one"));
+    REQUIRE(ac.entryMap.count("two"));
+    CHECK(ac.entryMap["one"].replaceDotWithColon);
+    CHECK(!ac.entryMap["one"].wrongIndexType);
+    CHECK(ac.entryMap["one"].indexedWithSelf);
+    // Plain function field on the extern type stays as-is.
+    CHECK(!ac.entryMap["two"].replaceDotWithColon);
+    CHECK(!ac.entryMap["two"].wrongIndexType);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "extern_type_first_arg_match_does_not_make_colon_compatible")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauAutocompleteDotMethodConversion, true},
+    };
+
+    // For ExternTypes, the `hasSelf` property of the method is the only thing we look at.
+    // If the function does not set this, then `:` is always wrong.
+
+    loadDefinition(R"(
+        declare extern type Foo with
+            bar: (Foo) -> number
+        end
+    )");
+
+    check(R"(
+        local function f(t: Foo)
+            t:@1
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    REQUIRE(ac.entryMap.count("bar"));
+    CHECK(ac.entryMap["bar"].wrongIndexType);
+    CHECK(!ac.entryMap["bar"].replaceDotWithColon);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "intersection_with_some_self_overloads")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauAutocompleteDotMethodConversion, true},
+    };
+
+    // An intersection where at least one overload is dot-callable: keep the dot,
+    // don't propose conversion (the user might intend the non-self overload).
+    check(R"(
+local f: (() -> number) & ((number) -> number) = function(x: number?) return 2 end
+local t = {}
+t.f = f
+t.@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    REQUIRE(ac.entryMap.count("f"));
+    CHECK(!ac.entryMap["f"].replaceDotWithColon);
+}
+
 TEST_CASE_FIXTURE(ACFixture, "string_prim_self_calls_are_fine")
 {
     check(R"(
@@ -3640,6 +3893,10 @@ s:@1
 
 TEST_CASE_FIXTURE(ACFixture, "string_prim_non_self_calls_are_avoided")
 {
+    // Legacy behavior: dot on a string method like `sub` is flagged wrongIndexType. The
+    // conversion feature changes this — `sub` becomes a convertible method completion.
+    ScopedFastFlag sff{FFlag::LuauAutocompleteDotMethodConversion, false};
+
     check(R"(
 local s = "hello"
 s.@1
@@ -3869,8 +4126,7 @@ TEST_CASE_FIXTURE(ACBuiltinsFixture, "require_by_string")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_response_perf1" * doctest::timeout(LUAU_TIMEOUT))
 {
-    if (!FFlag::DebugLuauForceOldSolver)
-        return; // FIXME: This test is just barely at the threshhold which makes it very flaky under the new solver
+    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     // Build a function type with a large overload set
     const int parts = 100;
@@ -4475,7 +4731,6 @@ TEST_CASE_FIXTURE(ACFixture, "anonymous_autofilled_cursor_after_function_keyword
     // Cursor is right after the "function" keyword but before any "(" — the arg list has not been
     // opened yet. The suggestion must expand the full "function(...) end" expression, not just the
     // parameter list (which would replace the word "function" with bare argument names).
-    ScopedFastFlag sff{FFlag::LuauAutocompleteFunctionArglistSuggestion, true};
 
     check(R"(
 local function foo(a: (number, string) -> ())
@@ -4496,8 +4751,6 @@ foo(function@1)
 
 TEST_CASE_FIXTURE(ACFixture, "anonymous_autofilled_cursor_in_arglist_empty")
 {
-    ScopedFastFlag sff{FFlag::LuauAutocompleteFunctionArglistSuggestion, true};
-
     check(R"(
 local function foo(a: () -> ())
     a()
@@ -4517,8 +4770,6 @@ foo(function(@1))
 
 TEST_CASE_FIXTURE(ACFixture, "anonymous_autofilled_cursor_in_arglist_args")
 {
-    ScopedFastFlag sff{FFlag::LuauAutocompleteFunctionArglistSuggestion, true};
-
     check(R"(
 local function foo(a: (number, string) -> ())
     a()
@@ -4538,8 +4789,6 @@ foo(function(@1))
 
 TEST_CASE_FIXTURE(ACFixture, "anonymous_autofilled_cursor_in_arglist_with_return")
 {
-    ScopedFastFlag sff{FFlag::LuauAutocompleteFunctionArglistSuggestion, true};
-
     check(R"(
 local function foo(a: (number, string) -> string)
     return a(1, "x")
@@ -4559,8 +4808,6 @@ foo(function(@1))
 
 TEST_CASE_FIXTURE(ACFixture, "anonymous_autofilled_cursor_in_arglist_named_args")
 {
-    ScopedFastFlag sff{FFlag::LuauAutocompleteFunctionArglistSuggestion, true};
-
     check(R"(
 local function foo(a: (foo: number, bar: string) -> ())
     a()
@@ -4580,8 +4827,6 @@ foo(function(@1))
 
 TEST_CASE_FIXTURE(ACFixture, "anonymous_autofilled_cursor_in_arglist_varargs")
 {
-    ScopedFastFlag sff{FFlag::LuauAutocompleteFunctionArglistSuggestion, true};
-
     check(R"(
 local function foo(a: (...number) -> ())
     a()
@@ -4685,7 +4930,7 @@ TEST_CASE_FIXTURE(ACBuiltinsFixture, "type_function_private_scope")
 {
     ScopedFastFlag newSolver{FFlag::DebugLuauForceOldSolver, false};
 
-    // Global scope polution by the embedder has no effect
+    // Global scope pollution by the embedder has no effect
     addGlobalBinding(getFrontend().globals, "thisAlsoShouldNotBeThere", Binding{getBuiltins()->anyType});
     addGlobalBinding(getFrontend().globalsForAutocomplete, "thisAlsoShouldNotBeThere", Binding{getBuiltins()->anyType});
 
@@ -5207,7 +5452,7 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_deprecated_on_local_function")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_deprecated_on_anonymous_function")
 {
-    ScopedFastFlag sffs[] = {{FFlag::LuauCheckTypeForDeprecated, true}, {FFlag::LuauDeprecatedAttributeOnAnonymousFunctions, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauCheckTypeForDeprecated, true}};
 
     check(R"(
         local foo = \@deprecated function()
@@ -5513,8 +5758,6 @@ x.@1
 
 TEST_CASE_FIXTURE(ACBuiltinsFixture, "autocomplete_props_through_metatable_typed_metatable")
 {
-    ScopedFastFlag sff{FFlag::LuauAutocompleteMetatableInheritance, true};
-
     check(R"(
         local Base = { baseProp = 5 }
         local Meta = setmetatable({ __index = Base }, {})
@@ -5688,8 +5931,6 @@ TEST_CASE_FIXTURE(ACFixture, "class_autocomplete_classname_inside_method")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_on_nonexistent_table")
 {
-    ScopedFastFlag _{FFlag::LuauAutocompleteSkipErrorTypeInUnion, true};
-
     check(R"(
         local mygame = {}
 
@@ -5726,6 +5967,308 @@ ModuleTable:GenericFunctionInsideATable<<string>>(@1)
     CHECK(ac.entryMap.count("myString"));
     CHECK(ac.entryMap["myString"].typeCorrect == TypeCorrectKind::Correct);
     CHECK(ac.entryMap["myNumber"].typeCorrect == TypeCorrectKind::None);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_deprecated_on_recursive_intersection")
+{
+    std::ignore = check(R"(
+        export type T = {
+            prop: number
+        }
+        local function make(): MakeT
+            return nil :: any
+        end
+
+        type MakeT = typeof(make()) & T
+
+        local var: MakeT = nil :: any
+
+        @1
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("var"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_binding_is_in_scope_in_then_body")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {}
+        if local x = t then
+            @1
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("x"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_binding_offers_member_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {foo = 1, bar = 2}
+        if local x = t then
+            x.@1
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("bar"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_optional_binding_is_in_scope_in_then_body")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        type Test = {name: string, age: number}
+        local function getTester(): Test? return nil end
+        local function sample()
+            if local myTest = getTester() then
+                @1
+            end
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("myTest"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_optional_binding_offers_member_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        type Test = {name: string, age: number}
+        local function getTester(): Test? return nil end
+        local function sample()
+            if local myTest = getTester() then
+                myTest.@1
+            end
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("name"));
+    CHECK(ac.entryMap.count("age"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_optional_binding_member_completion_in_call_arg")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        type Test = {name: string, age: number}
+        local function getTester(): Test? return nil end
+        local function sample()
+            if local myTest = getTester() then
+                print(myTest.@1)
+            end
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("name"));
+    CHECK(ac.entryMap.count("age"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_value_offers_expression_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local thing = {}
+        if local x = @1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("thing"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_value_offers_member_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {foo = 1, bar = 2}
+        if local x = t.@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("bar"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "elseif_local_value_offers_expression_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local thing = {}
+        if false then
+        elseif local x = @1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("thing"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "elseif_local_value_completes")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {foo = 1, bar = 2}
+        if false then
+        elseif local x = t.@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("bar"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_annotation_correctly_suggests_types")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local one = 4
+        local two = "hello"
+        if local x: number = o@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("one"));
+    CHECK(ac.entryMap["one"].typeCorrect == TypeCorrectKind::Correct);
+    CHECK(ac.entryMap["two"].typeCorrect == TypeCorrectKind::None);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "elseif_local_annotation_correctly_suggests_types")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local one = 4
+        local two = "hello"
+        if false then
+        elseif local x: number = o@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("one"));
+    CHECK(ac.entryMap["one"].typeCorrect == TypeCorrectKind::Correct);
+    CHECK(ac.entryMap["two"].typeCorrect == TypeCorrectKind::None);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_const_value_completes")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {foo = 1, bar = 2}
+        if const x = t.@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("bar"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_expression_binding_is_in_scope_in_true_expr")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {}
+        local r = if local x = t then tostring(@1) else nil
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("x"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_expression_binding_offers_member_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {foo = 1, bar = 2}
+        local r = if local x = t then x.@1 else nil
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("bar"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_expression_value_offers_expression_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local thing = {}
+        local r = if local x = @1 then x else nil
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("thing"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_const_expression_binding_is_in_scope_in_true_expr")
+{
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {}
+        local r = if const x = t then tostring(@1) else nil
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("x"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_function_statement_with_index_1")
+{
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
+
+    check(R"(
+        local tbl: { onHeartbeat: (number) -> (), onSimulate: (number) -> (), everyFrame: () -> () } = {}
+
+        function tbl.on@1
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("onHeartbeat"));
+    CHECK(ac.entryMap.count("onSimulate"));
+    CHECK(ac.entryMap.count("everyFrame"));
+    CHECK(ac.entryMap["everyFrame"].typeCorrect == TypeCorrectKind::None);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_function_statement_with_index_2")
+{
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
+
+    check(R"(
+        local tbl = { abs = math.abs }
+
+        function tbl.a@1
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("abs"));
 }
 
 TEST_SUITE_END();

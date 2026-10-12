@@ -1529,6 +1529,19 @@ void analyzeBytecodeTypes(IrFunction& function, const HostIrHooks& hostHooks)
             case LOP_FORGPREP:
             case LOP_NEWCLASS:
             case LOP_NEWCLASSMEMBER:
+            case LOP_FASTPCALL:
+                break;
+            case LOP_CONSTRUCT:
+            {
+                int ra = LUAU_INSN_A(*pc);
+
+                regTags[ra] = LBC_TYPE_OBJECT;
+                bcType.result = regTags[ra];
+
+                refineRegType(bcTypeInfo, ra, i, bcType.result);
+                break;
+            }
+            case LOP_FINCONSTRUCT:
                 break;
             default:
                 CODEGEN_ASSERT(!"Unknown instruction");

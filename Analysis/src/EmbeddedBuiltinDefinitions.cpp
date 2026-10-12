@@ -4,7 +4,10 @@
 LUAU_FASTFLAG(LuauIntegerLibrary)
 LUAU_FASTFLAG(LuauIntegerType2)
 LUAU_FASTFLAG(LuauAllowGlobalDeclarationToBeCalledClass)
+LUAU_FASTFLAG(DebugLuauExactTableTypes)
 LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
+LUAU_FASTFLAGVARIABLE(LuauCoroutineFinallyAnalysis)
+LUAU_FASTFLAGVARIABLE(LuauRemoveLoadstringFromBuiltinDefinitions)
 
 namespace Luau
 {
@@ -24,6 +27,55 @@ declare function collectgarbage(opt: string?, arg: any?): any
 
 declare function print<T...>(...: T...)
 declare function warn<T...>(...: T...)
+
+declare function type<T>(value: T): string
+declare function typeof<T>(value: T): string
+
+-- `assert` has a magic function attached that will give more detailed type information
+declare function assert<T>(value: T, errorMessage: string?): T
+declare function error<T>(message: T, level: number?): never
+
+declare function tostring<T>(value: T): string
+declare function tonumber<T>(value: T, radix: number?): number?
+
+declare function rawequal<T1, T2>(a: T1, b: T2): boolean
+declare function rawget<K, V>(tab: {[K]: V}, k: K): V?
+declare function rawset<K, V>(tab: {[K]: V}, k: K, v: V): {[K]: V}
+declare function rawlen<K, V>(obj: {[K]: V} | string): number
+
+declare function setfenv<T..., R...>(target: number | (T...) -> R..., env: {[string]: any}): ((T...) -> R...)?
+
+declare function ipairs<V>(tab: {V}): (({V}, number) -> (number?, V), {V}, number)
+
+declare function pcall<A..., R...>(f: (A...) -> R..., ...: A...): (boolean, R...)
+
+-- FIXME: The actual type of `xpcall` is:
+-- <E, A..., R1..., R2...>(f: (A...) -> R1..., err: (E) -> R2..., A...) -> (true, R1...) | (false, R2...)
+-- Since we can't represent the return value, we use (boolean, R1...).
+declare function xpcall<E, A..., R1..., R2...>(f: (A...) -> R1..., err: (E) -> R2..., ...: A...): (boolean, R1...)
+
+-- `select` has a magic function attached to provide more detailed type information
+declare function select<A...>(i: string | number, ...: A...): ...any
+
+@checked declare function newproxy(mt: boolean?): any
+
+-- Cannot use `typeof` here because it will produce a polytype when we expect a monotype.
+declare function unpack<V>(tab: {V}, i: number?, j: number?): ...V
+
+)BUILTIN_SRC";
+
+static constexpr const char* kBuiltinDefinitionBaseSrc_DEPRECATED = R"BUILTIN_SRC(
+
+@checked declare function require(target: any): any
+
+@checked declare function getfenv(target: any): { [string]: any }
+
+declare _G: any
+declare _VERSION: string
+
+declare function gcinfo(): number
+
+declare function print<T...>(...: T...)
 
 declare function type<T>(value: T): string
 declare function typeof<T>(value: T): string
@@ -189,7 +241,7 @@ declare os: {
 
 )BUILTIN_SRC";
 
-static constexpr const char* kBuiltinDefinitionCoroutineSrc = R"BUILTIN_SRC(
+static constexpr const char* kBuiltinDefinitionCoroutineSrc_DEPRECATED = R"BUILTIN_SRC(
 
 declare coroutine: {
     create: <A..., R...>(f: (A...) -> R...) -> thread,
@@ -204,6 +256,7 @@ declare coroutine: {
 
 )BUILTIN_SRC";
 
+<<<<<<< HEAD
 static constexpr const char* kBuiltinDefinitionTaskSrc = R"BUILTIN_SRC(
 
 declare task: {
@@ -238,6 +291,20 @@ declare task: {
     timer: (interval: number, callback: () -> (), repeating: boolean?) -> any,
     poll_read: (sock: any, timeout: number?) -> (boolean, boolean),
     poll_write: (sock: any, timeout: number?) -> (boolean, boolean),
+=======
+static constexpr const char* kBuiltinDefinitionCoroutineSrc = R"BUILTIN_SRC(
+
+declare coroutine: {
+    create: <A..., R...>(f: (A...) -> R...) -> thread,
+    resume: <A..., R...>(co: thread, A...) -> (boolean, R...),
+    running: () -> thread,
+    status: @checked (co: thread) -> "dead" | "running" | "normal" | "suspended",
+    wrap: <A..., R...>(f: (A...) -> R...) -> ((A...) -> R...),
+    yield: <A..., R...>(A...) -> R...,
+    isyieldable: () -> boolean,
+    close: @checked (co: thread) -> (boolean, any),
+    finally: (co: thread, callback: (status: "finished" | "error" | "cancelled", ...any) -> ()) -> ()
+>>>>>>> upstream/master
 }
 
 )BUILTIN_SRC";
@@ -264,6 +331,32 @@ declare table: {
 
     clear: (table: {}) -> (),
     isfrozen: (t: {}) -> boolean,
+}
+
+)BUILTIN_SRC";
+
+static constexpr const char* kBuiltinDefinitionTableSrc_EXACT_TABLES = R"BUILTIN_SRC(
+
+declare table: {
+    concat: <V>(t: {V, ...}, sep: string?, i: number?, j: number?) -> string,
+    insert: (<V>(t: {V, ...}, value: V) -> ()) & (<V>(t: {V, ...}, pos: number, value: V) -> ()),
+    maxn: <V>(t: {V, ...}) -> number,
+    remove: <V>(t: {V, ...}, number?) -> V?,
+    sort: <V>(t: {V, ...}, comp: ((V, V) -> boolean)?) -> (),
+    create: <V>(count: number, value: V?) -> {V},
+    find: <V>(haystack: {V, ...}, needle: V, init: number?) -> number?,
+
+    unpack: <V>(list: {V, ...}, i: number?, j: number?) -> ...V,
+    pack: <V>(...V) -> { n: number, [number]: V },
+
+    getn: <V>(t: {V, ...}) -> number,
+    foreach: <K, V>(t: {[K]: V, ...}, f: (K, V) -> ()) -> (),
+    foreachi: <V>({V, ...}, (number, V) -> ()) -> (),
+
+    move: <V>(src: {V, ...}, a: number, b: number, t: number, dst: {V, ...}?) -> {V, ...},
+
+    clear: (table: {...}) -> (),
+    isfrozen: (t: {...}) -> boolean,
 }
 
 )BUILTIN_SRC";
@@ -646,16 +739,29 @@ declare json: {
 
 std::string getBuiltinDefinitionSource()
 {
-    std::string result = kBuiltinDefinitionBaseSrc;
+    std::string result = FFlag::LuauRemoveLoadstringFromBuiltinDefinitions ? kBuiltinDefinitionBaseSrc : kBuiltinDefinitionBaseSrc_DEPRECATED;
 
     result += kBuiltinDefinitionBit32Src;
     result += kBuiltinDefinitionMathSrc;
     result += kBuiltinDefinitionOsSrc;
+<<<<<<< HEAD
     result += kBuiltinDefinitionFsSrc;
     result += kBuiltinDefinitionIoSrc;
     result += kBuiltinDefinitionCoroutineSrc;
     result += kBuiltinDefinitionTaskSrc;
     result += kBuiltinDefinitionTableSrc;
+=======
+
+    if (FFlag::LuauCoroutineFinallyAnalysis)
+        result += kBuiltinDefinitionCoroutineSrc;
+    else
+        result += kBuiltinDefinitionCoroutineSrc_DEPRECATED;
+
+    if (FFlag::DebugLuauExactTableTypes)
+        result += kBuiltinDefinitionTableSrc_EXACT_TABLES;
+    else
+        result += kBuiltinDefinitionTableSrc;
+>>>>>>> upstream/master
     result += kBuiltinDefinitionDebugSrc;
     result += kBuiltinDefinitionUtf8Src;
     result += kBuiltinDefinitionProcessSrc;

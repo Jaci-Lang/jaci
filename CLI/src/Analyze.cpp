@@ -27,6 +27,7 @@
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <fstream>
 
@@ -133,6 +134,7 @@ static bool reportModuleResult(Luau::Frontend& frontend, const Luau::ModuleName&
 
 static void displayHelp(const char* argv0)
 {
+<<<<<<< HEAD
     argv0 = Luau::Cli::executableName(argv0);
     Luau::Cli::title(stdout, "Jaci Analyze", "typecheck and lint Luau source");
 
@@ -156,6 +158,20 @@ static void displayHelp(const char* argv0)
     Luau::Cli::option(stdout, "--lsp", "Serve the Language Server Protocol over standard input/output.");
     Luau::Cli::option(stdout, "--color=<mode>", "Set color output: auto, always, or never.");
     Luau::Cli::option(stdout, "-h, --help", "Print this help.");
+=======
+    printf("Usage: %s [--mode] [options] [file list]\n", argv0);
+    printf("\n");
+    printf("Available modes:\n");
+    printf("  omitted: typecheck and lint input files\n");
+    printf("  --annotate: typecheck input files and output source with type annotations\n");
+    printf("\n");
+    printf("Available options:\n");
+    printf("  --formatter=plain: report analysis errors in Luacheck-compatible format\n");
+    printf("  --formatter=gnu: report analysis errors in GNU-compatible format\n");
+    printf("  --mode={strict|nonstrict}: set the analyzer to use the given mode as the default for typechecking (default: `nonstrict`)\n");
+    printf("  --solver={new|old}: selects which typechecker to use (default: `new`)\n");
+    printf("  --timetrace: record compiler time tracing information into trace.json\n");
+>>>>>>> upstream/master
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -249,7 +265,7 @@ struct CliConfigResolver : Luau::ConfigResolver
     mutable std::unordered_map<std::string, Luau::Config> configCache;
     mutable std::vector<std::pair<std::string, std::string>> configErrors;
 
-    CliConfigResolver(Luau::Mode mode)
+    explicit CliConfigResolver(Luau::Mode mode)
     {
         defaultConfig.mode = mode;
     }
@@ -336,7 +352,7 @@ struct CliConfigResolver : Luau::ConfigResolver
 
 struct TaskScheduler
 {
-    TaskScheduler(unsigned threadCount)
+    explicit TaskScheduler(unsigned threadCount)
         : threadCount(threadCount)
     {
         for (unsigned i = 0; i < threadCount; i++)
@@ -358,6 +374,9 @@ struct TaskScheduler
         for (std::thread& worker : workers)
             worker.join();
     }
+
+    TaskScheduler(const TaskScheduler&) = delete;
+    TaskScheduler& operator=(const TaskScheduler&) = delete;
 
     std::function<void()> pop()
     {
@@ -434,6 +453,8 @@ int main(int argc, char** argv)
             format = ReportFormat::Gnu;
         else if (strcmp(argv[i], "--mode=strict") == 0)
             mode = Luau::Mode::Strict;
+        else if (strcmp(argv[i], "--mode=nonstrict") == 0)
+            mode = Luau::Mode::Nonstrict;
         else if (strcmp(argv[i], "--annotate") == 0)
             annotate = true;
         else if (strcmp(argv[i], "--timetrace") == 0)
@@ -458,6 +479,7 @@ int main(int argc, char** argv)
             solverMode = Luau::SolverMode::Old;
         else if (strcmp(argv[i], "--solver=new") == 0)
             solverMode = Luau::SolverMode::New;
+<<<<<<< HEAD
         else if (strcmp(argv[i], "--lsp") == 0)
             return Luau::runLspServer();
         else if (strncmp(argv[i], "--color=", 8) == 0)
@@ -475,6 +497,12 @@ int main(int argc, char** argv)
             snprintf(message, sizeof(message), "unknown option '%s'", argv[i]);
             Luau::Cli::error(stderr, message);
             Luau::Cli::hint(stderr, "run 'luau-analyze --help' to list supported options");
+=======
+        else
+        {
+            fprintf(stderr, "Error: Unrecognized option '%s'.\n\n", argv[i]);
+            displayHelp(argv[0]);
+>>>>>>> upstream/master
             return 1;
         }
     }
@@ -510,7 +538,7 @@ int main(int argc, char** argv)
 
             std::ofstream os(path);
 
-            os << log << std::endl;
+            os << log << "\n";
             printf("Wrote JSON log to %s\n", path.c_str());
         };
     }
@@ -571,13 +599,26 @@ int main(int argc, char** argv)
             "InternalCompilerError",
             Luau::toString(error, Luau::TypeErrorToStringOptions{frontend.fileResolver}).c_str()
         );
-        return 1;
+
+        // Internal compile errors get their own exit code.
+        return 2;
     }
 
     int failed = 0;
 
     for (const Luau::ModuleName& name : checkedModules)
-        failed += !reportModuleResult(frontend, name, format, annotate);
+        failed += reportModuleResult(frontend, name, format, annotate) ? 0 : 1;
+
+    std::unordered_set<Luau::ModuleName> checkedNames(checkedModules.begin(), checkedModules.end());
+
+    for (const std::string& path : files)
+    {
+        if (checkedNames.count(path) == 0)
+        {
+            fprintf(stderr, "Error opening %s\n", path.c_str());
+            failed++;
+        }
+    }
 
     if (!configResolver.configErrors.empty())
     {
@@ -605,5 +646,5 @@ int main(int argc, char** argv)
     if (format == ReportFormat::Luacheck)
         return 0;
     else
-        return failed ? 1 : 0;
+        return failed != 0 ? 1 : 0;
 }

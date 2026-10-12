@@ -98,7 +98,12 @@ int main() {
 }
 ```
 
+<<<<<<< HEAD
 ## Testing
+=======
+For more details about the use of the host API, see the [C API documentation](https://luau.org/api).
+Much of it is similar to the [Lua 5.x API](https://www.lua.org/manual/5.1/manual.html#3), but Luau has a few deviations, such as the need to compile source separately (which is important to be able to deploy VM without a compiler), and the lack of `__gc` support (use `lua_newuserdatadtor` instead).
+>>>>>>> upstream/master
 
 Execute unit tests (bytecode compiler, AST, type checker) and conformance tests (VM execution) via `make`:
 

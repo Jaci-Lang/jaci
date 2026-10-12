@@ -8,10 +8,12 @@
 #include "Luau/FileUtils.h"
 
 #include <algorithm>
-#include <stdio.h>
 #include <string>
 #include <string_view>
 #include <queue>
+
+#include <stdlib.h>
+#include <stdio.h>
 
 #define VERBOSE 0 // 1 - print out commandline invocations.  2 - print out stdout
 
@@ -241,7 +243,7 @@ struct Reducer
     // Semiopen interval
     using Span = std::pair<size_t, size_t>;
 
-    // Generates 'chunks' semiopen spans of equal-ish size to span the indeces running from 0 to 'size'
+    // Generates 'chunks' semiopen spans of equal-ish size to span the indices running from 0 to 'size'
     // Also inverses.
     std::vector<std::pair<Span, Span>> generateSpans(size_t size, size_t chunks)
     {

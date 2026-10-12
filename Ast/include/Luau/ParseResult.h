@@ -6,6 +6,8 @@
 #include "Luau/Lexer.h"
 #include "Luau/StringUtils.h"
 
+#include <exception>
+
 namespace Luau
 {
 
@@ -56,7 +58,7 @@ struct Comment
     Location location;
 };
 
-using CstNodeMap = DenseHashMap2<AstNode*, CstNode*>;
+using CstNodeMap = DenseHashMap<AstNode*, CstNode*>;
 
 struct ParseResult
 {

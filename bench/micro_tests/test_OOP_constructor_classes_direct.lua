@@ -4,9 +4,6 @@ local bench = script and require(script.Parent.bench_support) or prequire("bench
 
 class Number
     public x
-    function new(x)
-        return Number { x = x }
-    end
     function Get(self)
         return self.x
     end

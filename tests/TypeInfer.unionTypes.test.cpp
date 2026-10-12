@@ -9,9 +9,8 @@
 using namespace Luau;
 
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
-LUAU_FASTFLAG(LuauSubtypeUnionsTogether)
-LUAU_FASTFLAG(LuauDropUnionSubtypeReasoning)
 LUAU_FASTFLAG(LuauNewTypePathErrorMessages)
+LUAU_FASTFLAG(LuauIterativeTypeSearcher)
 
 TEST_SUITE_BEGIN("UnionTypes");
 
@@ -166,6 +165,8 @@ TEST_CASE_FIXTURE(Fixture, "index_on_a_union_type_with_property_guaranteed_to_ex
         end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_NO_ERRORS(result);
     CHECK_EQ("(A | B) -> number", toString(requireType("f")));
 }
@@ -180,6 +181,8 @@ TEST_CASE_FIXTURE(Fixture, "index_on_a_union_type_with_mixed_types")
             return t.x
         end
     )");
+
+    ignoreMissingAnnotations(result);
 
     LUAU_REQUIRE_NO_ERRORS(result);
     CHECK_EQ("(A | B) -> number | string", toString(requireType("f")));
@@ -196,6 +199,8 @@ TEST_CASE_FIXTURE(Fixture, "index_on_a_union_type_works_at_arbitrary_depth")
         end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_NO_ERRORS(result);
     CHECK_EQ("(A | B) -> number | string", toString(requireType("f")));
 }
@@ -211,6 +216,8 @@ TEST_CASE_FIXTURE(Fixture, "index_on_a_union_type_with_one_optional_property")
         end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_NO_ERRORS(result);
     CHECK_EQ("(A | B) -> number?", toString(requireType("f")));
 }
@@ -225,6 +232,8 @@ TEST_CASE_FIXTURE(Fixture, "index_on_a_union_type_with_missing_property")
             return t.x
         end
     )");
+
+    ignoreMissingAnnotations(result);
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
@@ -248,6 +257,8 @@ TEST_CASE_FIXTURE(Fixture, "index_on_a_union_type_with_one_property_of_type_any"
             return t.x
         end
     )");
+
+    ignoreMissingAnnotations(result);
 
     LUAU_REQUIRE_NO_ERRORS(result);
     CHECK_EQ("(A | B) -> any", toString(requireType("f")));
@@ -282,6 +293,8 @@ TEST_CASE_FIXTURE(Fixture, "optional_union_members")
         end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
     CHECK_EQ("Value of type 'A?' could be nil", toString(result.errors[0]));
@@ -298,6 +311,8 @@ TEST_CASE_FIXTURE(Fixture, "optional_union_functions")
             return b.foo(1, 2)
         end
     )");
+
+    ignoreMissingAnnotations(result);
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
@@ -316,6 +331,8 @@ TEST_CASE_FIXTURE(Fixture, "optional_union_methods")
         end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
     CHECK_EQ("Value of type 'A?' could be nil", toString(result.errors[0]));
@@ -330,6 +347,8 @@ TEST_CASE_FIXTURE(Fixture, "optional_union_follow")
         function f(a: number, b: number?, c: number?) return -a end
         return f()
     )");
+
+    ignoreMissingAnnotations(result);
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
@@ -563,8 +582,6 @@ Table type 'X' not compatible with type '{ w: number }' because the former is mi
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_union_all")
 {
-    ScopedFastFlag _{FFlag::LuauDropUnionSubtypeReasoning, true};
-
     CheckResult result = check(R"(
         type X = { x: number }
         type Y = { y: number }
@@ -616,6 +633,8 @@ TEST_CASE_FIXTURE(Fixture, "dont_allow_cyclic_unions_to_be_inferred")
         end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
@@ -652,6 +671,8 @@ TEST_CASE_FIXTURE(Fixture, "indexing_into_a_cyclic_union_doesnt_crash")
             return x[0]
         end
     )");
+
+    ignoreMissingAnnotations(result);
 
     // this is a cyclic union of number arrays, so it _is_ a table, even if it's a nonsense type.
     // no need to generate a NotATable error here. The new solver automatically handles this and
@@ -845,8 +866,6 @@ TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_variadics")
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_arg_variadics")
 {
-    ScopedFastFlag _{FFlag::LuauDropUnionSubtypeReasoning, true};
-
     CheckResult result = check(R"(
         function f(x : (number) -> ())
             local y : ((number?) -> ()) | ((...number) -> ()) = x -- OK
@@ -900,8 +919,12 @@ TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_result_variadics
 
 TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_union_types")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     if (FFlag::DebugLuauForceOldSolver)
         return;
+
+    ScopedFastFlag _{FFlag::LuauIterativeTypeSearcher, true};
 
     CheckResult result = check(R"(
         local function f(t): { x: number } | { x: string }
@@ -910,9 +933,13 @@ TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_union_types")
         end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ("<a>(({ read x: a } & { x: number }) | ({ read x: a } & { x: string })) -> { x: number } | { x: string }", toString(requireType("f")));
+    CHECK_EQ(
+        "(({ read x: unknown } & { x: number }) | ({ read x: unknown } & { x: string })) -> { x: number } | { x: string }", toString(requireType("f"))
+    );
 }
 
 TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_union_types_2")
@@ -925,6 +952,8 @@ TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_union_types_2")
             return t.x
         end
     )");
+
+    ignoreMissingAnnotations(result);
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
@@ -943,6 +972,8 @@ TEST_CASE_FIXTURE(Fixture, "union_table_any_property")
             sup = sub
         end
     )");
+
+    ignoreMissingAnnotations(result);
 
     LUAU_REQUIRE_NO_ERRORS(result);
 }
@@ -996,6 +1027,8 @@ TEST_CASE_FIXTURE(Fixture, "lookup_prop_of_intersection_containing_unions")
             return options.variables
         end
     )");
+
+    ignoreMissingAnnotations(result);
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
@@ -1059,7 +1092,9 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "bounds_propagate_into_free_union_bounds")
 
 TEST_CASE_FIXTURE(Fixture, "oss_2134")
 {
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
+    CheckResult result = check(R"(
         local function addIndex <A, B, C> (op: ((value: A) -> B, array: {A}) -> {C})
             return function <K> (idxOp: (key: K, value: A) -> B, tbl: { [K]: A })
                 return {} :: { [K]: C }
@@ -1089,14 +1124,16 @@ TEST_CASE_FIXTURE(Fixture, "oss_2134")
 
         local mapTest = addIndex(map)
         local mapResult = mapTest(mapWithIndex, myArr)
-    )"));
+    )");
+    ignoreMissingAnnotations(result);
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(Fixture, "oss_2393")
 {
-    ScopedFastFlag _{FFlag::LuauSubtypeUnionsTogether, true};
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
 
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
+    CheckResult result = check(R"(
         --!strict
 
         type Example<T> = {
@@ -1111,7 +1148,9 @@ TEST_CASE_FIXTURE(Fixture, "oss_2393")
         end
 
         process(ex)
-    )"));
+    )");
+    ignoreMissingAnnotations(result);
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2025")
@@ -1124,7 +1163,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2025")
 
         local baz: a? = bar.test
 
-        table.insert(foo, bar) 
+        table.insert(foo, bar)
     )"));
 }
 

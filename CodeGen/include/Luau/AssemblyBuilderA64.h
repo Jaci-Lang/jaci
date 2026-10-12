@@ -21,8 +21,13 @@ enum FeaturesA64
 {
     Feature_JSCVT = 1 << 0,
     Feature_AdvSIMD = 1 << 1,
+<<<<<<< HEAD
     Feature_PtrAuthRet = 1 << 2,
     Feature_PtrAuthCall = 1 << 3,
+=======
+    Feature_PtrAuthRet = 1 << 2,  // Sign/authenticate return addresses (pacibsp/retab)
+    Feature_PtrAuthCall = 1 << 3, // Sign/authenticate C function pointers (blraaz)
+>>>>>>> upstream/master
 };
 
 class AssemblyBuilderA64
@@ -40,7 +45,7 @@ public:
     void movn(RegisterA64 dst, uint16_t src, int shift = 0);
     void movk(RegisterA64 dst, uint16_t src, int shift = 0);
 
-    // Arithmetics
+    // Arithmetic
     void add(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, int shift = 0);
     void add(RegisterA64 dst, RegisterA64 src1, uint16_t src2);
     void sub(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, int shift = 0);
@@ -135,6 +140,10 @@ public:
     void blr(RegisterA64 src);
     void ret();
 
+<<<<<<< HEAD
+=======
+    // Pointer Authentication (PAC)
+>>>>>>> upstream/master
     void pacibsp();
     void retab();
 

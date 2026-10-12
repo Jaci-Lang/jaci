@@ -17,9 +17,10 @@
 
 #include "lapi.h"
 
+#include <stdio.h>
+
 LUAU_FASTINTVARIABLE(LuauCodeGenBlockSize, 4 * 1024 * 1024)
 LUAU_FASTINTVARIABLE(LuauCodeGenMaxTotalSize, 256 * 1024 * 1024)
-LUAU_FASTFLAG(LuauCIProto)
 
 namespace Luau
 {
@@ -597,10 +598,11 @@ template<typename AssemblyBuilder>
     Proto* proto,
     uint32_t& totalIrInstCount,
     const CompilationOptions& options,
-    CodeGenCompilationResult& result
+    CodeGenCompilationResult& result,
+    const VmEnvironmentInfo& envInfo
 )
 {
-    IrBuilder ir(options.hooks);
+    IrBuilder ir(options.hooks, envInfo);
     ir.buildFunctionIr(proto);
 
     unsigned instCount = unsigned(ir.function.instructions.size());
@@ -770,6 +772,10 @@ template<typename AssemblyBuilder>
     X64::assembleHelpers(/* logger= */ nullptr, build, helpers);
 #endif
 
+    VmEnvironmentInfo envInfo;
+    envInfo.hasPcall = L->global->builtinPcall != nullptr;
+    envInfo.hasXpcall = L->global->builtinXpcall != nullptr;
+
     CompilationResult compilationResult;
 
     std::vector<NativeProtoExecDataPtr> nativeProtos;
@@ -781,7 +787,8 @@ template<typename AssemblyBuilder>
     {
         CodeGenCompilationResult protoResult = CodeGenCompilationResult::Success;
 
-        NativeProtoExecDataPtr nativeExecData = createNativeFunction(nullptr, build, helpers, protos[i], totalIrInstCount, options, protoResult);
+        NativeProtoExecDataPtr nativeExecData =
+            createNativeFunction(nullptr, build, helpers, protos[i], totalIrInstCount, options, protoResult, envInfo);
         if (nativeExecData != nullptr)
         {
             nativeProtos.push_back(std::move(nativeExecData));
@@ -884,21 +891,6 @@ void setNativeExecutionEnabled(lua_State* L, bool enabled)
 {
     if (getCodeGenContext(L) != nullptr)
         L->global->ecb.enter = enabled ? onEnter : onEnterDisabled;
-}
-
-void disableNativeExecutionForFunction(lua_State* L, const int level) noexcept
-{
-    CODEGEN_ASSERT(unsigned(level) < unsigned(L->ci - L->base_ci));
-
-    const CallInfo* ci = L->ci - level;
-    const TValue* o = ci->func;
-    CODEGEN_ASSERT(ttisfunction(o));
-
-    Proto* proto = FFlag::LuauCIProto ? ci->p : clvalue(o)->l.p;
-    CODEGEN_ASSERT(proto);
-
-    CODEGEN_ASSERT(proto->codeentry != proto->code);
-    onDestroyFunction(L, proto);
 }
 
 static uint8_t userdataRemapperWrap(lua_State* L, const char* str, size_t len)

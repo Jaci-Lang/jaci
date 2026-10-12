@@ -7,7 +7,7 @@
 #include "Luau/Common.h"
 #include "Luau/ConstraintGenerator.h"
 #include "Luau/ConstraintSolver.h"
-#include "Luau/DenseHash2.h"
+#include "Luau/DenseHash.h"
 #include "Luau/Error.h"
 #include "Luau/Frontend.h"
 #include "Luau/Module.h"
@@ -25,7 +25,8 @@
 #include <string_view>
 
 LUAU_FASTFLAG(LuauCyclicRequireTypeInference)
-LUAU_FASTFLAG(LuauUdtfErrorHandling)
+LUAU_FASTFLAG(LuauDoesCallErrorUnwrapsGroups)
+LUAU_FASTFLAG(DebugLuauExactTableTypes)
 
 /** FIXME: Many of these type definitions are not quite completely accurate.
  *
@@ -531,18 +532,45 @@ void registerBuiltinGlobals(Frontend& frontend, GlobalTypes& globals, bool typeC
     globals.globalTypeFunctionScope->exportedTypeBindings = globals.globalScope->exportedTypeBindings;
     globals.globalTypeFunctionScope->builtinTypeNames = globals.globalScope->builtinTypeNames;
 
-    if (FFlag::LuauUdtfErrorHandling)
-    {
-        // Type function runtime also removes a few standard libraries and globals, so we will take only the ones that are defined
-        static constexpr const char* typeFunctionRuntimeBindings[] = {
-            // Libraries
-            "math",
-            "table",
-            "string",
-            "bit32",
-            "utf8",
-            "buffer",
+    // Type function runtime also removes a few standard libraries and globals, so we will take only the ones that are defined
+    static constexpr const char* typeFunctionRuntimeBindings[] = {
+        // Libraries
+        "math",
+        "table",
+        "string",
+        "bit32",
+        "utf8",
+        "buffer",
 
+        // Globals
+        "assert",
+        "error",
+        "print",
+        "next",
+        "ipairs",
+        "pairs",
+        "select",
+        "unpack",
+        "getmetatable",
+        "setmetatable",
+        "rawget",
+        "rawset",
+        "rawlen",
+        "rawequal",
+        "tonumber",
+        "tostring",
+        "type",
+        "typeof",
+        "pcall",
+        "xpcall",
+    };
+
+    for (auto& name : typeFunctionRuntimeBindings)
+    {
+        AstName astName = globals.globalNames.names->get(name);
+        LUAU_ASSERT(astName.value);
+
+<<<<<<< HEAD
             // Globals
             "assert",
             "error",
@@ -616,6 +644,9 @@ void registerBuiltinGlobals(Frontend& frontend, GlobalTypes& globals, bool typeC
 
             globals.globalTypeFunctionScope->bindings[astName] = globals.globalScope->bindings[astName];
         }
+=======
+        globals.globalTypeFunctionScope->bindings[astName] = globals.globalScope->bindings[astName];
+>>>>>>> upstream/master
     }
 
     LoadDefinitionFileResult typeFunctionLoadResult = frontend.loadDefinitionFile(
@@ -1306,7 +1337,9 @@ TypeId makeStringMetatable(NotNull<BuiltinTypes> builtinTypes, SolverMode mode)
              {},
              {optionalString},
              {},
-             {arena->addType(TableType{{}, TableIndexer{numberType, stringType}, TypeLevel{}, TableState::Sealed})},
+             {arena->addType(TableType{{}, TableIndexer{numberType, stringType}, TypeLevel{},
+                FFlag::DebugLuauExactTableTypes ? TableState::Exact : TableState::Sealed
+             })},
              /* checked */ true
          )}},
         {"pack",
@@ -1734,7 +1767,11 @@ static std::optional<TypeId> freezeTable(TypeId inputType, const MagicFunctionCa
         auto tableTy = getMutable<TableType>(resultType);
         // `clone` should not break this.
         LUAU_ASSERT(tableTy);
-        tableTy->state = TableState::Sealed;
+
+        if (FFlag::DebugLuauExactTableTypes && (tableTy->state == TableState::Unsealed || tableTy->state == TableState::Exact))
+            tableTy->state = TableState::Exact;
+        else
+            tableTy->state = TableState::Sealed;
 
         // We'll mutate the table to make every property type read-only.
         for (auto iter = tableTy->props.begin(); iter != tableTy->props.end();)
@@ -2022,7 +2059,8 @@ bool matchAssert(const AstExprCall& call)
     if (call.args.size < 1)
         return false;
 
-    const AstExprGlobal* funcAsGlobal = call.func->as<AstExprGlobal>();
+    const AstExpr* func = FFlag::LuauDoesCallErrorUnwrapsGroups ? unwrapGroup(call.func) : call.func;
+    const AstExprGlobal* funcAsGlobal = func->as<AstExprGlobal>();
     if (!funcAsGlobal || funcAsGlobal->name != "assert")
         return false;
 
