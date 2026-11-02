@@ -2,7 +2,7 @@
 #include "Luau/IterativeTypeVisitor.h"
 
 LUAU_FASTINT(LuauVisitRecursionLimit)
-LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+LUAU_FASTFLAG(LuauReduceTypeFunctionToSyntheticError)
 
 namespace Luau
 {
@@ -289,17 +289,24 @@ void IterativeTypeVisitor::process(TypeId ty)
             traverse(ftv->lowerBound);
             traverse(ftv->upperBound);
 
-            if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
-            {
-                if (ftv->primitiveType)
-                    traverse(*ftv->primitiveType);
-            }
+            if (ftv->primitiveType)
+                traverse(*ftv->primitiveType);
         }
     }
     else if (auto gtv = get<GenericType>(ty))
         visit(ty, *gtv);
     else if (auto etv = get<ErrorType>(ty))
-        visit(ty, *etv);
+    {
+        if (FFlag::LuauReduceTypeFunctionToSyntheticError)
+        {
+            if (visit(ty, *etv) && etv->synthetic)
+                traverse(*etv->synthetic);
+        }
+        else
+        {
+            visit(ty, *etv);
+        }
+    }
     else if (auto ptv = get<PrimitiveType>(ty))
         visit(ty, *ptv);
     else if (auto ftv = get<FunctionType>(ty))
@@ -540,7 +547,7 @@ bool IterativeTypeVisitor::hasSeen(const void* tv)
     if (!visitOnce)
         return false;
 
-    bool isFresh = seen.insert(tv);
+    bool isFresh = seen.try_insert(tv);
     return !isFresh;
 }
 

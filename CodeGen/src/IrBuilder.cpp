@@ -12,8 +12,9 @@
 
 #include <string.h>
 
-LUAU_FASTFLAG(LuauCallFeedback)
-LUAU_FASTFLAG(LuauBackedgeHeapCheck)
+LUAU_FASTFLAGVARIABLE(LuauCodeGenFastpcall)
+LUAU_FLAGVERSION(LuauCodeGenFastpcall, 2)
+LUAU_FASTFLAG(LuauCodegenMarkUsed)
 
 namespace Luau
 {
@@ -22,9 +23,10 @@ namespace CodeGen
 
 constexpr unsigned kNoAssociatedBlockIndex = ~0u;
 
-IrBuilder::IrBuilder(const HostIrHooks& hostHooks)
+IrBuilder::IrBuilder(const HostIrHooks& hostHooks, const VmEnvironmentInfo& envInfo)
     : hostHooks(hostHooks)
 {
+    function.envInfo = envInfo;
 }
 
 static bool hasTypedParameters(const BytecodeTypeInfo& typeInfo)
@@ -104,6 +106,12 @@ static void buildArgumentTypeChecks(IrBuilder& build, IrOp entry)
             break;
         case LBC_TYPE_BUFFER:
             build.inst(IrCmd::CHECK_TAG, load, build.constTag(LUA_TBUFFER), build.vmExit(kVmExitEntryGuardPc));
+            break;
+        case LBC_TYPE_CLASS:
+            build.inst(IrCmd::CHECK_TAG, load, build.constTag(LUA_TCLASS), build.vmExit(kVmExitEntryGuardPc));
+            break;
+        case LBC_TYPE_OBJECT:
+            build.inst(IrCmd::CHECK_TAG, load, build.constTag(LUA_TOBJECT), build.vmExit(kVmExitEntryGuardPc));
             break;
         default:
             if (tag >= LBC_TYPE_TAGGED_USERDATA_BASE && tag < LBC_TYPE_TAGGED_USERDATA_END)
@@ -232,6 +240,13 @@ void IrBuilder::buildFunctionIr(Proto* proto)
 
     // Now that all has been generated, compute use counts
     updateUseCounts(function);
+
+    if (FFlag::LuauCodegenCmpAnySideEffecting)
+    {
+        // Check that no instructions with a result have been generated without a use
+        for (IrInst& inst : function.instructions)
+            CODEGEN_ASSERT(inst.useCount != 0 || !hasResult(inst.cmd));
+    }
 }
 
 void IrBuilder::rebuildBytecodeBasicBlocks(Proto* proto)
@@ -328,10 +343,7 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
     case LOP_CALL:
     case LOP_CALLFB:
         inst(IrCmd::INTERRUPT, constUint(i));
-        if (FFlag::LuauCallFeedback)
-            inst(IrCmd::SET_SAVEDPC, constUint(i + getOpLength(op)));
-        else
-            inst(IrCmd::SET_SAVEDPC, constUint(i + 1));
+        inst(IrCmd::SET_SAVEDPC, constUint(i + getOpLength(op)));
 
         inst(IrCmd::CALL, vmReg(LUAU_INSN_A(*pc)), constInt(LUAU_INSN_B(*pc) - 1), constInt(LUAU_INSN_C(*pc) - 1));
 
@@ -590,9 +602,7 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
             IrOp fallback = fallbackBlock(i);
 
             inst(IrCmd::INTERRUPT, constUint(i));
-
-            if (FFlag::LuauBackedgeHeapCheck)
-                inst(IrCmd::CHECK_GC);
+            inst(IrCmd::CHECK_GC);
 
             loadAndCheckTag(vmReg(ra), LUA_TNIL, fallback);
 
@@ -640,16 +650,11 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
     case LOP_NAMECALLUDATA:
         if (translateInstNamecall(*this, pc, i))
         {
-            if (FFlag::LuauCallFeedback)
-            {
-                static const int namecall = getOpLength(static_cast<LuauOpcode>(LOP_NAMECALL));
-                int callOp = LUAU_INSN_OP(*(pc + namecall));
-                LUAU_ASSERT(callOp == LOP_CALL || callOp == LOP_CALLFB);
-                int call = getOpLength(static_cast<LuauOpcode>(callOp));
-                cmdSkipTarget = i + namecall + call;
-            }
-            else
-                cmdSkipTarget = i + 3;
+            static const int namecall = getOpLength(static_cast<LuauOpcode>(LOP_NAMECALL));
+            int callOp = LUAU_INSN_OP(*(pc + namecall));
+            LUAU_ASSERT(callOp == LOP_CALL || callOp == LOP_CALLFB);
+            int call = getOpLength(static_cast<LuauOpcode>(callOp));
+            cmdSkipTarget = i + namecall + call;
         }
         break;
     case LOP_PREPVARARGS:
@@ -675,11 +680,42 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
     // operation then unconditionally exit to the VM.
     case LOP_NEWCLASSMEMBER:
     case LOP_NEWCLASS:
+    case LOP_GETPRIVATEFIELD:
+    case LOP_SETPRIVATEFIELD:
         inst(IrCmd::JUMP, vmExit(i));
         break;
 
     case LOP_CMPPROTO:
         translateInstCmpProto(*this, pc, i);
+        break;
+
+    case LOP_FASTPCALL:
+        // When flag is disabled, by skipping the translation we execute the fallback path
+        if (!FFlag::LuauCodeGenFastpcall)
+        {
+            IrOp next = blockAtInst(i + getOpLength(op));
+            inst(IrCmd::JUMP, next);
+            beginBlock(next);
+            break;
+        }
+
+        if (std::optional<IrOp> block = translateFastPcall(*this, pc, i))
+        {
+            handleFastcallFallback(*block, pc, i);
+        }
+        else
+        {
+            IrOp next = blockAtInst(i + getOpLength(op));
+            inst(IrCmd::JUMP, next);
+            beginBlock(next);
+        }
+        break;
+
+    case LOP_CONSTRUCT:
+        translateInstConstruct(*this, pc, i);
+        break;
+    case LOP_FINCONSTRUCT:
+        handleFastcallFallback(translateFinConstruct(*this, pc, i), pc, i);
         break;
 
     default:
@@ -748,7 +784,7 @@ void IrBuilder::checkSafeEnv(int pcpos)
 
 void IrBuilder::clone(std::vector<uint32_t> sourceIdxs, bool removeCurrentTerminator)
 {
-    DenseHashMap2<uint32_t, uint32_t> instRedir;
+    DenseHashMap<uint32_t, uint32_t> instRedir;
 
     auto redirect = [&instRedir](IrOp& op)
     {
@@ -787,7 +823,8 @@ void IrBuilder::clone(std::vector<uint32_t> sourceIdxs, bool removeCurrentTermin
             IrInst clone = function.instructions[index];
 
             // Skip pseudo instructions to make clone more compact, but validate that they have no users
-            if (isPseudo(clone.cmd))
+            // Also keep instructions marking register liveness
+            if (isPseudo(clone.cmd) && (!FFlag::LuauCodegenMarkUsed || (clone.cmd != IrCmd::MARK_DEAD && clone.cmd != IrCmd::MARK_USED)))
             {
                 CODEGEN_ASSERT(clone.useCount == 0);
                 continue;

@@ -1,7 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
-#include "Luau/DenseHash2.h"
+#include "Luau/DenseHash.h"
 #include "Luau/NotNull.h"
 #include "Luau/TypeArena.h"
 #include "Luau/TypeFwd.h"
@@ -259,7 +259,7 @@ struct TypePathRenderMetadata
     };
 
     /// Return type packs selected by path component position and whether they contain a single element.
-    DenseHashMap2<size_t, ReturnTypePackInfo> returnTypePacks;
+    DenseHashMap<size_t, ReturnTypePackInfo> returnTypePacks;
 
     /// The negation containing the type at the end of the path, when the path ends by selecting a negated type.
     std::optional<TypeId> enclosingNegation;
@@ -278,17 +278,6 @@ TypePathRenderMetadata deriveRenderMetadata(
 
 /// Converts a Path into phrases that can be composed into an error message.
 RenderedTypePath renderTypePath(const TypePath::Path& path, const TypePathRenderMetadata& options = {});
-
-/// Converts a Path to a human readable string for error reporting.
-///
-/// Remove with FFlag::LuauNewTypePathErrorMessages
-std::string toStringHuman_DEPRECATED(const TypePath::Path& path);
-
-/// Remove with FFlag::LuauNewTypePathErrorMessages
-std::optional<TypeOrPack> traverse_DEPRECATED(TypePackId root, const Path& path, NotNull<BuiltinTypes> builtinTypes, NotNull<TypeArena> arena);
-
-/// Remove with FFlag::LuauNewTypePathErrorMessages
-std::optional<TypeOrPack> traverse_DEPRECATED(TypeId root, const Path& path, NotNull<BuiltinTypes> builtinTypes, NotNull<TypeArena> arena);
 
 std::optional<TypeOrPack> traverse(
     TypePackId root,

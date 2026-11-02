@@ -79,6 +79,7 @@ static const char* reset()
 
 #include <locale.h>
 #include <signal.h>
+#include <stdlib.h>
 
 LUAU_FASTFLAG(DebugLuauTimeTracing)
 
@@ -86,6 +87,7 @@ constexpr int MaxTraversalLimit = 50;
 
 static bool codegen = false;
 static bool codegenCold = false;
+static bool codegenLazy = false;
 static bool jitInliner = false;
 static int program_argc = 0;
 char** program_argv = nullptr;
@@ -218,7 +220,7 @@ void* createCliRequireContext(lua_State* L)
     void* ctx = lua_newuserdatadtor(
         L,
         sizeof(ReplRequirer),
-        [](void* ptr)
+        [](lua_State*, void* ptr)
         {
             static_cast<ReplRequirer*>(ptr)->~ReplRequirer();
         }
@@ -232,7 +234,7 @@ void* createCliRequireContext(lua_State* L)
         coverageActive,
         []()
         {
-            return codegen;
+            return codegen && !codegenLazy;
         },
         coverageTrack,
         countersActive,
@@ -1081,7 +1083,12 @@ static bool runCode(const char* code, const char* chunkname, lua_State* GL, bool
             if (countersActive())
                 nativeOptions.recordCounters = true;
 
-            Luau::CodeGen::compile(L, -1, nativeOptions);
+            nativeOptions.runtimeFeedback = true;
+
+            Luau::CodeGen::enableRuntimeCompilation(L, nativeOptions, codegenLazy);
+
+            if (!codegenLazy)
+                Luau::CodeGen::compile(L, -1, nativeOptions);
         }
 
         if (coverageActive())
@@ -1185,6 +1192,7 @@ static bool isRunOnlyOption(const char* argument)
 
 static void displayHelp(const char* argv0)
 {
+<<<<<<< HEAD
     argv0 = Luau::Cli::executableName(argv0);
     Luau::Cli::title(stdout, "Jaci", "fast, standalone Luau runtime");
 
@@ -1298,6 +1306,28 @@ static void displayCommandHelp(CliCommand command, const char* argv0)
         displayLspHelp(argv0);
     else
         displayHelp(argv0);
+=======
+    printf("Usage: %s [options] [file list] [-a] [arg list]\n", argv0);
+    printf("\n");
+    printf("When file list is omitted, an interactive REPL is started instead.\n");
+    printf("\n");
+    printf("Available options:\n");
+    printf("  --coverage: collect code coverage while running the code and output results to coverage.out\n");
+    printf("  --counters: collect native counters data while running the code and output results to callgrind.out\n");
+    printf("  -h, --help: Display this usage message.\n");
+    printf("  -i, --interactive: Run an interactive REPL after executing the last script specified.\n");
+    printf("  -O<n>: compile with optimization level n (default 1, n should be between 0 and 2).\n");
+    printf("  -g<n>: compile with debug level n (default 1, n should be between 0 and 2).\n");
+    printf("  --profile[=N]: profile the code using N Hz sampling (default 10000) and output results to profile.out\n");
+    printf("  --timetrace: record compiler time tracing information into trace.json\n");
+    printf("  --codegen: execute code using native code generation\n");
+    printf("  --codegen-cold: execute code using native code generation, including any functions deemed not profitable to natively compile\n");
+    printf("  --codegen-lazy: execute code in the VM and compile hot functions to native automatically\n");
+    printf("  --codegen-perf: execute code using native code generation and profile using perf (only on Linux)\n");
+    printf("  --program-args,-a: declare start of arguments to be passed to the Luau program\n");
+    printf("  --fflags=<flags>: comma-separated list of fast flags to enable/disable (--fflags=true,false,LuauFlag1=true,LuauFlag2=false).\n");
+    printf("  --jit-inliner: enable JIT bytecode inliner\n");
+>>>>>>> upstream/master
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -1466,6 +1496,11 @@ int replMain(int argc, char** argv)
         {
             codegen = true;
             codegenCold = true;
+        }
+        else if (strcmp(argv[i], "--codegen-lazy") == 0)
+        {
+            codegen = true;
+            codegenLazy = true;
         }
         else if (strcmp(argv[i], "--codegen-perf") == 0)
         {

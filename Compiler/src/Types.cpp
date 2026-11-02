@@ -48,11 +48,11 @@ static LuauBytecodeType getPrimitiveType(AstName name)
 static LuauBytecodeType getType(
     const AstType* ty,
     const AstArray<AstGenericType*>& generics,
-    const DenseHashMap2<AstName, AstStatTypeAlias*>& typeAliases,
+    const DenseHashMap<AstName, AstStatTypeAlias*>& typeAliases,
     const char* hostVectorType,
-    const DenseHashMap2<AstName, uint8_t>& userdataTypes,
+    const DenseHashMap<AstName, uint8_t>& userdataTypes,
     BytecodeBuilder& bytecode,
-    DenseHashSet2<AstName>& seenAliases
+    DenseHashSet<AstName>& seenAliases
 )
 {
     if (const AstTypeReference* ref = ty->as<AstTypeReference>())
@@ -64,13 +64,15 @@ static LuauBytecodeType getType(
         {
             if (seenAliases.contains((*alias)->name))
             {
-                seenAliases.clear();
                 return LBC_TYPE_ANY;
             }
             else
             {
                 seenAliases.insert(ref->name);
-                return getType((*alias)->type, (*alias)->generics, typeAliases, hostVectorType, userdataTypes, bytecode, seenAliases);
+                LuauBytecodeType type =
+                    getType((*alias)->type, (*alias)->generics, typeAliases, hostVectorType, userdataTypes, bytecode, seenAliases);
+                seenAliases.erase(ref->name);
+                return type;
             }
         }
 
@@ -156,9 +158,9 @@ static LuauBytecodeType getType(
 
 static std::string getFunctionType(
     const AstExprFunction* func,
-    const DenseHashMap2<AstName, AstStatTypeAlias*>& typeAliases,
+    const DenseHashMap<AstName, AstStatTypeAlias*>& typeAliases,
     const char* hostVectorType,
-    const DenseHashMap2<AstName, uint8_t>& userdataTypes,
+    const DenseHashMap<AstName, uint8_t>& userdataTypes,
     BytecodeBuilder& bytecode
 )
 {
@@ -176,7 +178,7 @@ static std::string getFunctionType(
     bool haveNonAnyParam = false;
     for (AstLocal* arg : func->args)
     {
-        DenseHashSet2<AstName> seenAliases;
+        DenseHashSet<AstName> seenAliases;
         LuauBytecodeType ty = arg->annotation
                                   ? getType(arg->annotation, func->generics, typeAliases, hostVectorType, userdataTypes, bytecode, seenAliases)
                                   : LBC_TYPE_ANY;
@@ -194,7 +196,7 @@ static std::string getFunctionType(
     return typeInfo;
 }
 
-static bool isMatchingGlobal(const DenseHashMap2<AstName, Compile::Global>& globals, AstExpr* node, const char* name)
+static bool isMatchingGlobal(const DenseHashMap<AstName, Compile::Global>& globals, AstExpr* node, const char* name)
 {
     if (AstExprGlobal* expr = node->as<AstExprGlobal>())
         return Compile::getGlobalState(globals, expr->name) == Compile::Global::Default && expr->name == name;
@@ -203,7 +205,7 @@ static bool isMatchingGlobal(const DenseHashMap2<AstName, Compile::Global>& glob
 }
 
 static bool isMatchingGlobalMember(
-    const DenseHashMap2<AstName, Compile::Global>& globals,
+    const DenseHashMap<AstName, Compile::Global>& globals,
     AstExprIndexName* expr,
     const char* library,
     const char* member
@@ -217,32 +219,32 @@ static bool isMatchingGlobalMember(
 
 struct TypeMapVisitor : AstVisitor
 {
-    DenseHashMap2<AstExprFunction*, std::string>& functionTypes;
-    DenseHashMap2<AstLocal*, LuauBytecodeType>& localTypes;
-    DenseHashMap2<AstExpr*, LuauBytecodeType>& exprTypes;
+    DenseHashMap<AstExprFunction*, std::string>& functionTypes;
+    DenseHashMap<AstLocal*, LuauBytecodeType>& localTypes;
+    DenseHashMap<AstExpr*, LuauBytecodeType>& exprTypes;
     const char* hostVectorType = nullptr;
-    const DenseHashMap2<AstName, uint8_t>& userdataTypes;
+    const DenseHashMap<AstName, uint8_t>& userdataTypes;
     const BuiltinAstTypes& builtinTypes;
-    const DenseHashMap2<AstExprCall*, int>& builtinCalls;
-    const DenseHashMap2<AstName, Compile::Global>& globals;
+    const DenseHashMap<AstExprCall*, int>& builtinCalls;
+    const DenseHashMap<AstName, Compile::Global>& globals;
     LibraryMemberTypeCallback libraryMemberTypeCb = nullptr;
     BytecodeBuilder& bytecode;
 
-    DenseHashMap2<AstName, AstStatTypeAlias*> typeAliases;
+    DenseHashMap<AstName, AstStatTypeAlias*> typeAliases;
     std::vector<std::pair<AstName, AstStatTypeAlias*>> typeAliasStack;
-    DenseHashMap2<AstLocal*, const AstType*> resolvedLocals;
-    DenseHashMap2<AstExpr*, const AstType*> resolvedExprs;
-    DenseHashMap2<AstLocal*, const AstType*> functionReturnTypes;
+    DenseHashMap<AstLocal*, const AstType*> resolvedLocals;
+    DenseHashMap<AstExpr*, const AstType*> resolvedExprs;
+    DenseHashMap<AstLocal*, const AstType*> functionReturnTypes;
 
     TypeMapVisitor(
-        DenseHashMap2<AstExprFunction*, std::string>& functionTypes,
-        DenseHashMap2<AstLocal*, LuauBytecodeType>& localTypes,
-        DenseHashMap2<AstExpr*, LuauBytecodeType>& exprTypes,
+        DenseHashMap<AstExprFunction*, std::string>& functionTypes,
+        DenseHashMap<AstLocal*, LuauBytecodeType>& localTypes,
+        DenseHashMap<AstExpr*, LuauBytecodeType>& exprTypes,
         const char* hostVectorType,
-        const DenseHashMap2<AstName, uint8_t>& userdataTypes,
+        const DenseHashMap<AstName, uint8_t>& userdataTypes,
         const BuiltinAstTypes& builtinTypes,
-        const DenseHashMap2<AstExprCall*, int>& builtinCalls,
-        const DenseHashMap2<AstName, Compile::Global>& globals,
+        const DenseHashMap<AstExprCall*, int>& builtinCalls,
+        const DenseHashMap<AstName, Compile::Global>& globals,
         LibraryMemberTypeCallback libraryMemberTypeCb,
         BytecodeBuilder& bytecode
     )
@@ -317,7 +319,7 @@ struct TypeMapVisitor : AstVisitor
 
         resolvedExprs[expr] = ty;
 
-        DenseHashSet2<AstName> seenAliases;
+        DenseHashSet<AstName> seenAliases;
         LuauBytecodeType bty = getType(ty, {}, typeAliases, hostVectorType, userdataTypes, bytecode, seenAliases);
         exprTypes[expr] = bty;
         return bty;
@@ -329,7 +331,7 @@ struct TypeMapVisitor : AstVisitor
 
         resolvedLocals[local] = ty;
 
-        DenseHashSet2<AstName> seenAliases;
+        DenseHashSet<AstName> seenAliases;
         LuauBytecodeType bty = getType(ty, {}, typeAliases, hostVectorType, userdataTypes, bytecode, seenAliases);
 
         if (bty != LBC_TYPE_ANY)
@@ -488,6 +490,27 @@ struct TypeMapVisitor : AstVisitor
         }
 
         return false;
+    }
+
+    bool visit(AstStatIf* node) override
+    {
+        if (node->conditionLocal && node->conditionLocal->annotation == nullptr)
+        {
+            node->condition->visit(this);
+
+            // Propagate from the value that's being assigned
+            if (const AstType** typePtr = resolvedExprs.find(node->condition))
+                resolvedLocals[node->conditionLocal] = *typePtr;
+
+            node->thenbody->visit(this);
+
+            if (node->elsebody)
+                node->elsebody->visit(this);
+
+            return false;
+        }
+
+        return true;
     }
 
     bool visit(AstExprIndexExpr* node) override
@@ -720,6 +743,14 @@ struct TypeMapVisitor : AstVisitor
     bool visit(AstExprIfElse* node) override
     {
         node->condition->visit(this);
+
+        // propagate the condition's resolved type to the binding (unless annotated)
+        if (node->conditionLocal && node->conditionLocal->annotation == nullptr)
+        {
+            if (const AstType** typePtr = resolvedExprs.find(node->condition))
+                resolvedLocals[node->conditionLocal] = *typePtr;
+        }
+
         node->trueExpr->visit(this);
         node->falseExpr->visit(this);
 
@@ -746,12 +777,17 @@ struct TypeMapVisitor : AstVisitor
             case LBF_RAWGET:
             case LBF_TABLE_INSERT:
             case LBF_TABLE_UNPACK:
+<<<<<<< HEAD
             case LBF_TABLE_FREEZE:
             case LBF_TABLE_ISFROZEN:
             case LBF_TABLE_CLONE:
             case LBF_TABLE_CLEAR:
             case LBF_TABLE_FIND:
             case LBF_TABLE_CREATE:
+=======
+            case LBF_TABLE_CREATE:
+            case LBF_TABLE_CLEAR:
+>>>>>>> upstream/master
             case LBF_SELECT_VARARG:
             case LBF_GETMETATABLE:
             case LBF_SETMETATABLE:
@@ -929,15 +965,15 @@ struct TypeMapVisitor : AstVisitor
 };
 
 void buildTypeMap(
-    DenseHashMap2<AstExprFunction*, std::string>& functionTypes,
-    DenseHashMap2<AstLocal*, LuauBytecodeType>& localTypes,
-    DenseHashMap2<AstExpr*, LuauBytecodeType>& exprTypes,
+    DenseHashMap<AstExprFunction*, std::string>& functionTypes,
+    DenseHashMap<AstLocal*, LuauBytecodeType>& localTypes,
+    DenseHashMap<AstExpr*, LuauBytecodeType>& exprTypes,
     AstNode* root,
     const char* hostVectorType,
-    const DenseHashMap2<AstName, uint8_t>& userdataTypes,
+    const DenseHashMap<AstName, uint8_t>& userdataTypes,
     const BuiltinAstTypes& builtinTypes,
-    const DenseHashMap2<AstExprCall*, int>& builtinCalls,
-    const DenseHashMap2<AstName, Compile::Global>& globals,
+    const DenseHashMap<AstExprCall*, int>& builtinCalls,
+    const DenseHashMap<AstName, Compile::Global>& globals,
     LibraryMemberTypeCallback libraryMemberTypeCb,
     BytecodeBuilder& bytecode
 )

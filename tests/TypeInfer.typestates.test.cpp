@@ -4,7 +4,6 @@
 #include "doctest.h"
 
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
-LUAU_FASTFLAG(LuauDoNotOverwriteAstDefs)
 
 using namespace Luau;
 
@@ -629,7 +628,7 @@ TEST_CASE_FIXTURE(Fixture, "oss_1575")
 
 TEST_CASE_FIXTURE(Fixture, "capture_upvalue_in_returned_function")
 {
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
+    CheckResult result = check(R"(
         function def()
             local i : number = 0
             local function Counter()
@@ -638,7 +637,7 @@ TEST_CASE_FIXTURE(Fixture, "capture_upvalue_in_returned_function")
             end
             return Counter
         end
-    )"));
+    )");    LUAU_REQUIRE_NO_ERRORS(result);
     CHECK_EQ("() -> () -> number", toString(requireType("def")));
 }
 
@@ -795,8 +794,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "fuzzer_table_freeze_in_binary_expr")
 {
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
-    ScopedFastFlag _{FFlag::LuauDoNotOverwriteAstDefs, true};
-
     CheckResult result = check(R"(
         local _
         if _ or table.freeze(_,_) or table.freeze(_,_) then
@@ -841,8 +838,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "fuzzer_table_freeze_in_conditional_expr")
 {
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
-    ScopedFastFlag _{FFlag::LuauDoNotOverwriteAstDefs, true};
-
     CheckResult result = check(R"(
         local _
         if
@@ -879,7 +874,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_depends_on_sub_expression")
 
     auto err = get<TypeMismatch>(result.errors[0]);
     REQUIRE(err);
-    CHECK_EQ("{ @metatable { bar: number }, { foo: number } }", toString(err->wantedType, {/* exhaustive */ true}));
+    CHECK_EQ("setmetatable<{ foo: number }, { bar: number }>", toString(err->wantedType, {/* exhaustive */ true}));
     CHECK_EQ("{ foo: number }", toString(err->givenType, {/* exhaustive */ true}));
 }
 

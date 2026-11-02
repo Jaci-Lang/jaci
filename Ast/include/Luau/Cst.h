@@ -241,11 +241,14 @@ class CstExprIfElse : public CstNode
 public:
     LUAU_CST_RTTI(CstExprIfElse)
 
-    CstExprIfElse(Position thenPosition, Position elsePosition, bool isElseIf);
+    CstExprIfElse(Position thenPosition, Position elsePosition, bool isElseIf, Position annotationColonPosition = Position::missing());
 
     Position thenPosition;
     Position elsePosition;
     bool isElseIf;
+
+    // Colon before the `if local`/`if const` binding's type annotation
+    Position annotationColonPosition;
 };
 
 class CstExprInterpString : public CstNode
@@ -335,6 +338,28 @@ public:
     AstArray<Position> varsAnnotationColonPositions;
     AstArray<Position> varsCommaPositions;
     AstArray<Position> valuesCommaPositions;
+};
+
+class CstStatIf : public CstNode
+{
+public:
+    LUAU_CST_RTTI(CstStatIf)
+
+    explicit CstStatIf(Position annotationColonPosition);
+
+    // Colon before the `if local`/`if const` binding's type annotation
+    Position annotationColonPosition;
+};
+
+class CstStatWhile : public CstNode
+{
+public:
+    LUAU_CST_RTTI(CstStatWhile)
+
+    explicit CstStatWhile(Position annotationColonPosition);
+
+    // Colon before the `while local` binding's type annotation
+    Position annotationColonPosition;
 };
 
 class CstStatAssign : public CstNode

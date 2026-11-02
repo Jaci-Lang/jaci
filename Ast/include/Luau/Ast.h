@@ -457,6 +457,7 @@ public:
         AstExpr* func,
         const AstArray<AstExpr*>& args,
         bool self,
+        bool tableCall,
         const AstArray<AstTypeOrPack>& explicitTypes,
         const Location& argLocation
     );
@@ -470,6 +471,7 @@ public:
     AstArray<AstTypeOrPack> typeArguments;
     AstArray<AstExpr*> args;
     bool self;
+    bool tableCall;
     Location argLocation;
 };
 
@@ -484,7 +486,8 @@ public:
         const AstName& index,
         const Location& indexLocation,
         const Position& opPosition,
-        char op
+        char op,
+        bool privateAccess = false
     );
 
     void visit(AstVisitor* visitor) override;
@@ -494,6 +497,8 @@ public:
     Location indexLocation;
     Position opPosition;
     char op = '.';
+    // Indicates a private field/method access made within a class method body
+    bool privateAccess = false;
 };
 
 class AstExprIndexExpr : public AstExpr
@@ -672,6 +677,19 @@ public:
 
     AstExprIfElse(const Location& location, AstExpr* condition, bool hasThen, AstExpr* trueExpr, bool hasElse, AstExpr* falseExpr);
 
+    AstExprIfElse(
+        const Location& location,
+        AstExpr* condition,
+        bool hasThen,
+        AstExpr* trueExpr,
+        bool hasElse,
+        AstExpr* falseExpr,
+        AstLocal* conditionLocal,
+        bool conditionIsConst,
+        const std::optional<Location>& conditionKeywordLocation,
+        const std::optional<Location>& conditionEqualsLocation
+    );
+
     void visit(AstVisitor* visitor) override;
 
     AstExpr* condition;
@@ -679,6 +697,14 @@ public:
     AstExpr* trueExpr;
     bool hasElse;
     AstExpr* falseExpr;
+
+    // Active for 'if local' and 'if const' expressions; conditionLocal is bound to `condition` and in scope for trueExpr only
+    AstLocal* conditionLocal = nullptr;
+    bool conditionIsConst = false;
+    std::optional<Location> conditionKeywordLocation;
+
+    // Location of the `=` in an `if local`/`if const` binding
+    std::optional<Location> conditionEqualsLocation;
 };
 
 class AstExprInterpString : public AstExpr
@@ -749,6 +775,19 @@ public:
         const std::optional<Location>& elseLocation
     );
 
+    AstStatIf(
+        const Location& location,
+        AstExpr* condition,
+        AstStatBlock* thenbody,
+        AstStat* elsebody,
+        const std::optional<Location>& thenLocation,
+        const std::optional<Location>& elseLocation,
+        AstLocal* conditionLocal,
+        bool conditionIsConst,
+        const std::optional<Location>& conditionKeywordLocation,
+        const std::optional<Location>& conditionEqualsLocation
+    );
+
     void visit(AstVisitor* visitor) override;
 
     AstExpr* condition;
@@ -759,6 +798,14 @@ public:
 
     // Active for 'elseif' as well
     std::optional<Location> elseLocation;
+
+    // Active for 'if local' and 'if const' statements
+    AstLocal* conditionLocal = nullptr;
+    bool conditionIsConst = false;
+    std::optional<Location> conditionKeywordLocation;
+
+    // Location of the `=` in an `if local`/`if const` binding
+    std::optional<Location> conditionEqualsLocation;
 };
 
 class AstStatWhile : public AstStat
@@ -768,6 +815,18 @@ public:
 
     AstStatWhile(const Location& location, AstExpr* condition, AstStatBlock* body, bool hasDo, const Location& doLocation);
 
+    AstStatWhile(
+        const Location& location,
+        AstExpr* condition,
+        AstStatBlock* body,
+        bool hasDo,
+        const Location& doLocation,
+        AstLocal* conditionLocal,
+        bool conditionIsConst,
+        const std::optional<Location>& conditionKeywordLocation,
+        const std::optional<Location>& conditionEqualsLocation
+    );
+
     void visit(AstVisitor* visitor) override;
 
     AstExpr* condition;
@@ -775,6 +834,14 @@ public:
 
     bool hasDo = false;
     Location doLocation;
+
+    // Active for `while local` and `while const`; conditionLocal is bound to `condition` and re-evaluated each iteration in scope for `body` only
+    AstLocal* conditionLocal = nullptr;
+    bool conditionIsConst = false;
+    std::optional<Location> conditionKeywordLocation;
+
+    // Location of the `=` in a `while local`/`while const` binding
+    std::optional<Location> conditionEqualsLocation;
 };
 
 class AstStatRepeat : public AstStat
@@ -1104,6 +1171,12 @@ struct AstDeclaredExternTypeProperty
     AstTableAccess access = AstTableAccess::ReadWrite;
 };
 
+enum class AstClassAccess
+{
+    Public,
+    Private,
+};
+
 struct AstClassProperty
 {
     Location qualifierLocation;
@@ -1111,15 +1184,18 @@ struct AstClassProperty
     Location nameLocation;
     std::optional<Location> typeColonLocation = std::nullopt;
     AstType* ty = nullptr;
+    AstClassAccess access = AstClassAccess::Public;
 };
 
 struct AstClassMethod
 {
+    // Methods with no access modifiers are public by default.
     std::optional<Location> qualifierLocation;
     Location keywordLocation;
     AstName functionName;
     Location nameLocation;
-    AstExprFunction* function;
+    AstExprFunction* function = nullptr;
+    AstClassAccess access = AstClassAccess::Public;
 };
 
 using AstClassMember = Variant<AstClassProperty, AstClassMethod>;
@@ -1227,12 +1303,13 @@ class AstTypeTable : public AstType
 public:
     LUAU_RTTI(AstTypeTable)
 
-    AstTypeTable(const Location& location, const AstArray<AstTableProp>& props, AstTableIndexer* indexer = nullptr);
+    AstTypeTable(const Location& location, const AstArray<AstTableProp>& props, AstTableIndexer* indexer = nullptr, bool isExact = false);
 
     void visit(AstVisitor* visitor) override;
 
     AstArray<AstTableProp> props;
     AstTableIndexer* indexer;
+    bool isExact = false;
 };
 
 class AstTypeFunction : public AstType

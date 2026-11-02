@@ -77,4 +77,40 @@ end
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
+TEST_CASE_FIXTURE(NegationFixture, "subtyping_path_is_valid_for_union")
+{
+    if (FFlag::DebugLuauForceOldSolver)
+        return;
+
+    CheckResult result = check(R"(
+        local a: Not<false?> = false
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    const std::string error = toString(result.errors[0]);
+    CHECK_EQ(
+        error == "Expected this to be '~(false?)', but got 'false'; \n`false` cannot be `~(false?)`" ||
+            error == "Expected this to be '~(false?)', but got 'boolean'; \n`boolean` cannot be `~(false?)`",
+        true
+    );
+}
+
+TEST_CASE_FIXTURE(NegationFixture, "subtype_path_is_valid_for_intersections")
+{
+    if (FFlag::DebugLuauForceOldSolver)
+        return;
+
+    CheckResult result = check(R"(
+        type T = Not<unknown & boolean>
+        local x: T = false
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    CHECK_EQ(
+        "Expected this to be '~(boolean & unknown)', but got 'boolean'; \n"
+        "`boolean` cannot be `~(boolean & unknown)`",
+        toString(result.errors[0])
+    );
+}
+
 TEST_SUITE_END();

@@ -5,7 +5,7 @@
 #include "Luau/BuiltinTypeFunctions.h"
 #include "Luau/Common.h"
 #include "Luau/StructuralTypeEquality.h"
-#include "Luau/DenseHash2.h"
+#include "Luau/DenseHash.h"
 #include "Luau/Error.h"
 #include "Luau/RecursionCounter.h"
 #include "Luau/StringUtils.h"
@@ -444,7 +444,7 @@ bool maybeSingleton(TypeId ty)
     return false;
 }
 
-bool hasLength(TypeId ty, DenseHashSet2<TypeId>& seen, int* recursionCount)
+bool hasLength(TypeId ty, DenseHashSet<TypeId>& seen, int* recursionCount)
 {
     RecursionLimiter _rl("Type::hasLength", recursionCount, FInt::LuauTypeInferRecursionLimit);
 
@@ -1081,6 +1081,23 @@ bool isSubclass(const ExternType* cls, const ExternType* parent)
     }
 
     return false;
+}
+
+const ExternType* getClassInstanceType(TypeId classTy)
+{
+    classTy = follow(classTy);
+
+    const ExternType* classEtv = get<ExternType>(classTy);
+    if (!classEtv)
+        return nullptr;
+
+    if (classEtv->relation)
+    {
+        if (const Obj* obj = classEtv->relation->get_if<Obj>())
+            return get<ExternType>(follow(obj->ty));
+    }
+
+    return nullptr;
 }
 
 const std::vector<TypeId>& getTypes(const UnionType* utv)

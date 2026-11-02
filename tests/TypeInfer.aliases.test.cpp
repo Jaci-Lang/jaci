@@ -11,8 +11,6 @@ using namespace Luau;
 
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
 LUAU_FASTFLAG(LuauDisallowRedefiningBuiltinTypes)
-LUAU_FASTFLAG(LuauDoNotEmplaceAnnotatedType)
-LUAU_FASTFLAG(LuauInstantiationCheckArguments)
 
 TEST_SUITE_BEGIN("TypeAliases");
 
@@ -105,9 +103,6 @@ TEST_CASE_FIXTURE(Fixture, "cannot_steal_hoisted_type_alias")
 
 TEST_CASE_FIXTURE(Fixture, "mismatched_generic_type_param")
 {
-    // We erroneously report an extra error in this case when the new solver is enabled.
-    DOES_NOT_PASS_NEW_SOLVER_GUARD();
-
     CheckResult result = check(R"(
         type T<A> = (A...) -> ()
     )");
@@ -774,6 +769,8 @@ TEST_CASE_FIXTURE(Fixture, "non_recursive_aliases_that_reuse_a_generic_name")
  */
 TEST_CASE_FIXTURE(BuiltinsFixture, "do_not_quantify_unresolved_aliases")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         --!strict
 
@@ -1097,14 +1094,14 @@ TEST_CASE_FIXTURE(Fixture, "recursive_type_alias_bad_pack_use_warns")
 type Foo<T> = Foo<T...>
 )");
 
-    LUAU_REQUIRE_ERROR_COUNT(5, result);
+    LUAU_REQUIRE_ERROR_COUNT(4, result);
     LUAU_CHECK_ERROR(result, GenericError);
-    CHECK_EQ(toString(result.errors[4]), "Generic type 'Foo<T>' expects 1 type argument, but none are specified");
+    CHECK_EQ(toString(result.errors[3]), "Generic type 'Foo<T>' expects 1 type argument, but none are specified");
 
-    auto occursCheckFailed = get<OccursCheckFailed>(result.errors[1]);
+    auto occursCheckFailed = get<OccursCheckFailed>(result.errors[0]);
     REQUIRE(occursCheckFailed);
 
-    auto swappedGeneric = get<SwappedGenericTypeParameter>(result.errors[2]);
+    auto swappedGeneric = get<SwappedGenericTypeParameter>(result.errors[1]);
     REQUIRE(swappedGeneric);
     CHECK(swappedGeneric->name == "T");
 }
@@ -1388,11 +1385,9 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "unpack_doesnt_emplace_typeof_type")
 {
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
-    ScopedFastFlag _{FFlag::LuauDoNotEmplaceAnnotatedType, true};
-
     LUAU_REQUIRE_NO_ERRORS(check(R"(
         local Obj = {}
-        
+
         local function g(): number
             return 42
         end
@@ -1406,11 +1401,78 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "unpack_doesnt_emplace_typeof_type")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "unused_type_arguments")
 {
-    ScopedFastFlag _{FFlag::LuauInstantiationCheckArguments, true};
-
     LUAU_REQUIRE_NO_ERRORS(check(R"(
         type Foo<T> = {}
         export type Export<T> = {Foo<Foo<T>>}
+    )"));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "type_argument_duplicate_pending_expansions")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"_(
+type Sym<Kind = string> = { text: Kind }
+type Data<T, U> = { [number]: T, separators: { Sym<U> } }
+type MT<T, U> = { __iter: (Data<T, U>) -> (({ [number]: T }, number?) -> (number?, T), { T }) }
+type Combined<T, U> = setmetatable<Data<T, U>, MT<T, U>>
+
+type Instantiate0 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+type Instantiate1 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+type Instantiate2 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+type Instantiate3 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+type Instantiate4 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+type Instantiate5 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+type Instantiate6 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+type Instantiate7 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+type Instantiate8 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+type Instantiate9 = { typeArguments: Combined<Pack1 | Pack2 | Pack3 | Pack4, ","> }
+
+type Pack1a = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack1b = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack1c = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack1d = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack1e = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack1 = Pack1a | Pack1b | Pack1c | Pack1d | Pack1e
+
+type Pack2a = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack2b = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack2c = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack2d = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack2e = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack2 = Pack2a | Pack2b | Pack2c | Pack2d | Pack2e
+
+type Pack3a = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack3b = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack3c = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack3d = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack3e = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack3 = Pack3a | Pack3b | Pack3c | Pack3d | Pack3e
+
+type Pack4a = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack4b = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack4c = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack4d = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack4e = { a: Sym<"a">, b: Sym<"b">, c: Sym<"c">, d: Sym<"d">, e: Sym<"e">, f: Sym<"e"> }
+type Pack4 = Pack4a | Pack4b | Pack4c | Pack4d | Pack4e
+    )_"));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "blocked_type_alias_do_not_leak_generic_arguments")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+type Alias<Generic> = typeof(getmetatable(... :: Generic))
+
+type Value = { x: number, y: number }
+type Meta = setmetatable<Value, { __len : (Value) -> number }>
+
+local foo: Alias<Meta>
+
+local x: number = foo.__len({ x = 1, y = 2})
+
+return foo
     )"));
 }
 

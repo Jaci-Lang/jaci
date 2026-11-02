@@ -9,13 +9,14 @@
 
 LUAU_FASTFLAGVARIABLE(LuauIntegerFastcalls)
 LUAU_FASTFLAGVARIABLE(LuauIntegerBufferFastcalls)
+LUAU_FASTFLAGVARIABLE(LuauCompileTableBuiltinsCreateClear)
 
 namespace Luau
 {
 namespace Compile
 {
 
-Builtin getBuiltin(AstExpr* node, const DenseHashMap2<AstName, Global>& globals, const DenseHashMap2<AstLocal*, Variable>& variables)
+Builtin getBuiltin(AstExpr* node, const DenseHashMap<AstName, Global>& globals, const DenseHashMap<AstLocal*, Variable>& variables)
 {
     if (AstExprLocal* expr = node->as<AstExprLocal>())
     {
@@ -225,6 +226,7 @@ static int getBuiltinFunctionId(const Builtin& builtin, const CompileOptions& op
             return LBF_TABLE_INSERT;
         if (builtin.method == "unpack")
             return LBF_TABLE_UNPACK;
+<<<<<<< HEAD
         if (builtin.method == "freeze")
             return LBF_TABLE_FREEZE;
         if (builtin.method == "isfrozen")
@@ -237,6 +239,12 @@ static int getBuiltinFunctionId(const Builtin& builtin, const CompileOptions& op
             return LBF_TABLE_FIND;
         if (builtin.method == "create")
             return LBF_TABLE_CREATE;
+=======
+        if (FFlag::LuauCompileTableBuiltinsCreateClear && builtin.method == "create")
+            return LBF_TABLE_CREATE;
+        if (FFlag::LuauCompileTableBuiltinsCreateClear && builtin.method == "clear")
+            return LBF_TABLE_CLEAR;
+>>>>>>> upstream/master
     }
 
     if (builtin.object == "buffer")
@@ -400,19 +408,19 @@ static int getBuiltinFunctionId(const Builtin& builtin, const CompileOptions& op
 
 struct BuiltinVisitor : AstVisitor
 {
-    DenseHashMap2<AstExprCall*, int>& result;
+    DenseHashMap<AstExprCall*, int>& result;
     std::array<bool, 256> builtinIsDisabled;
 
-    const DenseHashMap2<AstName, Global>& globals;
-    const DenseHashMap2<AstLocal*, Variable>& variables;
+    const DenseHashMap<AstName, Global>& globals;
+    const DenseHashMap<AstLocal*, Variable>& variables;
 
     const CompileOptions& options;
     const AstNameTable& names;
 
     BuiltinVisitor(
-        DenseHashMap2<AstExprCall*, int>& result,
-        const DenseHashMap2<AstName, Global>& globals,
-        const DenseHashMap2<AstLocal*, Variable>& variables,
+        DenseHashMap<AstExprCall*, int>& result,
+        const DenseHashMap<AstName, Global>& globals,
+        const DenseHashMap<AstLocal*, Variable>& variables,
         const CompileOptions& options,
         const AstNameTable& names
     )
@@ -478,9 +486,9 @@ struct BuiltinVisitor : AstVisitor
 };
 
 void analyzeBuiltins(
-    DenseHashMap2<AstExprCall*, int>& result,
-    const DenseHashMap2<AstName, Global>& globals,
-    const DenseHashMap2<AstLocal*, Variable>& variables,
+    DenseHashMap<AstExprCall*, int>& result,
+    const DenseHashMap<AstName, Global>& globals,
+    const DenseHashMap<AstLocal*, Variable>& variables,
     const CompileOptions& options,
     AstNode* root,
     const AstNameTable& names
@@ -616,6 +624,7 @@ BuiltinInfo getBuiltinInfo(int bfid)
     case LBF_TABLE_UNPACK:
         return {-1, -1}; // 1, 2 or 3 parameters
 
+<<<<<<< HEAD
     case LBF_TABLE_FREEZE:
         return {1, 1};
 
@@ -624,16 +633,23 @@ BuiltinInfo getBuiltinInfo(int bfid)
 
     case LBF_TABLE_CLONE:
         return {1, 1};
+=======
+    case LBF_TABLE_CREATE:
+        return {-1, 1}; // 1 or 2 parameters
+>>>>>>> upstream/master
 
     case LBF_TABLE_CLEAR:
         return {1, 0};
 
+<<<<<<< HEAD
     case LBF_TABLE_FIND:
         return {-1, 1};
 
     case LBF_TABLE_CREATE:
         return {-1, 1};
 
+=======
+>>>>>>> upstream/master
     case LBF_VECTOR:
         return {-1, 1}; // 3 or 4 parameters in some configurations
 

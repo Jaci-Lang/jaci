@@ -90,7 +90,11 @@ struct OverloadResolution
     std::vector<TypeId> nonFunctions;
 
     // Overloads that could match, but require that other constraints also be satisfied.
-    std::vector<std::pair<TypeId, std::vector<ConstraintV>>> potentialOverloads;
+    std::vector<TypeId> potentialOverloads;
+
+    // Overloads that could match, but require that other constraints also be satisfied.
+    // Clip with LuauOneBitAssumedConstraintTracking
+    std::vector<std::pair<TypeId, std::vector<ConstraintV>>> potentialOverloads_DEPRECATED;
 
     // Overloads that have the correct arity, but do not work.
     std::vector<std::pair<TypeId, IncompatibilityReason>> incompatibleOverloads;
@@ -101,7 +105,7 @@ struct OverloadResolution
     // If a particular overload is a __call metamethod, then type inference
     // needs to know so that it can prepend the self argument to the argument
     // list when it infers.
-    DenseHashSet2<TypeId> metamethods;
+    DenseHashSet<TypeId> metamethods;
 
     /**
      * Try to determine an unambiguous overload. See `SelectedOverload` for
@@ -138,7 +142,6 @@ struct OverloadResolver
         TypeId fnTy,
         TypePackId args,
         Location fnLocation,
-        NotNull<DenseHashSet2<TypeId>> uniqueTypes,
         bool useFreeTypeBounds
     );
 
@@ -157,18 +160,16 @@ private:
         OverloadResolution& result,
         TypeId fnTy,
         TypePackId argsPack,
-        Location fnLocation,
-        NotNull<DenseHashSet2<TypeId>> uniqueTypes
+        Location fnLocation
     );
 
-    void testFunction(OverloadResolution& result, TypeId fnTy, TypePackId argsPack, Location fnLocation, NotNull<DenseHashSet2<TypeId>> uniqueTypes);
+    void testFunction(OverloadResolution& result, TypeId fnTy, TypePackId argsPack, Location fnLocation);
 
     void testFunctionOrCallMetamethod(
         OverloadResolution& result,
         TypeId fnTy,
         TypePackId argsPack,
-        Location fnLocation,
-        NotNull<DenseHashSet2<TypeId>> uniqueTypes
+        Location fnLocation
     );
 
     void maybeEmplaceError(

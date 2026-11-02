@@ -10,6 +10,7 @@
 #include "lstate.h"
 
 LUAU_FASTFLAG(DebugCodegenLimitRegs)
+LUAU_FASTFLAG(LuauCodegenImprovedExitSync)
 
 namespace Luau
 {
@@ -91,6 +92,8 @@ RegisterX64 IrRegAllocX64::allocReg(SizeX64 size, uint32_t instIdx)
 
         return takeReg(reg, instIdx);
     }
+
+    error = true;
 
     CODEGEN_ASSERT(!"Out of registers to allocate");
     return noreg;
@@ -281,6 +284,17 @@ void IrRegAllocX64::setupExitSyncEntry(uint32_t blockIdx)
     if (!args)
         return;
 
+    // Collect VM registers that the ExitSync stores will write to
+    const VmExitSyncInfo* syncInfo = nullptr;
+
+    SmallVector<uint32_t, 8> argumentsToRestore;
+
+    if (!FFlag::LuauCodegenImprovedExitSync)
+    {
+        if (const uint32_t* guardInstIdx = function.blockToVmExitMap.find(blockIdx))
+            syncInfo = function.vmExitInfo.find(*guardInstIdx);
+    }
+
     for (const ExitSyncArgX64& arg : *args)
     {
         IrInst& inst = function.instructions[arg.instIdx];
@@ -333,7 +347,42 @@ void IrRegAllocX64::setupExitSyncEntry(uint32_t blockIdx)
             spill.originalLoc = arg.originalReg;
 
             spills.push_back(spill);
+
+            // If the restore VM register will be clobbered by a different store in this block, restore it immediately
+            if (!FFlag::LuauCodegenImprovedExitSync && syncInfo && arg.restoreLocation.op.kind == IrOpKind::VmReg)
+            {
+                uint8_t vmReg = vmRegOp(arg.restoreLocation.op);
+
+                for (const VmExitStoreInfo& regStore : syncInfo->regStores)
+                {
+                    if (regStore.reg != vmReg)
+                        continue;
+
+                    // If store is the user of the argument, there is no conflict
+                    bool argUsedHere = false;
+
+                    for (const VmExitStoreRecord& record : regStore.stores)
+                    {
+                        for (const auto& op : record.backup.ops)
+                        {
+                            if (op.kind == IrOpKind::Inst && op.index == arg.instIdx)
+                                argUsedHere = true;
+                        }
+                    }
+
+                    if (!argUsedHere)
+                        argumentsToRestore.push_back(function.getInstIndex(inst));
+
+                    break;
+                }
+            }
         }
+    }
+
+    if (!FFlag::LuauCodegenImprovedExitSync)
+    {
+        for (uint32_t instIdx : argumentsToRestore)
+            restore(function.instructions[instIdx], /*intoOriginalLocation*/ false);
     }
 }
 
@@ -416,7 +465,8 @@ void IrRegAllocX64::preserve(IrInst& inst)
             if (spill.valueKind != IrValueKind::Tvalue)
                 build.mov(luauRegTag(storeReg), 0);
 
-            function.materializeRestoreLocation(spill.instIdx);
+            if (!keepLazyLocations)
+                function.materializeRestoreLocation(spill.instIdx);
         }
 
         inst.needsReload = true;
@@ -462,7 +512,7 @@ void IrRegAllocX64::restore(IrInst& inst, bool intoOriginalLocation)
         {
             RegisterX64 reg = intoOriginalLocation ? takeReg(spills[i].originalLoc, instIdx) : allocReg(spills[i].originalLoc.size, instIdx);
 
-            // When restoring the value, we allow cross-block restore because we have commited to the target location at spill time
+            // When restoring the value, we allow cross-block restore because we have committed to the target location at spill time
             ValueRestoreLocation restoreLocation = function.findRestoreLocation(inst, /*limitToCurrentBlock*/ false);
 
             OperandX64 restoreAddr = noreg;
@@ -498,7 +548,7 @@ void IrRegAllocX64::restore(IrInst& inst, bool intoOriginalLocation)
             {
                 build.vmovsd(reg, restoreAddr);
             }
-            else if (spill.valueKind == IrValueKind::Int && restoreLocation.kind == IrValueKind::Double)
+            else if (spill.valueKind == IrValueKind::Int && restoreLocation.kind == IrValueKind::Double && spill.stackSlot == kNoStackSlot)
             {
                 // Handle restore of an int/uint value from a location storing a double number
                 if (restoreLocation.conversionCmd == IrCmd::INT_TO_NUM)
@@ -634,6 +684,7 @@ OperandX64 IrRegAllocX64::getRestoreAddress(const IrInst& inst, ValueRestoreLoca
     case IrValueKind::None:
     case IrValueKind::Float:
     case IrValueKind::Count:
+        break;
     case IrValueKind::Int64:
         return restoreLocation.op.kind == IrOpKind::VmReg ? luauRegValueInt64(vmRegOp(op)) : luauConstantValue(vmConstOp(op));
     case IrValueKind::Tag:
@@ -760,6 +811,9 @@ RegisterX64 ScopedRegX64::release()
 ScopedSpills::ScopedSpills(IrRegAllocX64& owner)
     : owner(owner)
 {
+    CODEGEN_ASSERT(!owner.keepLazyLocations);
+    owner.keepLazyLocations = true;
+
     startSpillId = owner.nextSpillId;
 }
 
@@ -788,6 +842,9 @@ ScopedSpills::~ScopedSpills()
             i++;
         }
     }
+
+    CODEGEN_ASSERT(owner.keepLazyLocations);
+    owner.keepLazyLocations = false;
 }
 
 } // namespace X64

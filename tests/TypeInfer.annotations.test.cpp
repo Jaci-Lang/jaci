@@ -5,6 +5,7 @@
 
 #include "Fixture.h"
 
+#include "ScopedFlags.h"
 #include "doctest.h"
 
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
@@ -238,6 +239,70 @@ TEST_CASE_FIXTURE(Fixture, "unknown_type_reference_generates_error")
                                 },
                             }
     );
+}
+
+TEST_CASE_FIXTURE(Fixture, "unknown_generic_type_pack_reference_generates_one_error")
+{
+    CheckResult result = check(R"(
+        --!strict
+        type F = (IDoNotExist...) -> ()
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    const UnknownSymbol* error = get<UnknownSymbol>(result.errors[0]);
+    REQUIRE(error);
+    CHECK(error->name == "IDoNotExist");
+    CHECK(error->context == UnknownSymbol::Context::Type);
+}
+
+TEST_CASE_FIXTURE(Fixture, "unknown_generic_type_pack_vararg_generates_one_error")
+{
+    CheckResult result = check(R"(
+        --!strict
+        function f(...: IDoNotExist...) end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    const UnknownSymbol* error = get<UnknownSymbol>(result.errors[0]);
+    REQUIRE(error);
+    CHECK(error->name == "IDoNotExist");
+    CHECK(error->context == UnknownSymbol::Context::Type);
+}
+
+TEST_CASE_FIXTURE(Fixture, "unknown_generic_type_pack_in_explicit_instantiation_generates_one_error")
+{
+    for (const char* source : {
+             R"(
+                --!strict
+                local function f<T...>() end
+                f<<IDoNotExist...>>()
+            )",
+             R"(
+                --!strict
+                local t = {}
+                function t:f<T...>() end
+                t:f<<IDoNotExist...>>()
+            )",
+             R"(
+                --!nonstrict
+                local t = {}
+                function t:f<T...>() end
+                t:f<<IDoNotExist...>>()
+            )",
+         })
+    {
+        CAPTURE(source);
+        CheckResult result = check(source);
+
+        LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+        const UnknownSymbol* error = get<UnknownSymbol>(result.errors[0]);
+        REQUIRE(error);
+        CHECK(error->name == "IDoNotExist");
+        CHECK(error->context == UnknownSymbol::Context::Type);
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "typeof_variable_type_annotation_should_return_its_type")
@@ -801,7 +866,7 @@ TEST_CASE_FIXTURE(Fixture, "luau_ice_triggers_an_ice_exception_with_flag_handler
 
     bool caught = false;
 
-    getFrontend().iceHandler.onInternalError = [&](const char*)
+    getFrontend().onInternalError = [&](const char*)
     {
         caught = true;
     };
@@ -946,7 +1011,7 @@ TEST_CASE_FIXTURE(Fixture, "unifier3_supertail_covariant_with_sub")
         end
     )");
 
-    CHECK_EQ("<a>(a) -> t1 where t1 = add<a, t1>", toString(requireType("fib")));
+    CHECK_EQ("<T>(T) -> t1 where t1 = add<T, t1>", toString(requireType("fib")));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "respect_partially_annotated_type_packs_1")

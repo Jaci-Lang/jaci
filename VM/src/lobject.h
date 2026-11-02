@@ -340,7 +340,15 @@ typedef struct LuauVector
 
 enum FeedbackVectorSlotKind
 {
-    CALL_TARGET
+    CALL_TARGET,
+    CONSTRUCT,
+};
+
+enum LuauClassConstructMatch
+{
+    LCM_MISMATCH,
+    LCM_MATCH,
+    LCM_MATCH_ZEROED,
 };
 
 struct FeedbackVectorSlot
@@ -355,7 +363,20 @@ struct FeedbackVectorSlot
             uint32_t proto;
             uint32_t hits;
         } call_target;
+
+        struct
+        {
+            uint32_t shape;
+            uint32_t classid;
+            LuauClassConstructMatch match;
+        } construct;
     };
+};
+
+enum ProtoExecFlag
+{
+    PEF_EXECLOCKED = 1 << 0,  // function will no longer be examined by custom execution
+    PEF_DEBUGLOCKED = 1 << 1, // bytecode can have breakpoints in it
 };
 
 /*
@@ -379,6 +400,9 @@ typedef struct Proto
 
     void* execdata;
     uintptr_t exectarget;
+
+    uint32_t execcount;
+    uint8_t execflags;
 
     uint8_t* lineinfo;      // for each instruction, line number as a delta from baseline
     int* abslineinfo;       // baseline line info, one entry for each 1<<linegaplog2 instructions; allocated after lineinfo
@@ -474,7 +498,6 @@ typedef struct Closure
         {
             lua_CFunction f;
             lua_Continuation cont;
-            const char* debugname_DEPRECATED;
             TString* debugname;
             TValue upvals[1];
         } c;
@@ -536,7 +559,7 @@ typedef struct LuaTable
     CommonHeader;
 
     uint8_t tmcache;    // 1<<p means tagmethod(p) is not present
-    uint8_t readonly;   // sandboxing feature to prohibit writes to table
+    uint8_t readonly;   // bit 0 - prohibit writes to table, bit 1 - array contains a metamethod cache
     uint8_t safeenv;    // environment doesn't share globals with other scripts
     uint8_t lsizenode;  // log2 of size of `node' array
     uint8_t nodemask8;  // (1<<lsizenode)-1, truncated to 8 bits
@@ -563,40 +586,49 @@ typedef struct LuauClass
 
     TString* name;
 
+    // Used to match feedback vector construction slots
+    uint32_t id;
+
     // The superclass of this class. NULL if this class doesn't inherit.
     LuauClass* super;
 
-    // Mapping from offset to static members (only methods for now).
+    // Mapping from offset to static members (only methods for now). Private members at the end.
     TValue* staticmembers;
+    // We store a pointer to the private static members separately as an optimization to avoid computing an overall offset into static members.
+    TValue* privatestaticmembers;
 
-    // Mapping from member name to offset.
+    // Mapping from public member name to offset.
     // For static members, subtracting numberofinstancemembers from the offset gives the actual index into staticmembers.
     LuaTable* memberstooffset;
 
-    // Mapping from offset to member name. Instance member offsets are stored before static member offsets.
+    // Mapping from offset to member name. Instance member offsets are stored before static member offsets. Offsets corresponding to private
+    // fields are NULL, and there are no entries for private static members.
     TString** offsettomember;
 
-    // Metatable for this *class object*. At time of writing this only contains
-    // __call, but we may add more metamethods to class objects in the future.
+    // Metatable for this *class object*. At time of writing this only contains __call
     LuaTable* metatable;
 
     // Metatable for instances of this class. NULL until the first metamethod
     // is added via luaR_addclassmember.
     LuaTable* instancemetatable;
 
-    // Number of instance members that we expect instances of this class object
-    // to have.
+    // Number of public and private instance members that we expect instances of this class object to have.
     uint32_t numberofinstancemembers;
 
-    // Total number of members that we expect this class object to have between
-    // instance and static members.
+    // Total number of members that we expect this class object to have between instance and static members.
     //
     // We store this number as an optimization. It's pretty rare that we need
     // to reference the specific number of static members, but it's very common
     // to reference the total number of members (for validating hot paths in
     // the interpreter) and the number of instance members (branching on
     // instance or static members, creating class instances).
-    uint32_t numberofallmembers;
+    uint32_t numberofmembers;
+
+    uint32_t numberofprivatefields;
+    // If this class inherits, its ancestors' private fields come before this class's, so we track where its own private fields start.
+    uint32_t ownprivatefieldsstart;
+
+    uint8_t numberofprivatestaticmembers;
 
     // Can this class be extended?
     bool isopen;
@@ -604,7 +636,7 @@ typedef struct LuauClass
     // True if this class or any of its ancestors defines an __init method.
     // If a class's ancestors define an __init method, it must itself also define an __init method.
     // We cannot determine this statically, so we track it here to error at runtime if the invariant is violated.
-    // The default constructor errors if this is true, which works because the default constructor is overriden if a class defines an __init method.
+    // The default constructor errors if this is true, which works because the default constructor is overridden if a class defines an __init method.
     bool hasuserinitinchain;
 } LuauClass;
 
@@ -617,14 +649,13 @@ typedef struct LuauObject
     // The class object that this value is an instance of.
     LuauClass* lclass;
 
-    // The number of members that this instance contains. We need this in order
-    // to free ourselves if we got swept in the same GC cycle as our class
+    // The number of members that this instance contains. We need these in order to free ourselves if we get swept in the same GC cycle as our class
     // pointer.
     uint32_t numberofmembers;
 
-    // The fields of this instance.
+    // The fields of this instance. Members are ordered according to inheritance chain, with base classes coming first. For each class, public members
+    // come first, then privates.
     TValue* members;
-
 } LuauObject;
 
 /*
@@ -634,6 +665,8 @@ typedef struct LuauObject
 
 #define twoto(x) ((int)(1 << (x)))
 #define sizenode(t) (twoto((t)->lsizenode))
+#define hasmetacache(t) (((t)->readonly & 2) != 0)
+#define getmetacache(t, event) ((t)->array - (1 + (event)))
 
 #define luaO_nilobject (&luaO_nilobject_)
 

@@ -11,6 +11,8 @@
 
 #include "lapi.h"
 
+LUAU_FASTFLAG(LuauRuntimeFeedback)
+
 namespace Luau
 {
 namespace CodeGen
@@ -139,7 +141,14 @@ unsigned getInstructionCount(const Instruction* insns, const unsigned size)
 }
 
 template<typename AssemblyBuilder>
-static std::string getAssemblyImpl(LogBuilder& logger, AssemblyBuilder& build, const TValue* func, AssemblyOptions options, LoweringStats* stats)
+static std::string getAssemblyImpl(
+    LogBuilder& logger,
+    AssemblyBuilder& build,
+    const TValue* func,
+    AssemblyOptions options,
+    LoweringStats* stats,
+    const VmEnvironmentInfo& envInfo
+)
 {
     Proto* root = clvalue(func)->l.p;
 
@@ -184,7 +193,14 @@ static std::string getAssemblyImpl(LogBuilder& logger, AssemblyBuilder& build, c
 
     for (Proto* p : protos)
     {
-        IrBuilder ir(options.compilationOptions.hooks);
+        IrBuilder ir(options.compilationOptions.hooks, envInfo);
+
+        if (FFlag::LuauRuntimeFeedback)
+        {
+            ir.function.recordCounters = options.compilationOptions.recordCounters;
+            ir.function.recordFeedback = options.compilationOptions.runtimeFeedback;
+        }
+
         ir.buildFunctionIr(p);
         unsigned asmSize = build.getCodeSize();
         unsigned asmCount = build.getInstructionCount();
@@ -261,6 +277,10 @@ std::string getAssembly(lua_State* L, int idx, AssemblyOptions options, Lowering
 
     LogBuilder logger(options);
 
+    VmEnvironmentInfo envInfo;
+    envInfo.hasPcall = L->global->builtinPcall != nullptr;
+    envInfo.hasXpcall = L->global->builtinXpcall != nullptr;
+
     switch (options.target)
     {
     case AssemblyOptions::Host:
@@ -273,7 +293,7 @@ std::string getAssembly(lua_State* L, int idx, AssemblyOptions options, Lowering
         X64::AssemblyBuilderX64 build(/* logger= */ options.includeAssembly ? &logger : nullptr, cpuFeatures);
 #endif
 
-        return getAssemblyImpl(logger, build, func, options, stats);
+        return getAssemblyImpl(logger, build, func, options, stats, envInfo);
     }
 
     case AssemblyOptions::A64:
@@ -281,14 +301,14 @@ std::string getAssembly(lua_State* L, int idx, AssemblyOptions options, Lowering
         A64::AssemblyBuilderA64 build(/* logger= */ options.includeAssembly ? &logger : nullptr,
                                       /* features= */ A64::Feature_JSCVT);
 
-        return getAssemblyImpl(logger, build, func, options, stats);
+        return getAssemblyImpl(logger, build, func, options, stats, envInfo);
     }
 
     case AssemblyOptions::A64_NoFeatures:
     {
         A64::AssemblyBuilderA64 build(/* logger= */ options.includeAssembly ? &logger : nullptr, /* features= */ 0);
 
-        return getAssemblyImpl(logger, build, func, options, stats);
+        return getAssemblyImpl(logger, build, func, options, stats, envInfo);
     }
 
     case AssemblyOptions::X64_Windows:
@@ -297,7 +317,7 @@ std::string getAssembly(lua_State* L, int idx, AssemblyOptions options, Lowering
             /* logger= */ options.includeAssembly ? &logger : nullptr, X64::ABIX64::Windows, /* features= */ 0
         );
 
-        return getAssemblyImpl(logger, build, func, options, stats);
+        return getAssemblyImpl(logger, build, func, options, stats, envInfo);
     }
 
     case AssemblyOptions::X64_SystemV:
@@ -306,7 +326,7 @@ std::string getAssembly(lua_State* L, int idx, AssemblyOptions options, Lowering
             /* logger= */ options.includeAssembly ? &logger : nullptr, X64::ABIX64::SystemV, /* features= */ 0
         );
 
-        return getAssemblyImpl(logger, build, func, options, stats);
+        return getAssemblyImpl(logger, build, func, options, stats, envInfo);
     }
 
     default:

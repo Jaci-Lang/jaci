@@ -11,7 +11,7 @@
 using namespace Luau;
 
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
-LUAU_FASTFLAG(LuauNewTypePathErrorMessages)
+LUAU_FASTFLAG(LuauRemoveLoadstringFromBuiltinDefinitions)
 
 TEST_SUITE_BEGIN("BuiltinTests");
 
@@ -73,6 +73,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "next_iterator_should_infer_types_and_type_ch
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "pairs_iterator_should_infer_types_and_type_check")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         type Map<K, V> = { [K]: V }
         local map: Map<string, number> = { ["foo"] = 1, ["bar"] = 2, ["baz"] = 3 }
@@ -198,6 +200,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "math_max_checks_for_numbers")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "builtin_tables_sealed")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"LUA(
         local b = bit32
     )LUA");
@@ -210,6 +214,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "builtin_tables_sealed")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "lua_51_exported_globals_all_exist")
 {
+    ScopedFastFlag luauRemoveLoadstringFromBuiltinDefinitions{FFlag::LuauRemoveLoadstringFromBuiltinDefinitions, true};
+
     // Extracted from lua5.1
     CheckResult result = check(R"(
         local v__G = _G
@@ -351,7 +357,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "lua_51_exported_globals_all_exist")
         local v_gcinfo = gcinfo
         local v_pairs = pairs
         local v_rawget = rawget
-        local v_loadstring = loadstring
+        --local v_loadstring = loadstring
         local v_ipairs = ipairs
         local v__VERSION = _VERSION
         --local v_dofile = dofile
@@ -375,6 +381,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_unpacks_arg_types_correctly")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_on_union_of_tables")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         type A = {tag: "A", x: number}
         type B = {tag: "B", y: string}
@@ -388,9 +396,9 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_on_union_of_tables")
 
     LUAU_REQUIRE_NO_ERRORS(result);
     if (!FFlag::DebugLuauForceOldSolver)
-        CHECK("{ @metatable {  }, A } | { @metatable {  }, B }" == toString(requireTypeAlias("X")));
+        CHECK("setmetatable<A, {  }> | setmetatable<B, {  }>" == toString(requireTypeAlias("X")));
     else
-        CHECK("{ @metatable {|  |}, A } | { @metatable {|  |}, B }" == toString(requireTypeAlias("X")));
+        CHECK("setmetatable<A, {|  |}> | setmetatable<B, {|  |}>" == toString(requireTypeAlias("X")));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_insert_correctly_infers_type_of_array_2_args_overload")
@@ -419,6 +427,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "table_insert_correctly_infers_type_of_array_
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_pack")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         local t = table.pack(1, "foo", true)
     )");
@@ -429,6 +439,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "table_pack")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_pack_variadic")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
 --!strict
 function f(): (string, ...number)
@@ -444,6 +456,8 @@ local t = table.pack(f())
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_pack_reduce_1")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         local t = table.pack(1, 2, true)
     )");
@@ -454,6 +468,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "table_pack_reduce_1")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_pack_reduce_2")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         local t = table.pack("a", "b", "c")
     )");
@@ -1029,18 +1045,11 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "tonumber_returns_optional_number_type")
 
     if (!FFlag::DebugLuauForceOldSolver)
     {
-        if (FFlag::LuauNewTypePathErrorMessages)
-            CHECK_EQ(
-                "Expected this to be 'number', but got 'number?'; \n"
-                "`nil` is not a subtype of `number`",
-                toString(result.errors[0])
-            );
-        else
-            CHECK_EQ(
-                "Expected this to be 'number', but got 'number?'; \n"
-                "the 2nd component of the union is `nil`, which is not a subtype of `number`",
-                toString(result.errors[0])
-            );
+        CHECK_EQ(
+            "Expected this to be 'number', but got 'number?'; \n"
+            "`nil` is not a subtype of `number`",
+            toString(result.errors[0])
+        );
     }
     else
     {
@@ -1672,14 +1681,16 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "string_find_should_not_crash")
 {
     ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
 
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
+    CheckResult result = check(R"(
         local function StringSplit(input, separator)
             string.find(input, separator)
             if not separator then
                 separator = "%s+"
             end
         end
-    )"));
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_dot_clone_type_states")

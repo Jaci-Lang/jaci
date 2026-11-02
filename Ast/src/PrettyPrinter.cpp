@@ -8,11 +8,14 @@
 
 #include <algorithm>
 #include <limits>
+
 #include <math.h>
+#include <stdio.h>
 
 LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
 LUAU_FASTFLAG(LuauExportValueSyntax)
-LUAU_FASTFLAGVARIABLE(LuauPrettyPrintVisualizeIndexerAccess)
+LUAU_FASTFLAG(LuauExperimentalIfLocalSyntax)
+LUAU_FASTFLAG(DebugLuauWhileLocalSyntax)
 
 namespace
 {
@@ -957,6 +960,20 @@ struct Printer
         else if (const auto& a = program.as<AstStatWhile>())
         {
             writer.keyword("while");
+            if (FFlag::DebugLuauWhileLocalSyntax && a->conditionLocal)
+            {
+                const auto cstNode = lookupCstNode<CstStatWhile>(a);
+
+                if (a->conditionKeywordLocation)
+                    advance(a->conditionKeywordLocation->begin);
+                writer.keyword(a->conditionIsConst ? "const" : "local");
+
+                visualize(*a->conditionLocal, cstNode ? cstNode->annotationColonPosition : Position::missing());
+
+                if (a->conditionEqualsLocation)
+                    advance(a->conditionEqualsLocation->begin);
+                writer.symbol("=");
+            }
             visualize(*a->condition);
             // TODO: what if 'hasDo = false'?
             advance(a->doLocation.begin);
@@ -1403,7 +1420,7 @@ struct Printer
                         [&](const AstClassProperty& prop)
                         {
                             writer.advance(prop.qualifierLocation.begin);
-                            writer.keyword("public");
+                            writer.keyword(prop.access == AstClassAccess::Private ? "private" : "public");
                             writer.advance(prop.nameLocation.begin);
                             writer.identifier(prop.name.value);
                             if (writeTypes && prop.ty)
@@ -1419,7 +1436,7 @@ struct Printer
                             if (method.qualifierLocation)
                             {
                                 writer.advance(method.qualifierLocation->begin);
-                                writer.keyword("public");
+                                writer.keyword(method.access == AstClassAccess::Private ? "private" : "public");
                             }
                             writer.advance(method.keywordLocation.begin);
                             writer.keyword("function");
@@ -1569,7 +1586,23 @@ struct Printer
 
     void visualizeElseIf(AstStatIf& elseif)
     {
+        if (FFlag::LuauExperimentalIfLocalSyntax && elseif.conditionLocal)
+        {
+            const auto cstNode = lookupCstNode<CstStatIf>(&elseif);
+
+            if (elseif.conditionKeywordLocation)
+                advance(elseif.conditionKeywordLocation->begin);
+            writer.keyword(elseif.conditionIsConst ? "const" : "local");
+
+            visualize(*elseif.conditionLocal, cstNode ? cstNode->annotationColonPosition : Position::missing());
+
+            if (elseif.conditionEqualsLocation)
+                advance(elseif.conditionEqualsLocation->begin);
+            writer.symbol("=");
+        }
+
         visualize(*elseif.condition);
+
         if (elseif.thenLocation)
             advance(elseif.thenLocation->begin);
         writer.keyword("then");
@@ -1602,6 +1635,19 @@ struct Printer
     void visualizeElseIfExpr(AstExprIfElse& elseif)
     {
         const auto cstNode = lookupCstNode<CstExprIfElse>(&elseif);
+
+        if (FFlag::LuauExperimentalIfLocalSyntax && elseif.conditionLocal)
+        {
+            if (elseif.conditionKeywordLocation)
+                advance(elseif.conditionKeywordLocation->begin);
+            writer.keyword(elseif.conditionIsConst ? "const" : "local");
+
+            visualize(*elseif.conditionLocal, cstNode ? cstNode->annotationColonPosition : Position::missing());
+
+            if (elseif.conditionEqualsLocation)
+                advance(elseif.conditionEqualsLocation->begin);
+            writer.symbol("=");
+        }
 
         visualize(*elseif.condition);
         if (cstNode)
@@ -1909,15 +1955,12 @@ struct Printer
             {
                 if (a->props.size == 0 && indexType && indexType->name == "number")
                 {
-                    if (FFlag::LuauPrettyPrintVisualizeIndexerAccess)
+                    if (a->indexer->access != AstTableAccess::ReadWrite)
                     {
-                        if (a->indexer->access != AstTableAccess::ReadWrite)
-                        {
-                            if (const std::optional<Location>& accessLocation = a->indexer->accessLocation)
-                                advance(accessLocation->begin);
+                        if (const std::optional<Location>& accessLocation = a->indexer->accessLocation)
+                            advance(accessLocation->begin);
 
-                            writer.keyword(a->indexer->access == AstTableAccess::Read ? "read" : "write");
-                        }
+                        writer.keyword(a->indexer->access == AstTableAccess::Read ? "read" : "write");
                     }
 
                     visualizeTypeAnnotation(*a->indexer->resultType);
@@ -1941,18 +1984,15 @@ struct Printer
                     {
                         comma();
 
-                        if (FFlag::LuauPrettyPrintVisualizeIndexerAccess)
+                        if (a->indexer->access != AstTableAccess::ReadWrite)
                         {
-                            if (a->indexer->access != AstTableAccess::ReadWrite)
-                            {
-                                if (const std::optional<Location>& accessLocation = a->indexer->accessLocation)
-                                    advance(accessLocation->begin);
+                            if (const std::optional<Location>& accessLocation = a->indexer->accessLocation)
+                                advance(accessLocation->begin);
 
-                                writer.keyword(a->indexer->access == AstTableAccess::Read ? "read" : "write");
-                            }
-
-                            advance(a->indexer->location.begin);
+                            writer.keyword(a->indexer->access == AstTableAccess::Read ? "read" : "write");
                         }
+
+                        advance(a->indexer->location.begin);
 
                         writer.symbol("[");
                         visualizeTypeAnnotation(*a->indexer->indexType);

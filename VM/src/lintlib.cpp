@@ -138,10 +138,11 @@ static int int64_idiv(lua_State* L)
         luaL_error(L, "integer overflow");
 
     int64_t result = a / b;
-    if ((result < 0) && (a % b))
-        lua_pushinteger64(L, result - 1);
-    else
-        lua_pushinteger64(L, result);
+    // Floored division rounds toward -inf: adjust the truncated quotient down by 1
+    // when the operands have opposite signs and the division is inexact.
+    if (((a ^ b) < 0) && (a % b))
+        result -= 1;
+    lua_pushinteger64(L, result);
 
     return 1;
 }
@@ -448,9 +449,9 @@ static int int64_extract(lua_State* L)
     int64_t f = luaL_checkinteger64(L, 2);
     int64_t w = luaL_optinteger64(L, 3, 1);
 
-    luaL_argcheck(L, 0 <= f && f <= 63, 2, "field cannot be negative");
+    luaL_argcheck(L, 0 <= f, 2, "field cannot be negative");
     luaL_argcheck(L, 0 < w, 3, "width must be positive");
-    if (f + w > 64)
+    if (w > 64 - f)
         luaL_error(L, "trying to access non-existent bits");
 
     lua_pushinteger64(L, ((uint64_t)n >> f) & mask64(w));
@@ -465,9 +466,9 @@ static int int64_replace(lua_State* L)
     int64_t f = luaL_checkinteger64(L, 3);
     int64_t w = luaL_optinteger64(L, 4, 1);
 
-    luaL_argcheck(L, 0 <= f && f <= 63, 3, "field cannot be negative");
+    luaL_argcheck(L, 0 <= f, 3, "field cannot be negative");
     luaL_argcheck(L, 0 < w, 4, "width must be positive");
-    if (f + w > 64)
+    if (w > 64 - f)
         luaL_error(L, "trying to access non-existent bits");
 
     uint64_t baseMask = ((0xFFFFFFFFFFFFFFFFULL) >> (64 - w));

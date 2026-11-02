@@ -138,9 +138,10 @@ TEST_CASE_FIXTURE(Fixture, "function")
     CheckResult result = check(R"(
 local function f(a, ...: string) return a end
 )");
+
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ("<a>(a, ...string) -> a", toString(requireType("f")));
+    CHECK_EQ("<T>(T, ...string) -> T", toString(requireType("f")));
 
     ToDotOptions opts;
     opts.showPointers = false;

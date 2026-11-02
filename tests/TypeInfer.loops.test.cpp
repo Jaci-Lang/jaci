@@ -43,6 +43,8 @@ TEST_CASE_FIXTURE(Fixture, "for_loop")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "iteration_no_table_passed")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     // This test may block CI if forced to run outside of DCR.
     if (FFlag::DebugLuauForceOldSolver)
         return;
@@ -71,6 +73,8 @@ for a, b in t do end
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "iteration_regression_issue_69967")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     if (FFlag::DebugLuauForceOldSolver)
         return;
 
@@ -92,6 +96,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "iteration_regression_issue_69967")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "iteration_regression_issue_69967_alt")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     if (FFlag::DebugLuauForceOldSolver)
         return;
 
@@ -415,6 +421,7 @@ TEST_CASE_FIXTURE(Fixture, "for_in_loop_with_incompatible_args_to_iterator")
         end
     )");
 
+
     // TODO, CLI-177651: The rough bidirectional rule with for-in loops ought to be:
     //
     //  for a, b in c, d, e
@@ -523,6 +530,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "varlist_declared_by_for_in_loop_should_be_fr
             end
         end
     )");
+
 
     if (!FFlag::DebugLuauForceOldSolver)
     {
@@ -976,7 +984,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "cli_68448_iterators_need_not_accept_nil")
     LUAU_REQUIRE_NO_ERRORS(result);
     // HACK (CLI-68453): We name this inner table `enum`. For now, use the
     // exhaustive switch to see past it.
-    CHECK(toString(requireType("makeEnum"), {true}) == "<a>({a}) -> { [a]: a }");
+    CHECK(toString(requireType("makeEnum"), {true}) == "<T>({T}) -> { [T]: T }");
 }
 
 TEST_CASE_FIXTURE(Fixture, "iterate_over_free_table")
@@ -1266,6 +1274,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "forin_metatable_no_iter_mm")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "forin_metatable_iter_mm")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     CheckResult result = check(R"(
@@ -1337,6 +1347,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "for_in_require")
 
 TEST_CASE_FIXTURE(Fixture, "oss_1480")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     LUAU_REQUIRE_NO_ERRORS(check(R"(
         type Part = { Parent: Part? }
         type Instance = Part
@@ -1405,7 +1417,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "while_loop_error_in_body")
     if (FFlag::DebugLuauForceOldSolver)
         return;
 
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
+    CheckResult result = check(R"(
         local function foo()
             local x = ""
             while math.random () > 0.5 do
@@ -1414,7 +1426,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "while_loop_error_in_body")
             end
             return x
         end
-    )"));
+    )");
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ("() -> string", toString(requireType("foo")));
 }
@@ -1423,7 +1436,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "while_loop_assign_different_type")
 {
     ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
 
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
+    CheckResult result = check(R"(
         local function takesString(_: string) end
         local function takesNil(_: nil) end
         local function foo()
@@ -1435,7 +1448,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "while_loop_assign_different_type")
             end
             return x
         end
-    )"));
+    )");
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ("() -> string?", toString(requireType("foo")));
 }

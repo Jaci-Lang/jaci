@@ -1,8 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
-#include "Luau/DenseHash2.h"
-#include "Luau/Set.h"
+#include "Luau/DenseHash.h"
 #include "Luau/SubtypingVariance.h"
 #include "Luau/TypeCheckLimits.h"
 #include "Luau/TypeFunction.h"
@@ -11,6 +10,7 @@
 #include "Luau/TypePairHash.h"
 #include "Luau/TypePath.h"
 
+#include <string>
 #include <vector>
 #include <optional>
 
@@ -54,8 +54,13 @@ struct SubtypingReasoningHash
     size_t operator()(const SubtypingReasoning& r) const;
 };
 
-using SubtypingReasonings = DenseHashSet2<SubtypingReasoning, SubtypingReasoningHash>;
+using SubtypingReasonings = DenseHashSet<SubtypingReasoning, SubtypingReasoningHash>;
 inline const SubtypingReasoning kEmptyReasoning = SubtypingReasoning{TypePath::kEmpty, TypePath::kEmpty, SubtypingVariance::Invalid};
+
+// The leaf types at the end of the paths are the same type, so a
+// plain "X is not a subtype of X" message would be misleading.
+// Instead, explain that the mismatch is about the access modifier.
+std::string explainPropertyModifierViolation(const Path& subPath);
 
 /*
  * When we encounter a generic pack over the course of a subtyping test, we need
@@ -71,11 +76,11 @@ struct MappedGenericEnvironment
 {
     struct MappedGenericFrame
     {
-        DenseHashMap2<TypePackId, std::optional<TypePackId>> mappings;
+        DenseHashMap<TypePackId, std::optional<TypePackId>> mappings;
         std::optional<size_t> parentScopeIndex; // nullopt if this is the root frame
-        DenseHashSet2<size_t> children;
+        DenseHashSet<size_t> children;
 
-        MappedGenericFrame(DenseHashMap2<TypePackId, std::optional<TypePackId>> mappings, std::optional<size_t> parentScopeIndex);
+        MappedGenericFrame(DenseHashMap<TypePackId, std::optional<TypePackId>> mappings, std::optional<size_t> parentScopeIndex);
     };
 
     std::vector<MappedGenericFrame> frames;
@@ -107,18 +112,13 @@ struct MappedGenericEnvironment
     bool bindGeneric(TypePackId genericTp, TypePackId bindeeTp);
 };
 
-enum class SubtypingSuppressionPolicy
-{
-    Any,
-    All
-};
-
 struct SubtypingResult
 {
     bool isSubtype = false;
     bool normalizationTooComplex = false;
     bool isCacheable = true;
     bool isErrorSuppressing = false;
+    bool assumingConstraints = false;
     ErrorVec errors;
     /// The reason for isSubtype to be false. May not be present even if
     /// isSubtype is false, depending on the input types.
@@ -127,12 +127,12 @@ struct SubtypingResult
     // If this subtype result required testing free types, we might be making
     // assumptions about what the free type eventually resolves to.  If so,
     // those assumptions are recorded here.
-    std::vector<ConstraintV> assumedConstraints;
+    std::vector<ConstraintV> assumedConstraints_DEPRECATED;
 
     /// If any generic bounds were invalid, report them here
     std::vector<GenericBoundsMismatch> genericBoundsMismatches;
 
-    SubtypingResult& andAlso(SubtypingResult other, SubtypingSuppressionPolicy policy = SubtypingSuppressionPolicy::Any);
+    SubtypingResult& andAlso(SubtypingResult other);
     SubtypingResult& orElse(SubtypingResult other);
     SubtypingResult& withBothComponent(TypePath::Component component);
     SubtypingResult& withSuperComponent(TypePath::Component component);
@@ -185,7 +185,7 @@ struct SubtypingEnvironment
      * vector of bounds, since generics may be shadowed by nested types. The back
      * of each vector represents the current scope.
      */
-    DenseHashMap2<TypeId, std::vector<GenericBounds>> mappedGenerics;
+    DenseHashMap<TypeId, std::vector<GenericBounds>> mappedGenerics;
 
     MappedGenericEnvironment mappedGenericPacks;
 
@@ -195,13 +195,13 @@ struct SubtypingEnvironment
      *
      * An empty value is equivalent to a nonexistent key.
      */
-    DenseHashMap2<TypeId, TypeId> substitutions;
+    DenseHashMap<TypeId, TypeId> substitutions;
 
     // We use this cache to track pairs of subtypes that we tried to subtype, and found them to be in the seen set at the time.
     // In those situations, we return True, but mark the result as not cacheable, because we don't want to cache broader results which
     // led to the seen pair. However, those results were previously being cache in the ephemeralCache, and we still want to cache them somewhere
     // for performance reasons.
-    DenseHashMap2<std::pair<TypeId, TypeId>, SubtypingResult, TypePairHash> seenSetCache;
+    DenseHashMap<std::pair<TypeId, TypeId>, SubtypingResult, TypePairHash> seenSetCache;
 
     int iterationCount = 0;
 };
@@ -220,10 +220,10 @@ struct Subtyping
 
     // If a type is known to have a single unique reference, then we can perform
     // a covariant test where an invariant test would otherwise be required.
-    const DenseHashSet2<TypeId>* uniqueTypes = nullptr;
+    const DenseHashSet<TypeId>* uniqueTypes = nullptr;
 
-    using SeenSet = Set<std::pair<TypeId, TypeId>, TypePairHash>;
-    using SeenTypePackSet = Set<std::pair<TypePackId, TypePackId>, TypePairHash>;
+    using SeenSet = DenseHashSet<std::pair<TypeId, TypeId>, TypePairHash>;
+    using SeenTypePackSet = DenseHashSet<std::pair<TypePackId, TypePackId>, TypePairHash>;
 
     SeenSet seenTypes;
     SeenTypePackSet seenPacks;
@@ -243,7 +243,7 @@ struct Subtyping
     Subtyping& operator=(Subtyping&&) = default;
 
     // Only used by unit tests to test that the cache works.
-    const DenseHashMap2<std::pair<TypeId, TypeId>, SubtypingResult, TypePairHash>& peekCache() const
+    const DenseHashMap<std::pair<TypeId, TypeId>, SubtypingResult, TypePairHash>& peekCache() const
     {
         return resultCache;
     }
@@ -263,7 +263,7 @@ struct Subtyping
     );
 
 private:
-    DenseHashMap2<std::pair<TypeId, TypeId>, SubtypingResult, TypePairHash> resultCache;
+    DenseHashMap<std::pair<TypeId, TypeId>, SubtypingResult, TypePairHash> resultCache;
 
     SubtypingResult cache(SubtypingEnvironment& env, SubtypingResult res, TypeId subTy, TypeId superTy);
 
@@ -310,7 +310,6 @@ private:
         SubtypingEnvironment& env,
         const TableType* subTable,
         const TableType* superTable,
-        bool forceCovariantTest,
         NotNull<Scope> scope
     );
 
@@ -352,7 +351,6 @@ private:
         const Property& subProperty,
         const Property& superProperty,
         const std::string& name,
-        bool forceCovariantTest,
         NotNull<Scope> scope
     );
 
